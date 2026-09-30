@@ -2,6 +2,22 @@
 
 Browse, name and play the chapters of video files and Blu-ray discs.
 
+> [!WARNING]
+> **This is beta software, provided as is, with no warranty or guarantee of
+> any kind** (see the [licence](LICENSE)). It only ever reads your media
+> files, but back up anything you can't afford to lose all the same.
+>
+> **The AI features cost real money, and it can add up.** They're optional
+> and off until you give the app an API key, and each one says roughly what
+> it costs before it runs - but a large library identified with the AI is
+> many requests. Use an API key with a spending limit: Nano-GPT lets you set
+> a **USD per day** cap on each key in its dashboard, and since its credit
+> is prepaid, keeping only a small balance on the account caps it too.
+
+![Media Chapter Browser: a library of concert videos as tiles, with a playlist of chapters queued and one playing](docs/screenshot.png)
+
+<sub>The library shown is made up: fictional bands, generated covers.</sub>
+
 A concert Blu-ray is one long video with fifteen chapters called "Chapter 1"
 through "Chapter 15". This finds those chapters, lets you give them real
 names — by hand, from a pasted tracklist, or from MusicBrainz — and plays
