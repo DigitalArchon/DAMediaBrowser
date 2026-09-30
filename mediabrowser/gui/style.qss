@@ -1,0 +1,699 @@
+/* SPDX-FileCopyrightText: 2026 Digital Archon
+   SPDX-License-Identifier: GPL-3.0-or-later */
+
+/* Media Chapter Browser dark theme.
+ *
+ * Adapted from StoryLoom's style.qss so the two apps read as a pair: same
+ * surfaces, same accent, same radius ladder, same letterspaced small-caps
+ * labels. QSS has no variables, so every colour below is literal - the
+ * palette is documented here once rather than repeated in comments.
+ *
+ *   surfaces   #14161a sunken   #16181d base   #1b1e25 raised   #232733 control
+ *   borders    #23262f hairline #2a2e39 input  #2f3441 control  #3b4356 hover
+ *   text       #e4e7ee active   #d8dbe2 body   #8a91a0 muted    #565c69 disabled
+ *   accent     #7aa2f7 focus    #3b5ea8 primary button
+ *   semantic   #e0af68 warning  #f7768e error  #9ece6a ok
+ */
+
+QWidget {
+  background-color: #16181d;
+  color: #d8dbe2;
+  font-size: 14px;
+}
+
+QMainWindow::separator {
+  background: #22252d;
+  width: 4px;
+  height: 4px;
+}
+
+/* --- docks ---------------------------------------------------------- */
+
+QDockWidget {
+  titlebar-close-icon: none;
+  titlebar-normal-icon: none;
+  font-size: 12px;
+}
+
+QDockWidget::title {
+  background: #1b1e25;
+  padding: 7px 10px;
+  border-bottom: 1px solid #23262f;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #8a91a0;
+}
+
+#centre {
+  background: #16181d;
+  padding: 12px;
+}
+
+/* --- toolbar -------------------------------------------------------- */
+
+QToolBar {
+  background: #1b1e25;
+  border-bottom: 1px solid #23262f;
+  padding: 6px 8px;
+  spacing: 6px;
+}
+
+QToolBar::separator {
+  background: #2a2e39;
+  width: 1px;
+  margin: 4px 6px;
+}
+
+#searchField {
+  background: #14161a;
+  border: 1px solid #2a2e39;
+  border-radius: 5px;
+  padding: 6px 8px;
+  color: #e4e7ee;
+  selection-background-color: #33456b;
+  min-width: 220px;
+}
+
+#searchField:focus {
+  border-color: #7aa2f7;
+}
+
+/* --- buttons -------------------------------------------------------- */
+
+QToolButton {
+  background: #232733;
+  border: 1px solid #2f3441;
+  border-radius: 5px;
+  padding: 6px 10px;
+  color: #d8dbe2;
+}
+
+QToolButton:hover {
+  background: #2b3040;
+}
+
+QToolButton:checked {
+  background: #2b3a5c;
+  border-color: #3b5ea8;
+  color: #eef2f9;
+}
+
+QToolButton:disabled {
+  background: #1a1c22;
+  color: #565c69;
+  border-color: #23262f;
+}
+
+/* Play Video on the detail page: plays where video plays by default, and
+   its arrow segment offers the other place. Sized like the buttons beside it. */
+#playVideoButton {
+  border-radius: 6px;
+  padding: 7px 34px 7px 16px;
+  font-size: 14px;
+}
+
+#playVideoButton::menu-button {
+  width: 26px;
+  border-left: 1px solid #3b4356;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+#playVideoButton::menu-button:hover {
+  background: #2f3547;
+}
+
+#playVideoButton::menu-arrow {
+  width: 10px;
+  height: 10px;
+}
+
+QPushButton {
+  background: #232733;
+  border: 1px solid #2f3441;
+  border-radius: 6px;
+  padding: 7px 16px;
+  color: #d8dbe2;
+}
+
+QPushButton:hover {
+  background: #2b3040;
+  border-color: #3b4356;
+}
+
+QPushButton:pressed {
+  background: #1f2330;
+}
+
+QPushButton:disabled {
+  background: #1a1c22;
+  color: #565c69;
+  border-color: #23262f;
+}
+
+/* The one button on a screen that does the thing the screen is for. */
+#primaryButton {
+  background: #3b5ea8;
+  border-color: #4a70bd;
+  color: #f2f5fb;
+  font-weight: 600;
+}
+
+#primaryButton:hover {
+  background: #4670c0;
+}
+
+#primaryButton:disabled {
+  background: #232733;
+  color: #565c69;
+  border-color: #23262f;
+}
+
+/* Destructive, and it should not look like the way out of a dialog. */
+#dangerButton {
+  color: #f0a3b1;
+  border-color: #5c3a44;
+}
+
+#dangerButton:hover {
+  background: #2a1f24;
+  border-color: #7a4c58;
+}
+
+#dangerButton:disabled {
+  color: #565c69;
+  border-color: #23262f;
+}
+
+/* --- lists, trees, tables ------------------------------------------- */
+
+QListWidget, QTreeWidget, QTreeView, QListView, QTableWidget, QPlainTextEdit, QTextEdit {
+  background: #14161a;
+  border: 1px solid #23262f;
+  border-radius: 6px;
+  color: #d8dbe2;
+}
+
+QListWidget::item {
+  padding: 8px;
+  border-bottom: 1px solid #1d2027;
+}
+
+QListWidget::item:selected,
+QTreeWidget::item:selected,
+QTreeView::item:selected,
+QTableWidget::item:selected {
+  background: #2b3a5c;
+  color: #eef2f9;
+}
+
+QTreeWidget::item, QTreeView::item {
+  padding: 4px 2px;
+}
+
+QTreeWidget, QTreeView {
+  alternate-background-color: #171a20;
+}
+
+QHeaderView::section {
+  background: #1b1e25;
+  color: #8a91a0;
+  border: none;
+  border-bottom: 1px solid #23262f;
+  padding: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* --- chapter provenance --------------------------------------------- */
+
+/* Where a chapter's name came from, borrowed from StoryLoom's
+ * #message[kind=...] pattern. The field is already stored on every chapter;
+ * this is what makes it visible. A name typed by hand and one guessed from
+ * a filename should not look equally authoritative. */
+
+#sourceDot {
+  font-size: 11px;
+  background: transparent;
+  color: #565c69;
+}
+
+#sourceDot[source="manual"] { color: #9ece6a; }
+#sourceDot[source="musicbrainz"] { color: #7aa2f7; }
+#sourceDot[source="ai"] { color: #bb9af7; }
+#sourceDot[source="menu"] { color: #73daca; }
+#sourceDot[source="filename"] { color: #a08a60; }
+#sourceDot[source="embedded"] { color: #8a91a0; }
+#sourceDot[source="auto-numbered"] { color: #3a3f4b; }
+
+/* --- now playing ---------------------------------------------------- */
+
+#nowPlayingBar {
+  background: #1b1e25;
+  border: 1px solid #23262f;
+  border-radius: 8px;
+}
+
+#nowPlayingTitle {
+  color: #e4e7ee;
+  font-size: 14px;
+  background: transparent;
+}
+
+#nowPlayingSubtitle {
+  color: #8a91a0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  background: transparent;
+}
+
+#nowPlayingTime {
+  color: #8a91a0;
+  font-size: 12px;
+  background: transparent;
+}
+
+#transportButton {
+  background: transparent;
+  border: 1px solid #2a2e39;
+  border-radius: 5px;
+  padding: 6px 10px;
+  color: #d8dbe2;
+  font-size: 15px;
+}
+
+#transportButton:hover {
+  background: #232733;
+  color: #e4e7ee;
+}
+
+#transportButton:disabled {
+  color: #3a3f4b;
+  border-color: #23262f;
+}
+
+#playButton {
+  background: #3b5ea8;
+  border-color: #4a70bd;
+  color: #f2f5fb;
+}
+
+#playButton:hover {
+  background: #4670c0;
+}
+
+#playButton:disabled {
+  background: #1a1c22;
+  color: #565c69;
+  border-color: #23262f;
+}
+
+QSlider::groove:horizontal {
+  background: #23262e;
+  height: 4px;
+  border-radius: 2px;
+}
+
+QSlider::sub-page:horizontal {
+  background: #7aa2f7;
+  height: 4px;
+  border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+  background: #d8dbe2;
+  width: 11px;
+  height: 11px;
+  margin: -4px 0;
+  border-radius: 5px;
+}
+
+QSlider::handle:horizontal:hover {
+  background: #ffffff;
+}
+
+QSlider::handle:horizontal:disabled {
+  background: #3a3f4b;
+}
+
+QSlider::sub-page:horizontal:disabled {
+  background: #2f3441;
+}
+
+/* --- artwork cards -------------------------------------------------- */
+
+/* The shelf itself is part of the page, not a sunken well, so it drops the
+   list border and background the generic rule above would give it. */
+#grid {
+  background: #16181d;
+  border: none;
+}
+
+/* Each cell is one card - cover, title and selection ring together. That is
+   painted by CardDelegate in grid_view.py rather than here: QSS styles only
+   the text rect of an icon-mode item, which left the ring around the label
+   with the cover floating outside it. */
+
+#libraryList {
+  background: #14161a;
+}
+
+#chapterTree {
+  background: #14161a;
+}
+
+/* The list form of the shelf. Roomier rows than the chapter table: these
+   are whole concerts, and under a search they carry matched tracks. */
+#shelfList {
+  background: #14161a;
+}
+
+#shelfList::item {
+  padding: 3px 2px;
+}
+
+
+#artCard {
+  background: #1b1e25;
+  border: 1px solid #23262f;
+  border-radius: 8px;
+}
+
+#artCard:hover {
+  border-color: #3b4356;
+}
+
+#artCard[selected="true"] {
+  border-color: #7aa2f7;
+  background: #191d27;
+}
+
+#artThumb {
+  background: #14161a;
+  border: 1px solid #23262f;
+  border-radius: 6px;
+  color: #565c69;
+}
+
+#artCardTitle {
+  color: #dfe2e9;
+  font-size: 13px;
+  background: transparent;
+}
+
+#artCardMeta {
+  color: #8a91a0;
+  font-size: 11px;
+  background: transparent;
+}
+
+/* --- detail view ---------------------------------------------------- */
+
+#detailTitle {
+  color: #e4e7ee;
+  font-size: 20px;
+  font-weight: 600;
+  background: transparent;
+}
+
+#detailMeta {
+  color: #8a91a0;
+  font-size: 12px;
+  background: transparent;
+}
+
+#sectionCaption {
+  color: #757d8c;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  background: transparent;
+}
+
+#backButton {
+  background: transparent;
+  border: none;
+  color: #8a91a0;
+  font-size: 13px;
+  padding: 4px 2px;
+}
+
+#backButton:hover {
+  color: #e4e7ee;
+}
+
+/* --- inputs --------------------------------------------------------- */
+
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+  background: #1b1e25;
+  border: 1px solid #2a2e39;
+  border-radius: 5px;
+  padding: 6px 8px;
+  color: #e4e7ee;
+  selection-background-color: #33456b;
+}
+
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
+  border-color: #7aa2f7;
+}
+
+QLineEdit:disabled, QComboBox:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
+  background: #181a20;
+  border-color: #23262f;
+  color: #565c69;
+}
+
+/* A path the app shows but nobody types into. */
+QLineEdit[readOnly="true"] {
+  background: #14161a;
+  color: #b9bfcb;
+}
+
+QComboBox QAbstractItemView {
+  background: #1b1e25;
+  border: 1px solid #2a2e39;
+  selection-background-color: #2b3a5c;
+}
+
+/* --- tabs ----------------------------------------------------------- */
+
+QTabWidget::pane {
+  border: 1px solid #23262f;
+  border-radius: 6px;
+  top: -1px;
+}
+
+QTabBar::tab {
+  background: #1b1e25;
+  color: #8a91a0;
+  padding: 7px 12px;
+  border: 1px solid #23262f;
+  border-bottom: none;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+}
+
+QTabBar::tab:selected {
+  background: #232733;
+  color: #e4e7ee;
+}
+
+/* A tab that doesn't apply here - the disc menu of a video file - must
+   read as switched off, not merely unselected. */
+QTabBar::tab:disabled {
+  background: #14161a;
+  color: #3f444f;
+  border: 1px dashed #2a2e39;
+  border-bottom: none;
+}
+
+/* --- menus, status bar ---------------------------------------------- */
+
+QMenuBar {
+  background: #1b1e25;
+  border-bottom: 1px solid #23262f;
+}
+
+QMenuBar::item:selected {
+  background: #2b3040;
+}
+
+QMenu {
+  background: #1b1e25;
+  border: 1px solid #2a2e39;
+  padding: 4px;
+}
+
+QMenu::item {
+  padding: 6px 22px;
+  border-radius: 4px;
+}
+
+QMenu::item:selected {
+  background: #2b3a5c;
+}
+
+QMenu::separator {
+  height: 1px;
+  background: #2a2e39;
+  margin: 4px 8px;
+}
+
+QStatusBar {
+  background: #1b1e25;
+  border-top: 1px solid #23262f;
+}
+
+QStatusBar::item {
+  border: none;
+}
+
+#statusLabel {
+  color: #8a91a0;
+  font-size: 12px;
+  padding: 0 8px;
+  background: transparent;
+}
+
+#statusLabel[state="error"] { color: #f7768e; }
+#statusLabel[state="warning"] { color: #e0af68; }
+
+QProgressBar {
+  background: #1b1e25;
+  border: 1px solid #2a2e39;
+  border-radius: 3px;
+  min-height: 6px;
+  text-align: center;
+}
+
+QProgressBar::chunk {
+  background: #7aa2f7;
+  border-radius: 3px;
+}
+
+/* --- messages ------------------------------------------------------- */
+
+#hintLabel {
+  color: #757d8c;
+  font-size: 12px;
+  background: transparent;
+}
+
+#errorLabel {
+  color: #f7768e;
+  font-size: 13px;
+  background: transparent;
+}
+
+#warningLabel {
+  color: #e0af68;
+  font-size: 13px;
+  background: #241f16;
+  border: 1px solid #4a3a20;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+#placeholder {
+  color: #6b7383;
+  padding: 48px 24px;
+  background: transparent;
+}
+
+/* --- checkboxes, radios --------------------------------------------- */
+
+QCheckBox, QRadioButton {
+  spacing: 8px;
+  background: transparent;
+}
+
+/* Qt's own indicators are dark-on-dark here: unchecked was all but
+   invisible, so they are drawn outright. */
+QCheckBox::indicator, QListView::indicator, QRadioButton::indicator {
+  width: 14px;
+  height: 14px;
+  border: 1px solid #4a5163;
+  background: #14161a;
+}
+
+QCheckBox::indicator, QListView::indicator {
+  border-radius: 3px;
+}
+
+QRadioButton::indicator {
+  border-radius: 8px;
+}
+
+QCheckBox::indicator:checked, QListView::indicator:checked,
+QRadioButton::indicator:checked {
+  background: #7aa2f7;
+  border-color: #7aa2f7;
+}
+
+QCheckBox::indicator:disabled, QListView::indicator:disabled,
+QRadioButton::indicator:disabled {
+  border-color: #2a2e39;
+}
+
+/* --- scrollbars ----------------------------------------------------- */
+
+QScrollBar:vertical {
+  background: transparent;
+  width: 11px;
+  margin: 2px;
+}
+
+QScrollBar::handle:vertical {
+  background: #2f3441;
+  border-radius: 5px;
+  min-height: 28px;
+}
+
+QScrollBar::handle:vertical:hover {
+  background: #3c4356;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+  height: 0;
+}
+
+QScrollBar:horizontal {
+  background: transparent;
+  height: 11px;
+  margin: 2px;
+}
+
+QScrollBar::handle:horizontal {
+  background: #2f3441;
+  border-radius: 5px;
+  min-width: 28px;
+}
+
+QScrollBar::handle:horizontal:hover {
+  background: #3c4356;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+  height: 0;
+  width: 0;
+}
+
+QScrollArea {
+  border: none;
+}
+
+QToolTip {
+  background: #232733;
+  color: #e4e7ee;
+  border: 1px solid #3b4356;
+  padding: 6px;
+}
+
+QSplitter::handle {
+  background: #22252d;
+}
+
+QSplitter::handle:horizontal { width: 4px; }
+QSplitter::handle:vertical { height: 4px; }

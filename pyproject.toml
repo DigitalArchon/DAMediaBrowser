@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mediabrowser"
+version = "0.12.0"
+description = "Browse, name and play the chapters of video files and Blu-ray discs."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Digital Archon" }]
+requires-python = ">=3.11"
+# Everything else this app needs is an external binary, not a Python package:
+# ffmpeg/ffprobe, mpv, and (optionally) libbluray. See mediabrowser.core.depcheck.
+dependencies = [
+    "PySide6-Essentials>=6.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/DigitalArchon/MediaChapterBrowser"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+mediabrowser = "mediabrowser.gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mediabrowser*"]
+
+[tool.setuptools.package-data]
+mediabrowser = ["gui/*.qss"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Build output holds an extracted CPython and Qt; ruff honours .gitignore
+# only inside a git repository, so it is named here too.
+extend-exclude = ["build", "dist", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

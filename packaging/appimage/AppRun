@@ -1,0 +1,60 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Digital Archon
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Media Chapter Browser AppImage entry point.
+#
+#   MediaChapterBrowser.AppImage [--library FOLDER]
+set -e
+HERE="$(dirname "$(readlink -f "$0")")"
+PYTHON="$HERE/opt/python3.12/bin/python3.12"
+
+# X11 helper libraries many systems lack (libxcb-cursor above all, which Qt
+# 6.5+ needs before it will load the xcb plugin). Built for an old glibc, so
+# they work on any system this AppImage supports. Only this folder: the
+# Python base's own libraries in usr/lib are found through its RUNPATH, and
+# must not stand in for the system's copies of the same libraries.
+export LD_LIBRARY_PATH="$HERE/usr/lib/x11${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# The host's Python settings must not leak into the bundled interpreter.
+unset PYTHONHOME PYTHONPATH
+
+# The bundled Python's OpenSSL was built on a different distribution, so the
+# CA paths compiled into it (/etc/pki/tls/...) do not exist on most systems.
+# Left alone it loads zero certificates and every HTTPS request fails with
+# "unable to get local issuer certificate" - which is MusicBrainz search and
+# cover art, the app's only two network calls.
+#
+# It is pointed at the host's own trust store rather than carrying a CA
+# bundle in here: the host's is kept current by its package manager, and it
+# reflects that machine's own trust decisions - a corporate root added, a CA
+# distrusted. A bundle shipped inside would silently override both.
+# Anything already set in the environment wins, so this can be overridden.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for candidate in \
+        /etc/ssl/certs/ca-certificates.crt \
+        /etc/pki/tls/certs/ca-bundle.crt \
+        /etc/pki/tls/cert.pem \
+        /etc/ssl/ca-bundle.pem \
+        /var/lib/ca-certificates/ca-bundle.pem \
+        /etc/ca-certificates/extracted/tls-ca-bundle.pem \
+        /etc/ssl/cert.pem
+    do
+        if [ -r "$candidate" ]; then
+            export SSL_CERT_FILE="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "${SSL_CERT_DIR:-}" ]; then
+    for candidate in /etc/ssl/certs /etc/pki/tls/certs; do
+        if [ -d "$candidate" ]; then
+            export SSL_CERT_DIR="$candidate"
+            break
+        fi
+    done
+fi
+
+# ffmpeg, mpv and libbluray are deliberately NOT bundled - they are found on
+# the host at runtime. mpv in particular has to reach the machine's own audio
+# server, GPU and display; a copy carried in here would be the wrong one. The
+# app checks for them at startup and says what to install.
+exec "$PYTHON" -s -m mediabrowser.gui.app "$@"

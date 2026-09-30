@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Media Chapter Browser. Drawn in the app's own palette (style.qss):
+     #16181d ground, #2b3040 frame, #3b4356 timeline, #7aa2f7 accent.
+     A play mark over a timeline split into chapters - which is what the
+     app is for: finding the chapter, not the file. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" rx="56" fill="#16181d"/>
+  <rect x="26" y="26" width="204" height="204" rx="44" fill="none" stroke="#2b3040" stroke-width="6"/>
+
+  <!-- play -->
+  <path d="M107 84 L169 120 L107 156 Z" fill="#7aa2f7"/>
+
+  <!-- the timeline, and the chapter playing -->
+  <rect x="62" y="180" width="132" height="12" rx="6" fill="#3b4356"/>
+  <rect x="62" y="180" width="46" height="12" rx="6" fill="#7aa2f7"/>
+
+  <!-- chapter divisions, cut out of the bar -->
+  <rect x="106" y="174" width="5" height="24" rx="2.5" fill="#16181d"/>
+  <rect x="150" y="174" width="5" height="24" rx="2.5" fill="#16181d"/>
+</svg>
