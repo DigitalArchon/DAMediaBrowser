@@ -1,6 +1,28 @@
 # Media Chapter Browser
 
-Browse, name and play the chapters of video files and Blu-ray discs.
+I made this for myself, because I have a large collection of blu ray concerts
+that I've ripped onto my NAS.
+I also have some as MKVs that have no chapters at all, just one long video.
+And of course the problem with that, is finding the song you want, in the 
+concert you want, is annoying.
+
+This app uses several methods to find the chapter times and names and let you
+easily listen to or watch the exact songs you want, create playlists, etc.
+
+Your media files are never modified; the names live in
+this app's own data directory.
+
+It uses things like checking the blu ray menu and using AI to OCR the chapter
+names and match them to the times. In the case of single files with chapters
+but no titles, it can search MusicBrainz to get the titles and match them.
+
+In the case of single files with no chapters and no titles, it can use AI,
+MusicBrainz and web searches, as well as audio and visual scans and screenshots
+of the video to determine chapter start and end times and then still work it out.
+
+And there's a simple interface to correct any mistakes by hand, most commonly
+the start of a song being a few seconds off in tracks entirely worked out
+using AI tools.
 
 > [!WARNING]
 > **This is beta software, provided as is, with no warranty or guarantee of
@@ -18,11 +40,6 @@ Browse, name and play the chapters of video files and Blu-ray discs.
 
 <sub>The library shown is made up: fictional bands, generated covers.</sub>
 
-A concert Blu-ray is one long video with fifteen chapters called "Chapter 1"
-through "Chapter 15". This finds those chapters, lets you give them real
-names — by hand, from a pasted tracklist, or from MusicBrainz — and plays
-them back as tracks. Your media files are never modified; the names live in
-this app's own data directory.
 
 ## Requirements
 
