@@ -153,11 +153,18 @@ class TestSuggestedSearch:
         )
         assert suggestion == "10 BABYMETAL BUDOKAN THE ONE EDITION Doomsday I, II"
 
+    def test_what_the_search_would_read_as_syntax_is_left_out(self):
+        # "-THE" is "without the" to MusicBrainz: the release was unfindable.
+        name = "[TM] BABYMETAL AWAKENS -THE SUN ALSO RISES- [BDRip 1920x1080 x264 FLAC]"
+        suggestion = self._suggest(f"BABYMETAL/{name}/{name}.mkv", name)
+        assert suggestion == "BABYMETAL AWAKENS THE SUN ALSO RISES"
+        assert utils.search_words('AC/DC "Live" +1 (x)') == "AC DC Live 1 x"
+
     def test_a_folder_already_in_the_name_adds_nothing(self):
         suggestion = self._suggest(
             "BABYMETAL/BABYMETAL - LIVE AT INTUIT DOME.mkv", "BABYMETAL - LIVE AT INTUIT DOME"
         )
-        assert suggestion == "BABYMETAL - LIVE AT INTUIT DOME"
+        assert suggestion == "BABYMETAL LIVE AT INTUIT DOME"
 
     def test_the_library_root_is_never_used(self):
         assert self._suggest("Showtime.mkv", "Showtime") == "Showtime"

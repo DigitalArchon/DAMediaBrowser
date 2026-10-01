@@ -226,6 +226,8 @@ class _Work:
     origin: str | None
     release_id: str | None = None
     levels: object = None
+    # The tracklist of the release this run named it from, for the AI.
+    tracks: list = field(default_factory=list)
     changed: bool = False
     # Chapters this run has named, and from where: provisional, so the
     # disc's own menu, read later in the same run, may put them right.
@@ -474,14 +476,19 @@ class _Step:
             return []
         judged = self._ai_helps_search()
         fits = []
-        for release in releases:
+        # The ones the names recognise first: when one of those fits, the
+        # rest aren't worth a request each (two seconds, at MusicBrainz).
+        ranked = sorted(releases, key=lambda r: not (
+            artist_matches(r, video, self.root) and title_matches(r, video, self.root)
+        ))
+        for release in ranked:
             self._check()
             if release["id"] in seen:
                 continue
             seen[release["id"]] = release
             recognised = (artist_matches(release, video, self.root)
                           and title_matches(release, video, self.root))
-            if not recognised and not judged:
+            if not recognised and (not judged or any(f.recognised for f in fits)):
                 continue
             try:
                 media = self.services.release_media(release["id"])
@@ -598,6 +605,7 @@ class _Step:
                      f" (searched “{query}”){why}")
             return
         release, tracks = best.release, best.tracks
+        work.tracks = tracks
         claimed = getattr(self.services, "claimed", None)
         if claimed is not None:
             claimed[(release["id"], tuple(best.picked))] = video["display_name"]
@@ -699,6 +707,8 @@ class _Step:
         situation = ai_chapters.Situation(
             video=video, chapters=[dict(c) for c in work.chapters],
             mode=ai_chapters.PLACE if estimated else ai_chapters.NAME,
+            tracks=list(work.tracks),
+            tracks_source="musicbrainz" if work.tracks else "",
             candidates=(chaptergen.boundary_candidates(work.levels, video["duration"])
                         if estimated and work.levels is not None else []),
             context=ai_chapters.situation_context(video, self.root),
@@ -724,8 +734,14 @@ class _Step:
             named = sum(1 for c in chapters if naming.is_named(c))
             self.log(f"AI: placed {len(chapters)} chapters and named {named}")
         else:
-            names = [entry for entry in result.mapping() if entry[0] in sure]
-            filled = work.fill(names)
+            confidence = {row.chapter - 1: row.confidence for row in result.rows}
+            # What it's certain of may put right this run's own names - an
+            # opening film MusicBrainz's lengths took for the first song;
+            # names the video had before are kept whatever it says.
+            certain = [entry for entry in result.mapping() if confidence.get(entry[0]) == "high"]
+            names = [entry for entry in result.mapping()
+                     if entry[0] in sure and confidence.get(entry[0]) != "high"]
+            filled = work.fill(certain, authoritative=True) + work.fill(names)
             skipped = sum(1 for entry in result.mapping() if entry[0] not in sure)
             self.log(f"AI: named {filled} chapter(s)"
                      + (f", left {skipped} it was guessing at" if skipped else ""))

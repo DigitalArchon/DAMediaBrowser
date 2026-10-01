@@ -25,6 +25,15 @@ def guess_search_query(display_name: str) -> str:
 _LEADING_NUMBER_RE = re.compile(r"^\s*\d{1,3}\s*[.\-)]\s+")
 # The suffix a multi-title Blu-ray's titles get: "Disc - Title 8".
 _TITLE_SUFFIX_RE = re.compile(r"\s+-\s+Title\s+\d+$")
+# What MusicBrainz's search reads as syntax rather than words: in
+# "AWAKENS -THE SUN ALSO RISES-" the hyphen means "without", and the
+# release it names is the one search that can't find it.
+_SEARCH_SYNTAX_RE = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/]+')
+
+
+def search_words(text: str) -> str:
+    """Text made safe to search MusicBrainz with as plain words."""
+    return re.sub(r"\s+", " ", _SEARCH_SYNTAX_RE.sub(" ", text)).strip()
 
 
 def _clean_folder_name(name: str) -> str:
@@ -61,7 +70,7 @@ def suggest_search_query(video, library_root=None, max_folders: int = 2) -> str:
         if cleaned and cleaned.lower() not in " ".join(parts).lower():
             parts.insert(0, cleaned)
         folder = folder.parent
-    return " ".join(p for p in parts if p)
+    return search_words(" ".join(p for p in parts if p))
 
 
 _DURATION_RE = re.compile(r"(?<!\d)(\d{1,2}:\d{2}(?::\d{2})?)(?!\d)")

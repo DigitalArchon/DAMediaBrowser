@@ -338,6 +338,58 @@ class TestMusicBrainzWithTheAI:
         assert kinds(services) == ["search"]
 
 
+class TestTheRightReleaseFirst:
+    def test_with_one_the_names_recognise_the_rest_arent_fetched(self, services, settings):
+        right, media = release([("Arkadia", 600.0), ("Megitsune", 612.0)], rid="right")
+        services.releases = [
+            {"id": "album", "title": "BABYMETAL", "artist": "BABYMETAL"},
+            {"id": right, "title": "Show", "artist": "Artist"},
+        ]
+        services.media[right] = media
+        outcome = autoname.identify("v", file_video(),
+                                    options(autoname.MUSICBRAINZ, autoname.AI_LOOK),
+                                    settings, services, autoname.Budget(6), "/lib")
+        assert outcome.change.release_id == "right"
+        assert ("media", "album") not in services.calls
+
+    def test_the_ai_sees_the_tracklist_and_may_put_this_runs_names_right(self, services,
+                                                                       settings):
+        # An opening film inside the CD's first track: the lengths give the
+        # song's name to the film, and the AI, seeing it, puts it right.
+        rid, media = release([("Arkadia", 645.0), ("Megitsune", 567.0)])
+        services.releases = [{"id": rid, "title": "Show", "artist": "Artist"}]
+        services.media[rid] = media
+        video = file_video(starts=(0.0, 363.0, 645.0))
+        seen = {}
+
+        def look(situation):
+            seen["tracks"] = [t["title"] for t in situation.tracks]
+            chapters = named(situation.chapters, {0: "Intro to Arkadia", 1: "Arkadia"})
+            return result(chapters, [
+                ai_chapters.Row(1, 0.0, "Intro to Arkadia", None, "high", "", False),
+                ai_chapters.Row(2, 0.0, "Arkadia", None, "high", "", False)])
+
+        services.look_answer = look
+        outcome = autoname.identify("v", video, options(autoname.MUSICBRAINZ, autoname.AI_LOOK),
+                                    settings, services, autoname.Budget(6), "/lib")
+        assert seen["tracks"] == ["Arkadia", "Megitsune"]
+        assert [c["title"] for c in outcome.change.chapters] == [
+            "Intro to Arkadia", "Arkadia", "Megitsune"]
+
+    def test_but_not_the_names_the_video_already_had(self, services, settings):
+        video = file_video(starts=(0.0, 363.0), titles=["Mine", None])
+
+        def look(situation):
+            chapters = named(situation.chapters, {0: "Theirs", 1: "Arkadia"})
+            return result(chapters, [ai_chapters.Row(1, 0.0, "Theirs", None, "high", "", False),
+                                     ai_chapters.Row(2, 0.0, "Arkadia", None, "high", "", False)])
+
+        services.look_answer = look
+        outcome = autoname.identify("v", video, options(autoname.AI_LOOK), settings,
+                                    services, autoname.Budget(6), "/lib")
+        assert [c["title"] for c in outcome.change.chapters] == ["Mine", "Arkadia"]
+
+
 class TestMatching:
     def test_the_artist_can_be_in_the_folders_or_the_name(self):
         video = {"path": "/lib/Babymetal - Live/x.mkv", "display_name": "x"}
