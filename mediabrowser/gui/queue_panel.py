@@ -8,7 +8,8 @@ going back to the tree between each one.
 
 Rows can be Ctrl- or Shift-selected several at a time, to remove or drag
 together. A queue can be saved as a playlist, and the Playlists menu plays
-saved ones - the window fills it (playlists_menu).
+saved ones - the window fills it (playlists_menu). A row's right-click
+menu plays it as it was queued, as audio, or as video.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ REPEAT_LABELS = {
 
 class QueuePanel(QWidget):
     entry_activated = Signal(int)
+    play_as_requested = Signal(int, bool)  # entry index, audio only
     entries_removed = Signal(list)  # entry indices
     order_changed = Signal(list)  # every entry index, in the order now shown
     cleared = Signal()
@@ -67,6 +69,8 @@ class QueuePanel(QWidget):
         # resulting row move back into a queue move.
         self.list.setDragDropMode(QAbstractItemView.InternalMove)
         self.list.itemActivated.connect(self._on_activated)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._show_menu)
         self.list.itemSelectionChanged.connect(self._update_buttons)
         # A drag of several rows arrives as several moves; the order is read
         # once they're all done.
@@ -177,6 +181,30 @@ class QueuePanel(QWidget):
 
     def _on_activated(self, item: QListWidgetItem) -> None:
         self.entry_activated.emit(self.list.row(item))
+
+    def menu_for(self, item: QListWidgetItem) -> QMenu:
+        entry_index = item.data(Qt.UserRole)
+        menu = QMenu(self.list)
+        play = menu.addAction("Play")
+        play.triggered.connect(lambda: self.entry_activated.emit(entry_index))
+        for label, audio_only in (("Play Audio", True), ("Play Video", False)):
+            action = menu.addAction(label)
+            action.triggered.connect(
+                lambda _checked=False, a=audio_only: self.play_as_requested.emit(entry_index, a)
+            )
+        menu.addSeparator()
+        remove = menu.addAction("Remove")
+        chosen = self.selected_entries()
+        targets = chosen if entry_index in chosen else [entry_index]
+        if len(targets) > 1:
+            remove.setText(f"Remove {len(targets)}")
+        remove.triggered.connect(lambda: self.entries_removed.emit(targets))
+        return menu
+
+    def _show_menu(self, point) -> None:
+        item = self.list.itemAt(point)
+        if item is not None:
+            self.menu_for(item).exec(self.list.viewport().mapToGlobal(point))
 
     def selected_entries(self) -> list[int]:
         return sorted(item.data(Qt.UserRole) for item in self.list.selectedItems())

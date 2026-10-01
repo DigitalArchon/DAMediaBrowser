@@ -51,6 +51,7 @@ class FakeMpv:
         self.state["paused"] = not self.state["paused"]
 
     def set_paused(self, paused):
+        self.calls.append(("paused", paused))
         self.state["paused"] = paused
 
     def seek(self, seconds):

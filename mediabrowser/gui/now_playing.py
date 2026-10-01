@@ -13,7 +13,7 @@ updated to follow playback.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -47,6 +47,7 @@ class NowPlayingBar(QWidget):
         self._duration = 0.0
         self._dragging = False
         self._active = False
+        self._video_away = False  # video plays in the app, out of sight
 
         self.cover = QLabel()
         self.cover.setObjectName("artThumb")
@@ -136,7 +137,19 @@ class NowPlayingBar(QWidget):
         layout.addLayout(middle, 1)
         layout.addLayout(transport)
 
+        # The cover and title take you back to the video too: where you'd
+        # click on what's playing.
+        for label in (self.cover, self.title, self.subtitle):
+            label.installEventFilter(self)
+
         self.clear()
+
+    def eventFilter(self, watched, event) -> bool:
+        if (event.type() == QEvent.MouseButtonRelease and self._video_away
+                and event.button() == Qt.LeftButton):
+            self.show_video_requested.emit()
+            return True
+        return super().eventFilter(watched, event)
 
     # --- state -----------------------------------------------------------
 
@@ -150,8 +163,16 @@ class NowPlayingBar(QWidget):
     def set_video_controls(self, in_app: bool, showing: bool, fullscreen: bool = False) -> None:
         """Show Video while video plays in the app out of sight; Fullscreen
         while it's in the app at all."""
-        self.show_video_button.setVisible(in_app and not showing)
+        self._video_away = in_app and not showing
+        self.show_video_button.setVisible(self._video_away)
         self.fullscreen_button.setVisible(in_app)
+        for label in (self.cover, self.title, self.subtitle):
+            if self._video_away:
+                label.setCursor(Qt.PointingHandCursor)
+                label.setToolTip("Back to the video")
+            else:
+                label.unsetCursor()
+                label.setToolTip("")
         self.fullscreen_button.setText("Leave Fullscreen" if fullscreen else "Fullscreen")
 
     def clear(self) -> None:

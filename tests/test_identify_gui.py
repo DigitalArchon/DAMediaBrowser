@@ -63,7 +63,7 @@ class TestTheChoices:
         d = dialog(library)
         d.method_checks[autoname.AI_LOOK].setChecked(True)
         d.budget.setValue(10)
-        assert ("At most 2 AI request(s), paid for from your Nano-GPT credit - under $0.12 "
+        assert ("At most 8 AI request(s), paid for from your Nano-GPT credit - under $0.48 "
                 "with claude-sonnet-5") in d.estimate.text()
         d.include_partly.setChecked(False)
         assert d.estimate.text().startswith("1 video(s) to identify")

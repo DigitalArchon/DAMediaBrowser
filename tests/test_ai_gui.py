@@ -314,7 +314,7 @@ class TestTheDiscMenuTab:
 
         dialog = dialog_for(window, file_video(tmp_path, 900.0, starts=(0.0, 300.0, 600.0)))
         assert not dialog.tabs.isTabEnabled(TAB_MENU)
-        assert dialog.tabs.tabText(TAB_MENU) == "Extract Disc Menu (Blu-ray only)"
+        assert dialog.tabs.tabText(TAB_MENU) == "Extract Blu-ray Menu (not a Blu-ray)"
         assert dialog.tabs.currentIndex() == TAB_TRACKLIST
 
     def test_a_blu_ray_opens_on_its_menu(self, window, tmp_path, measured, no_searching):

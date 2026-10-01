@@ -432,6 +432,22 @@ QSlider::sub-page:horizontal:disabled {
   background: transparent;
 }
 
+#stepCaption {
+  color: #c0caf5;
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+}
+
+#situationLabel {
+  color: #a9b1d6;
+  font-size: 13px;
+  background: #1a2030;
+  border: 1px solid #2c3550;
+  border-radius: 6px;
+  padding: 8px;
+}
+
 #backButton {
   background: transparent;
   border: none;

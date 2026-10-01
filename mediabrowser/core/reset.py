@@ -30,7 +30,8 @@ UNDO_KEY = "reset_undo"
 # What a library reset clears from the library's settings.
 LIBRARY_SETTINGS = ("hidden_folders", "identify_run")
 # What a title reset clears from the video.
-VIDEO_KEYS = ("custom_name", "musicbrainz_release_id", "hidden", "chapter_origin")
+VIDEO_KEYS = ("custom_name", "musicbrainz_release_id", "hidden", "chapter_origin",
+              naming.MARKED_KEY)
 
 
 class ResetError(Exception):
@@ -57,6 +58,8 @@ def describe_video(video: dict) -> list[str]:
         lost.append("the MusicBrainz release it was named from")
     if video.get("hidden"):
         lost.append("its being hidden")
+    if video.get(naming.MARKED_KEY):
+        lost.append("its being marked named")
     return lost
 
 

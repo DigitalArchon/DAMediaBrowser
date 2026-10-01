@@ -137,6 +137,23 @@ class Queue:
         if playing is not None:
             self._cursor = self._order.index(shifted(playing))
 
+    def set_audio_only(self, entry_index: int, audio_only: bool) -> list[int]:
+        """Play an entry as audio or as video, and the rest of its video's
+        run after it in the play order with it - the way Play lines up the
+        rest of a video. Returns the entry indices changed."""
+        if entry_index not in self._order:
+            return []
+        video_id = self._entries[entry_index].video_id
+        changed = []
+        for index in self._order[self._order.index(entry_index):]:
+            entry = self._entries[index]
+            if entry.video_id != video_id:
+                break
+            if entry.audio_only != audio_only:
+                self._entries[index] = replace(entry, audio_only=audio_only)
+                changed.append(index)
+        return changed
+
     def remove_many(self, entry_indices) -> None:
         """Drop several entries at once, by their positions in insertion order."""
         for index in sorted(set(entry_indices), reverse=True):
@@ -459,6 +476,11 @@ class Session:
         if not self.player.is_active() or window_id != self._window_id:
             self.player.start_session(window_id)
             self._window_id = window_id
+        else:
+            # Paused stays paused across files in one mpv; choosing
+            # something to play means play it. Before the load: told while
+            # mpv is opening the file, it's paused again once it has.
+            self.player.set_paused(False)
         self._loaded = [(segment, self.player.load(segment))]
         self._load_next()
         return segment

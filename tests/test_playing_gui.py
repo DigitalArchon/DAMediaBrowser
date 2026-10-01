@@ -133,6 +133,55 @@ class TestVideoInTheApp:
         assert window.pages.currentIndex() != PAGE_VIDEO
 
 
+class TestGettingBackToTheVideo:
+    def test_show_video_in_the_playback_menu(self, playing, embeddable):
+        from mediabrowser.gui.main_window import PAGE_VIDEO
+
+        window, _mpv = playing
+        assert not window.show_video_action.isEnabled()
+        window.play_from("b", 0, audio_only=False)
+        window.video_page.back_button.click()
+        assert window.show_video_action.isEnabled()
+        window.show_video_action.trigger()
+        assert window.pages.currentIndex() == PAGE_VIDEO
+
+    def test_clicking_whats_playing_goes_back_to_it(self, playing, embeddable):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+
+        from mediabrowser.gui.main_window import PAGE_VIDEO
+
+        window, _mpv = playing
+        window.play_from("b", 0, audio_only=False)
+        window.video_page.back_button.click()
+        QTest.mouseClick(window.now_playing_bar.title, Qt.LeftButton, pos=QPoint(2, 2))
+        assert window.pages.currentIndex() == PAGE_VIDEO
+
+    def test_double_clicking_whats_playing_in_the_queue_restarts_it(self, playing,
+                                                                    embeddable):
+        from mediabrowser.gui.main_window import PAGE_VIDEO
+
+        window, mpv = playing
+        window.play_from("b", 1, audio_only=False)
+        window.video_page.back_button.click()
+        loaded = len(loads(mpv))
+        window.play_queue_entry(window.queue.current_index())
+        assert len(loads(mpv)) > loaded, "started again"
+        assert window.pages.currentIndex() == PAGE_VIDEO
+
+
+class TestPausedThenPlayed:
+    def test_playing_something_else_unpauses(self, playing):
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        window.toggle_play_pause()
+        window._tick()
+        assert window.now_playing_bar.play_button.text() == "▶"
+        window.play_from("b", 0, audio_only=True)
+        assert mpv.state["paused"] is False
+        assert window.now_playing_bar.play_button.text() == "⏸"
+
+
 class TestTheQueue:
     def test_several_can_be_removed_at_once(self, playing):
         window, mpv = playing
@@ -240,3 +289,20 @@ class TestSeekBar:
                          QPoint(int(slider.width() * 0.75), slider.height() // 2))
         seeks = [c for c in mpv.calls if c[0] == "seek"]
         assert seeks and 65 <= seeks[-1][1] <= 85, seeks
+
+
+class TestQueueMenu:
+    def test_a_queued_video_can_be_played_as_audio(self, playing, embeddable):
+        from mediabrowser.gui.main_window import PAGE_VIDEO
+
+        window, mpv = playing
+        window.play_from("b", 0, audio_only=False)
+        window.video_page.back_button.click()
+        item = window.queue_panel.list.item(1)
+        menu = window.queue_panel.menu_for(item)
+        actions = {a.text(): a for a in menu.actions() if a.text()}
+        assert {"Play", "Play Audio", "Play Video", "Remove"} <= set(actions)
+        actions["Play Audio"].trigger()
+        assert window.now_playing == ("b", 1, True)
+        assert [e.audio_only for e in window.queue.entries()] == [False, True, True]
+        assert window.pages.currentIndex() != PAGE_VIDEO

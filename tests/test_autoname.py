@@ -8,7 +8,16 @@ import threading
 
 import pytest
 
-from mediabrowser.core import ai, ai_chapters, autoname, library, menu_chapters, naming, store
+from mediabrowser.core import (
+    ai,
+    ai_chapters,
+    ai_musicbrainz,
+    autoname,
+    library,
+    menu_chapters,
+    naming,
+    store,
+)
 from tests.test_chaptergen import concert
 
 
@@ -37,6 +46,7 @@ class FakeServices:
     def __init__(self):
         self.calls = []
         self.releases = []  # search results
+        self.searches = {}  # query -> search results, where they differ
         self.recordings = []  # recording search results
         self.media = {}  # release id -> media
         self.levels_value = None
@@ -44,10 +54,12 @@ class FakeServices:
         self.menu_answer = None  # a Result
         self.look_answer = None  # a function of the situation -> Result
         self.translations = {}
+        self.queries = []  # the AI's better searches
+        self.choice = None  # an ai_musicbrainz.Choice, or a function of the candidates
 
     def search_releases(self, query):
         self.calls.append(("search", query))
-        return self.releases
+        return self.searches.get(query, self.releases)
 
     def search_recordings(self, query):
         self.calls.append(("recordings", query))
@@ -56,6 +68,16 @@ class FakeServices:
     def release_media(self, release_id):
         self.calls.append(("media", release_id))
         return self.media[release_id]
+
+    def better_queries(self, video, context, tried, found, settings):
+        self.calls.append(("better_queries", tuple(tried)))
+        return "the show", list(self.queries)
+
+    def choose_release(self, video, context, candidates, settings):
+        self.calls.append(("choose", tuple(c.release["id"] for c in candidates)))
+        if callable(self.choice):
+            return self.choice(candidates)
+        return self.choice or ai_musicbrainz.Choice(None, "high", "none of them")
 
     def levels(self, video, cancel):
         self.calls.append(("levels", video["path"]))
@@ -203,6 +225,117 @@ class TestMusicBrainz:
                               autoname.Budget(0))
         assert a.change is not None and b.change is None
         assert "already named “Concert”" in b.log[0]
+
+
+class TestMusicBrainzWithTheAI:
+    """With the AI to look at the video too, it puts a MusicBrainz search
+    right and says which release is the show - but a release must still
+    add up to the video."""
+
+    def video(self):
+        # Romanised folders: MusicBrainz has the artist in Japanese.
+        video = file_video(duration=1212.0)
+        video["path"] = "/lib/Perfume/Budokan 2008/Concert.mkv"
+        return video
+
+    def chose(self, rid, confidence="high"):
+        return ai_musicbrainz.Choice(rid, confidence, "the Budokan show")
+
+    def test_it_chooses_a_release_the_names_dont_mention(self, services, settings):
+        rid, media = release([("Polyrhythm", 600.0), ("Chocolate Disco", 612.0)])
+        services.releases = [{"id": rid, "title": "BUDOUKANん", "artist": "パフューム"}]
+        services.media[rid] = media
+        services.choice = self.chose(rid)
+        outcome = autoname.identify("v", self.video(),
+                                    options(autoname.MUSICBRAINZ, autoname.AI_LOOK), settings,
+                                    services, autoname.Budget(6), "/lib")
+        assert [c["title"] for c in outcome.change.chapters] == ["Polyrhythm", "Chocolate Disco"]
+        assert outcome.change.release_id == rid
+        assert ("choose", (rid,)) in services.calls
+        assert outcome.ai_used == 1
+        assert "MusicBrainz: the AI chose “BUDOUKANん” - the Budokan show" in outcome.log
+
+    def test_without_it_such_a_release_isnt_even_fetched(self, services, settings):
+        rid, media = release([("Polyrhythm", 600.0), ("Chocolate Disco", 612.0)])
+        services.releases = [{"id": rid, "title": "BUDOUKANん", "artist": "パフューム"}]
+        services.media[rid] = media
+        outcome = autoname.identify("v", self.video(), options(autoname.MUSICBRAINZ), settings,
+                                    services, autoname.Budget(6), "/lib")
+        assert outcome.change is None
+        assert kinds(services) == ["search"]
+
+    def test_it_searches_again_when_nothing_fits(self, services, settings):
+        rid, media = release([("Polyrhythm", 600.0), ("Chocolate Disco", 612.0)])
+        services.releases = []
+        better = 'release:"Budokan" AND artist:"Perfume"'
+        services.searches[better] = [{"id": rid, "title": "Live at Budokan",
+                                      "artist": "Perfume"}]
+        services.media[rid] = media
+        services.queries = [better]
+        outcome = autoname.identify("v", self.video(),
+                                    options(autoname.MUSICBRAINZ, autoname.AI_LOOK), settings,
+                                    services, autoname.Budget(6), "/lib")
+        assert outcome.change.release_id == rid
+        assert kinds(services) == ["search", "better_queries", "search", "media"]
+        assert ("search", better) in services.calls
+        assert outcome.ai_used == 1, "the rules recognise what the new search found"
+
+    def test_it_chooses_between_releases_that_all_add_up(self, services, settings):
+        night1, media1 = release([("A", 600.0), ("B", 612.0)], rid="night1")
+        night2, media2 = release([("A", 601.0), ("B", 609.0)], rid="night2")
+        services.releases = [{"id": night1, "title": "Budokan Day 1", "artist": "Perfume"},
+                             {"id": night2, "title": "Budokan Day 2", "artist": "Perfume"}]
+        services.media.update({night1: media1, night2: media2})
+        services.choice = self.chose(night2)
+        outcome = autoname.identify("v", self.video(),
+                                    options(autoname.MUSICBRAINZ, autoname.AI_LOOK), settings,
+                                    services, autoname.Budget(6), "/lib")
+        assert outcome.change.release_id == "night2", "not the closest; the one it is"
+
+    def test_when_it_says_none_fits_nothing_is_used(self, services, settings):
+        rid, media = release([("Polyrhythm", 600.0), ("Chocolate Disco", 612.0)])
+        services.releases = [{"id": rid, "title": "Some Album", "artist": "Someone"}]
+        services.media[rid] = media
+        outcome = autoname.identify("v", self.video(),
+                                    options(autoname.MUSICBRAINZ, autoname.AI_LOOK), settings,
+                                    services, autoname.Budget(6), "/lib")
+        assert outcome.change is None or outcome.change.release_id is None
+        assert kinds(services)[:4] == ["search", "media", "choose", "better_queries"]
+
+    def test_a_guess_is_left_out_unattended(self, services, settings):
+        rid, media = release([("Polyrhythm", 600.0), ("Chocolate Disco", 612.0)])
+        services.releases = [{"id": rid, "title": "BUDOUKANん", "artist": "パフューム"}]
+        services.media[rid] = media
+        services.choice = self.chose(rid, "low")
+        outcome = autoname.identify(
+            "v", self.video(), options(autoname.MUSICBRAINZ, autoname.AI_LOOK, only_sure=True),
+            settings, services, autoname.Budget(6), "/lib",
+        )
+        assert outcome.change is None or outcome.change.release_id is None
+        guessed = autoname.identify(
+            "v", self.video(), options(autoname.MUSICBRAINZ, autoname.AI_LOOK, only_sure=False),
+            settings, services, autoname.Budget(6), "/lib",
+        )
+        assert guessed.change.release_id == rid
+
+    def test_a_release_that_doesnt_add_up_isnt_offered(self, services, settings):
+        rid, media = release([("Polyrhythm", 600.0)])
+        services.releases = [{"id": rid, "title": "BUDOUKANん", "artist": "パフューム"}]
+        services.media[rid] = media
+        services.choice = self.chose(rid)
+        outcome = autoname.identify("v", self.video(),
+                                    options(autoname.MUSICBRAINZ, autoname.AI_LOOK), settings,
+                                    services, autoname.Budget(6), "/lib")
+        assert outcome.change is None or outcome.change.release_id is None
+        assert "choose" not in kinds(services)
+
+    def test_no_budget_left_means_the_rules_alone(self, services, settings):
+        rid, media = release([("Polyrhythm", 600.0), ("Chocolate Disco", 612.0)])
+        services.releases = [{"id": rid, "title": "BUDOUKANん", "artist": "パフューム"}]
+        services.media[rid] = media
+        autoname.identify("v", self.video(), options(autoname.MUSICBRAINZ, autoname.AI_LOOK),
+                          settings, services, autoname.Budget(0), "/lib")
+        assert kinds(services) == ["search"]
 
 
 class TestMatching:

@@ -6,11 +6,17 @@ The common repair is a tracklist that is right but off by one, because the
 disc has an intro chapter the release doesn't list. Retyping every name to
 correct that is absurd, so names can be moved up and down the list instead,
 and a name pushed off the end waits in "unused" rather than being lost.
+
+A title can also be dragged to where it belongs: the chapters stay put,
+with their numbers and lengths, and only the names move. Dropped on an
+unnamed chapter it fills it; dropped on a named one, or between two, it
+goes there and the names in between close up. Names can be dragged out to
+"unused" and back in.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -27,6 +33,101 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import utils
 
+# Where a dragged name was dropped, relative to the row under it.
+ONTO, ABOVE, BELOW = "onto", "above", "below"
+# Where it came from.
+FROM_TABLE, FROM_UNUSED = "table", "unused"
+
+
+def _where(view) -> str:
+    return {
+        QAbstractItemView.AboveItem: ABOVE,
+        QAbstractItemView.BelowItem: BELOW,
+        QAbstractItemView.OnItem: ONTO,
+    }.get(view.dropIndicatorPosition(), BELOW)
+
+
+class _TitleTable(QTreeWidget):
+    """The chapters, whose names can be dragged about. Qt isn't left to
+    move the rows: a row is a chapter, and only its name moves."""
+
+    dropped = Signal(str, int, int, str)  # from, its row, onto row, where
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.unused: QListWidget | None = None
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+
+    def dragEnterEvent(self, event) -> None:
+        if event.source() in (self, self.unused):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        super().dragMoveEvent(event)
+        if event.source() in (self, self.unused):
+            event.accept()
+
+    def dropEvent(self, event) -> None:
+        source = event.source()
+        if source not in (self, self.unused) or self.topLevelItemCount() == 0:
+            event.ignore()
+            return
+        item = self.itemAt(event.position().toPoint())
+        if item is None:
+            row, where = self.topLevelItemCount() - 1, BELOW
+        else:
+            row, where = self.indexOfTopLevelItem(item), _where(self)
+        if source is self:
+            kind, origin = FROM_TABLE, self.indexOfTopLevelItem(self.currentItem())
+        else:
+            kind, origin = FROM_UNUSED, source.currentRow()
+        # Copy, not move: a move would have Qt delete the row it came from.
+        event.setDropAction(Qt.CopyAction)
+        event.accept()
+        # After the drag has finished with the rows, which this rebuilds.
+        QTimer.singleShot(0, lambda: self.dropped.emit(kind, origin, row, where))
+
+
+class _UnusedList(QListWidget):
+    """Names with no chapter, which a name can be dragged out to."""
+
+    dropped = Signal(int)  # the chapter whose name was dragged here
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.table: QTreeWidget | None = None
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+
+    def dragEnterEvent(self, event) -> None:
+        if event.source() is self.table:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.source() is self.table:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:
+        if event.source() is not self.table:
+            event.ignore()
+            return
+        row = self.table.indexOfTopLevelItem(self.table.currentItem())
+        event.setDropAction(Qt.CopyAction)
+        event.accept()
+        QTimer.singleShot(0, lambda: self.dropped.emit(row))
+
 
 class EditTracklistDialog(QDialog):
     def __init__(self, parent, video) -> None:
@@ -41,7 +142,8 @@ class EditTracklistDialog(QDialog):
         self._durations = [ch["end"] - ch["start"] for ch in video["chapters"]]
         self._unused: list[str] = []
 
-        self.tree = QTreeWidget()
+        self.tree = _TitleTable()
+        self.tree.dropped.connect(self.drop)
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["#", "Length", "Title"])
         self.tree.setRootIsDecorated(False)
@@ -78,15 +180,23 @@ class EditTracklistDialog(QDialog):
         shift_row.addWidget(self.clear_button)
         shift_row.addStretch(1)
 
-        hint = QLabel("Double-click a title to edit it.")
+        hint = QLabel(
+            "Double-click a title to edit it, or drag it to the chapter it belongs on - "
+            "the chapters stay where they are, only the names move."
+        )
+        hint.setWordWrap(True)
         hint.setObjectName("hintLabel")
 
-        self.unused_list = QListWidget()
+        self.unused_list = _UnusedList()
         self.unused_list.setMaximumHeight(110)
+        self.unused_list.table = self.tree
+        self.unused_list.dropped.connect(self.set_aside)
+        self.tree.unused = self.unused_list
         unused_caption = QLabel("Unused names")
         unused_caption.setObjectName("sectionCaption")
         self.unused_hint = QLabel(
-            "Names shifted off the end of the list. They are put back if you shift up again."
+            "Names with no chapter: shifted off the end, or dragged here. Shifting up "
+            "puts the first back; or drag one onto the chapter it belongs on."
         )
         self.unused_hint.setObjectName("hintLabel")
         self.unused_hint.setWordWrap(True)
@@ -132,7 +242,8 @@ class EditTracklistDialog(QDialog):
                 utils.format_seconds(self._durations[i]),
                 title,
             ])
-            item.setFlags(item.flags() | Qt.ItemIsEditable)
+            item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsDragEnabled
+                          | Qt.ItemIsDropEnabled)
             item.setTextAlignment(0, Qt.AlignRight | Qt.AlignVCenter)
             item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
             if not title:
@@ -197,6 +308,68 @@ class EditTracklistDialog(QDialog):
 
         self._refresh()
         self._select(index)
+
+    # --- dragging --------------------------------------------------------
+
+    def drop(self, kind: str, origin: int, row: int, where: str) -> None:
+        """A name dragged onto chapter `row` (ONTO it, or ABOVE or BELOW
+        it), from the table's row `origin` or the unused list's."""
+        n = len(self._titles)
+        if not 0 <= row < n:
+            return
+        if kind == FROM_TABLE:
+            if not 0 <= origin < n:
+                return
+            title = self._titles[origin]
+            if not title:
+                return
+            if where == ONTO and not self._titles[row]:
+                self._titles[row], self._titles[origin] = title, ""
+                target = row
+            else:
+                # Its row once the name has left the one it was on.
+                if where == ONTO:
+                    target = row
+                elif where == ABOVE:
+                    target = row if origin > row else row - 1
+                else:
+                    target = row + 1 if origin > row else row
+                target = max(0, min(target, n - 1))
+                del self._titles[origin]
+                self._titles.insert(target, title)
+        else:
+            if not 0 <= origin < len(self._unused):
+                return
+            title = self._unused.pop(origin)
+            if where == ONTO and not self._titles[row]:
+                self._titles[row] = title
+                target = row
+            else:
+                target = row + 1 if where == BELOW else row
+                self._titles.insert(target, title)
+                # One name too many now: the first gap after it closes up,
+                # else the last name waits in unused.
+                gap = next((i for i in range(target + 1, len(self._titles))
+                            if not self._titles[i]), None)
+                if gap is not None:
+                    del self._titles[gap]
+                else:
+                    pushed = self._titles.pop()
+                    if pushed:
+                        self._unused.insert(0, pushed)
+                target = min(target, n - 1)
+        self._refresh()
+        self._select(target)
+
+    def set_aside(self, row: int) -> None:
+        """A chapter's name dragged out to unused: the chapter is left
+        unnamed, its name kept."""
+        if not 0 <= row < len(self._titles) or not self._titles[row]:
+            return
+        self._unused.append(self._titles[row])
+        self._titles[row] = ""
+        self._refresh()
+        self._select(row)
 
     def _select(self, index: int) -> None:
         if 0 <= index < self.tree.topLevelItemCount():

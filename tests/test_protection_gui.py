@@ -49,6 +49,33 @@ def outcome_for(video, change):
                             ["Disc menu: named 3 chapter(s)"])
 
 
+class TestMarkNamed:
+    def test_its_menu_marks_it_named_and_unmarks_it(self, shelf):
+        from PySide6.QtWidgets import QMenu
+
+        from mediabrowser.gui.list_view import COL_IDENTIFIED
+
+        window, video = shelf
+        menu = QMenu()
+        window._add_folder_actions(menu, "v")
+        mark = menu_texts(menu)["Mark Named"]
+        assert not mark.isChecked()
+        mark.trigger()
+        assert video[naming.MARKED_KEY] is True
+        assert naming.status(video).state == naming.MARKED
+        assert window.list.topLevelItem(0).text(COL_IDENTIFIED).endswith("Marked named")
+        assert autoname.candidates(window.data["videos"].items(), autoname.Options()) == [], \
+            "Identify Library leaves it alone"
+        window.mark_video_named("v", False)
+        assert naming.MARKED_KEY not in video
+
+    def test_a_locked_video_cant_be_marked(self, shelf):
+        window, video = shelf
+        window.set_video_flag("v", "locked", True)
+        window.mark_video_named("v", True)
+        assert naming.MARKED_KEY not in video
+
+
 class TestLocked:
     def test_nothing_changes_it_by_hand(self, shelf, monkeypatch):
         from PySide6.QtWidgets import QInputDialog

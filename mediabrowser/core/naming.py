@@ -44,6 +44,11 @@ UNNAMED = "unnamed"  # none has
 UNSPLIT = "unsplit"  # one chapter, and long: a show never split into songs
 UNVERIFIED = "unverified"  # one chapter, short, named only from its file
 SINGLE = "single"  # one chapter, short, and really named: nothing to do
+MARKED = "marked"  # someone said it's fine as it is, whatever its chapters
+
+# The video's flag for MARKED: a short music video, or one named by hand
+# with a chapter or two left as they were on purpose.
+MARKED_KEY = "marked_named"
 
 # The states that still want work doing.
 NEEDS_WORK = (PARTLY, UNNAMED, UNSPLIT, UNVERIFIED)
@@ -74,7 +79,7 @@ class Status:
     def fraction(self) -> float:
         """How far along, 0 to 1, for sorting: a single short video counts
         as done."""
-        if self.state == SINGLE:
+        if self.state in (SINGLE, MARKED):
             return 1.0
         if self.state == UNSPLIT:
             return 0.0
@@ -85,6 +90,8 @@ class Status:
     def describe(self) -> str:
         if self.state == NAMED:
             return "All named"
+        if self.state == MARKED:
+            return "Marked named"
         if self.state == PARTLY:
             return f"{self.named} of {self.total} named"
         if self.state == UNNAMED:
@@ -96,10 +103,15 @@ class Status:
         return "—"
 
 
-def status(video) -> Status:
+def status(video, marked: bool = True) -> Status:
+    """How far its chapters are named. A video marked named is MARKED
+    whatever its chapters say, unless `marked` is off: what identifying it
+    needs is its chapters' own state."""
     chapters = video.get("chapters") or []
     total = len(chapters)
     named = sum(1 for chapter in chapters if is_named(chapter))
+    if marked and video.get(MARKED_KEY):
+        return Status(MARKED, named, total)
     if total <= 1:
         if (video.get("duration") or 0.0) >= LONG_SINGLE_SECONDS:
             return Status(UNSPLIT, named, total)

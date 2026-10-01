@@ -91,6 +91,15 @@ class TestSession:
         assert tick.moved and queue.current_index() == 2
         assert mpv.calls == [("remove", 0), ("load", "d", (3,), True)]
 
+    def test_choosing_something_new_plays_it_even_when_paused(self):
+        session, mpv, queue = self.session(entry("a", 0), entry("b", 0))
+        session.play()
+        assert ("paused", False) not in mpv.calls, "a new mpv starts playing anyway"
+        mpv.toggle_pause()
+        queue.jump_to(1)
+        session.play()
+        assert mpv.state["paused"] is False and ("start", None) not in mpv.calls[1:]
+
     def test_it_says_when_the_queue_has_played_out_or_mpv_was_closed(self):
         session, mpv, _queue = self.session(entry("a", 0))
         session.play()

@@ -102,3 +102,20 @@ class TestNamedAfterTheFile:
         assert [c["title"] for c in split] == [None, None]
         sheet = marking.MarkSheet(600.0, chapters)
         assert sheet.marks()[0].title is None
+
+
+class TestMarkedNamed:
+    def test_marked_is_named_whatever_its_chapters_say(self):
+        partly = dict(video(["Megitsune", "Chapter 02"]), marked_named=True)
+        status = naming.status(partly)
+        assert status.state == naming.MARKED and not status.needs_work
+        assert status.describe() == "Marked named" and status.fraction == 1.0
+        assert naming.status(partly, marked=False).state == naming.PARTLY
+
+    def test_a_rescan_keeps_the_mark_and_a_reset_clears_it(self):
+        from mediabrowser.core import library, reset
+
+        assert naming.MARKED_KEY in library.CARRIED_OVER_KEYS
+        assert naming.MARKED_KEY in reset.VIDEO_KEYS
+        marked = dict(video(["A", "B"]), marked_named=True)
+        assert "its being marked named" in reset.describe_video(marked)

@@ -13,6 +13,7 @@ COLOURS = {
     naming.UNSPLIT: "#f7768e",
     naming.UNVERIFIED: "#e0af68",
     naming.SINGLE: "#565c69",
+    naming.MARKED: "#9ece6a",
 }
 
 TIPS = {
@@ -25,6 +26,9 @@ TIPS = {
         "checked, rename it, or let Identify Library check it"
     ),
     naming.SINGLE: "A short video in one piece, and named",
+    naming.MARKED: (
+        "Marked named by you: fine as it is, so Identify Library leaves it alone"
+    ),
 }
 
 

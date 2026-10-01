@@ -57,6 +57,7 @@ ORIGIN_MARKED = "marked"  # marked by hand while the video played
 # cover art fell back to a frame grab), or that it had been hidden.
 CARRIED_OVER_KEYS = (
     "musicbrainz_release_id", "hidden", "custom_name", protection.LOCKED, protection.PRIVATE,
+    "marked_named",
 )
 
 # What a video is underneath, whatever chapters it has been given since: a

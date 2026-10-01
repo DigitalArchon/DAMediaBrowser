@@ -59,7 +59,8 @@ METHOD_TEXT = {
     ),
     autoname.AI_LOOK: (
         "AI looks at the video and searches the web",
-        "For what nothing else could name. A few cents a video.",
+        "For what nothing else could name. A few cents a video. It also puts right a "
+        "MusicBrainz search the file's name got wrong, and says which release is the show.",
     ),
     autoname.TRANSLATE: (
         "Romanise titles (AI)",
@@ -349,7 +350,8 @@ class IdentifyDialog(QDialog):
         if not options.methods:
             text += " Choose at least one method."
         elif ai_methods:
-            most = min(options.ai_budget, len(videos) * len(ai_methods))
+            most = min(options.ai_budget,
+                       len(videos) * sum(autoname.AI_REQUESTS[m] for m in ai_methods))
             worst = max(AI_CENTS[m] for m in ai_methods)
             model = self._ai_settings[ai.SETTING_MODEL]
             priced = (f"with {ai.short_model_name(model)}" if model == ai.DEFAULT_MODEL else

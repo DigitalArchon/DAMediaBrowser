@@ -220,3 +220,13 @@ class TestQueueEntriesFor:
         assert [e.title for e in made] == ["One", "Chapter 2"]
         assert [e.duration for e in made] == [100.0, 150.0]
         assert all(e.video_id == "vid" and e.audio_only for e in made)
+
+
+class TestPlayingAs:
+    def test_an_entry_and_the_rest_of_its_video_after_it_switch(self):
+        queue = Queue()
+        queue.set_entries(entries("a", "b", "c") + entries("x", video_id="w"))
+        changed = queue.set_audio_only(1, False)
+        assert changed == [1, 2], "not the chapter before it, nor the next video"
+        assert [e.audio_only for e in queue.entries()] == [True, False, False, True]
+        assert queue.set_audio_only(9, False) == []

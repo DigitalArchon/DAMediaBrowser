@@ -228,3 +228,35 @@ class TestTheLighting:
         dialog.light_check.setChecked(False)
         assert dialog.status.text().startswith("4 chapter(s) estimated from the sound.")
         assert calls["light"] == 1
+
+
+class TestWhatTheVideoHas:
+    def test_it_says_whether_the_chapters_want_only_names_or_finding_too(self, tmp_path):
+        from mediabrowser.core import library
+        from mediabrowser.gui.dialogs.chapters_dialog import situation_text
+
+        chaptered = file_video(tmp_path, 900.0, starts=(0.0, 300.0, 600.0))
+        assert "already has 3 chapters, none of them named" in situation_text(chaptered, True)
+        assert "nothing is moved" in situation_text(chaptered, True)
+        chaptered["chapters"][0].update(title="Megitsune", source="manual")
+        assert "1 of them named" in situation_text(chaptered, True)
+        one_piece = file_video(tmp_path, 3600.0)
+        assert "in one piece" in situation_text(one_piece, True)
+        assert "music stops" in situation_text(one_piece, True)
+        assert "music stops" not in situation_text(one_piece, False)
+        estimated = file_video(tmp_path, 900.0, starts=(0.0, 300.0, 600.0),
+                               origin=library.ORIGIN_ESTIMATED)
+        assert "only estimated" in situation_text(estimated, True)
+
+    def test_the_dialog_shows_it_and_numbers_its_steps(self, window, tmp_path):
+        from mediabrowser.gui.dialogs.chapters_dialog import TAB_MENU, TAB_TRACKLIST
+
+        dialog = dialog_for(window, file_video(tmp_path, 900.0, starts=(0.0, 300.0)))
+        assert "already has 2 chapters" in dialog.situation.text()
+        dialog.tabs.setCurrentIndex(TAB_TRACKLIST)
+        assert dialog.ai_caption.text().startswith("3 · ")
+        disc = file_video(tmp_path, 900.0, starts=(0.0, 300.0), kind="bluray")
+        disc.update(playlist=1, title_idx=0)
+        dialog = dialog_for(window, disc)
+        dialog.tabs.setCurrentIndex(TAB_MENU)
+        assert dialog.ai_caption.text() == "Optional: have the AI check"

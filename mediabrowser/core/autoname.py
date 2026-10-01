@@ -10,7 +10,10 @@ does when a person is there to check:
   keeps it; chapters are only placed afresh for a video in one piece, or
   one whose chapters were only estimated and have no names yet.
 - A MusicBrainz release is only used when its tracks add up to the video,
-  so each is placed where it plays rather than matched by guesswork.
+  so each is placed where it plays rather than matched by guesswork. When
+  the AI is to look at the video too, it also puts right a search the
+  file's name got wrong, and says which of the releases that add up is
+  this show.
 - What the AI marks as a guess can be left out.
 - The state of every video it changes is kept, so a whole run can be undone.
 
@@ -38,6 +41,7 @@ from pathlib import PurePath
 from . import (
     ai,
     ai_chapters,
+    ai_musicbrainz,
     audio_levels,
     chaptergen,
     library,
@@ -60,9 +64,14 @@ FREE_METHODS = (MUSICBRAINZ, AUDIO)
 # What may run for a private video: nothing that sends anything out.
 LOCAL_METHODS = (AUDIO,)
 # How many AI requests identifying one video may make (Just Figure It Out,
-# or Identify from its right-click menu): the menu, a look at the video, a
-# translation, and a retry or two. A few cents at most.
+# or Identify from its right-click menu): the menu, a better MusicBrainz
+# search and a choice or two between its releases, a look at the video and
+# a translation. A few cents at most.
 ONE_VIDEO_AI_BUDGET = 6
+# The most AI requests each method may make for one video. The look at the
+# video brings the AI's help with MusicBrainz along: a choice between
+# releases, a better search, and a choice between what that finds.
+AI_REQUESTS = {MENU: 1, AI_LOOK: 4, TRANSLATE: 1}
 
 LAST_RESORT = "last_resort"
 ACCURATE_FIRST = "accurate_first"
@@ -182,6 +191,12 @@ class Services:
             self._media[release_id] = musicbrainz.get_release_media(release_id, fmt=self._format)
         return self._media[release_id]
 
+    def better_queries(self, video, context, tried, found, settings):
+        return ai_musicbrainz.better_queries(video, context, tried, found, settings)
+
+    def choose_release(self, video, context, candidates, settings):
+        return ai_musicbrainz.choose_release(video, context, candidates, settings)
+
     def levels(self, video, cancel):
         return audio_levels.cached_levels(
             video["path"], library.file_fingerprint(video["path"]),
@@ -217,7 +232,7 @@ class _Work:
     given: dict = field(default_factory=dict)
 
     def status(self) -> naming.Status:
-        return naming.status(dict(self.video, chapters=self.chapters))
+        return naming.status(dict(self.video, chapters=self.chapters), marked=False)
 
     def can_resplit(self) -> bool:
         """Whether its chapters may be placed afresh: one piece, or only an
@@ -261,6 +276,25 @@ class _Work:
                     del self.given[index]
         self.changed = self.changed or bool(filled)
         return filled
+
+
+@dataclass
+class _Fit:
+    """A release whose tracks add up to the video."""
+
+    release: dict
+    picked: list[int]  # the discs that add up
+    tracks: list[dict]
+    media_count: int
+    error: float  # seconds off the video's length
+    recognised: bool  # artist and title in the file's name or folders
+
+    def discs(self) -> str:
+        if self.media_count == 1:
+            return "The release"
+        if len(self.picked) == 1:
+            return f"Disc {self.picked[0] + 1} of {self.media_count}"
+        return f"Discs {self.picked[0] + 1}-{self.picked[-1] + 1} of {self.media_count}"
 
 
 def _plain(text: str | None) -> str:
@@ -419,24 +453,35 @@ class _Step:
         work.changed = True
         self.log(f"MusicBrainz: it's “{recording['title']}” by {recording['artist']}")
 
-    def musicbrainz(self) -> None:
-        video, work = self.video, self.work
-        if work.status().state == naming.UNVERIFIED:
-            self._recording()
-            return
-        duration = video["duration"]
-        query = utils.suggest_search_query(video, self.root)
+    def _ai_helps_search(self) -> bool:
+        """Whether the AI may put a MusicBrainz search right and choose
+        between its releases: when it's to look at the video too, so has
+        been paid for, and there's a request left for it."""
+        return (AI_LOOK in self.options.methods and ai.is_configured(self.settings)
+                and self.budget.remaining > 0)
+
+    def _fits(self, query: str, seen: dict, turned_down: list[str]) -> list[_Fit]:
+        """The releases a search finds whose tracks add up to the video.
+        Without the AI to judge, only those whose artist and title the
+        file's name or folders mention are looked at: each is a request.
+        `seen` (id -> release) has the releases already looked at, and
+        gains these."""
+        video, duration = self.video, self.video["duration"]
         try:
             releases = self.services.search_releases(query)[:RELEASES_TRIED]
         except musicbrainz.MusicBrainzError as exc:
             self.log(f"MusicBrainz: {exc}")
-            return
-        best = None
-        turned_down = []
+            return []
+        judged = self._ai_helps_search()
+        fits = []
         for release in releases:
             self._check()
-            if not (artist_matches(release, video, self.root)
-                    and title_matches(release, video, self.root)):
+            if release["id"] in seen:
+                continue
+            seen[release["id"]] = release
+            recognised = (artist_matches(release, video, self.root)
+                          and title_matches(release, video, self.root))
+            if not recognised and not judged:
                 continue
             try:
                 media = self.services.release_media(release["id"])
@@ -452,12 +497,98 @@ class _Step:
             if owner is not None and owner != video["display_name"]:
                 turned_down.append(f"{release['title']}” already named “{owner}")
                 continue
-            if not agrees_with_names(tracks, work.chapters):
+            if not agrees_with_names(tracks, self.work.chapters):
                 turned_down.append(release["title"])
                 continue
-            error = abs(sum(lengths) - duration)
-            if best is None or error < best[0]:
-                best = (error, release, tracks)
+            fits.append(_Fit(release, picked, tracks, len(media),
+                             abs(sum(lengths) - duration), recognised))
+        return fits
+
+    def _choose(self, fits: list[_Fit]) -> _Fit | None:
+        """The AI's choice of the releases that add up, if it's sure
+        enough of one."""
+        if not fits or not self._ai():
+            return None
+        candidates = [ai_musicbrainz.Candidate(f.release, f.tracks, f.discs(), f.recognised)
+                      for f in fits]
+        try:
+            choice = self.services.choose_release(
+                dict(self.video, chapters=self.work.chapters),
+                ai_chapters.situation_context(self.video, self.root),
+                candidates, self.settings,
+            )
+        except ai.AIError as exc:
+            self.log(f"MusicBrainz: the AI couldn't choose ({exc})")
+            return None
+        names = ", ".join(f"“{f.release['title']}”" for f in fits)
+        if choice.release_id is None:
+            self.log(f"MusicBrainz: the AI says none of {names} is this video"
+                     + (f" ({choice.reason})" if choice.reason else ""))
+            return None
+        if self.options.only_sure and choice.confidence not in SURE:
+            self.log(f"MusicBrainz: the AI was only guessing at {names}, so none is used")
+            return None
+        fit = next(f for f in fits if f.release["id"] == choice.release_id)
+        guess = ", a guess" if choice.confidence not in SURE else ""
+        self.log(f"MusicBrainz: the AI chose “{fit.release['title']}”{guess}"
+                 + (f" - {choice.reason}" if choice.reason else ""))
+        return fit
+
+    def _better_queries(self, tried: list[str], seen: dict) -> list[str]:
+        if not self._ai():
+            return []
+        try:
+            what, queries = self.services.better_queries(
+                dict(self.video, chapters=self.work.chapters),
+                ai_chapters.situation_context(self.video, self.root),
+                tried, list(seen.values()), self.settings,
+            )
+        except ai.AIError as exc:
+            self.log(f"MusicBrainz: the AI couldn't suggest a search ({exc})")
+            return []
+        if queries:
+            self.log("MusicBrainz: the AI"
+                     + (f" thinks it's {what}, and" if what else "")
+                     + " searched " + ", ".join(f"“{q}”" for q in queries))
+        else:
+            self.log("MusicBrainz: the AI had no better search")
+        return queries
+
+    def _release(self) -> tuple[_Fit | None, str, list[str]]:
+        """The release that is this video, the searches made for it, and
+        any that added up but were turned down. With the AI, it puts the
+        search right when the file's name finds nothing, and chooses which
+        release is this show; a release must add up to the video either way."""
+        query = utils.suggest_search_query(self.video, self.root)
+        tried, seen, turned_down = [query], {}, []
+        fits = self._fits(query, seen, turned_down)
+        recognised = [f for f in fits if f.recognised]
+        # Free and certain: the one release the rules recognise.
+        if len(recognised) == 1 and len(fits) == 1:
+            return recognised[0], query, turned_down
+        if self._ai_helps_search():
+            chosen = self._choose(fits)
+            if chosen is not None:
+                return chosen, query, turned_down
+            more = []
+            for better in self._better_queries(tried, seen):
+                tried.append(better)
+                more += self._fits(better, seen, turned_down)
+            if len(more) == 1 and more[0].recognised:
+                chosen = more[0]
+            else:
+                chosen = self._choose(more)
+            return chosen, "”, “".join(tried), turned_down
+        best = min(recognised, key=lambda f: f.error, default=None)
+        return best, query, turned_down
+
+    def musicbrainz(self) -> None:
+        video, work = self.video, self.work
+        if work.status().state == naming.UNVERIFIED:
+            self._recording()
+            return
+        duration = video["duration"]
+        best, query, turned_down = self._release()
         if best is None:
             why = ""
             if turned_down:
@@ -466,11 +597,10 @@ class _Step:
             self.log("MusicBrainz: no release of this show whose tracks add up to this video"
                      f" (searched “{query}”){why}")
             return
-        _error, release, tracks = best
+        release, tracks = best.release, best.tracks
         claimed = getattr(self.services, "claimed", None)
         if claimed is not None:
-            picked = chaptergen.pick_media(self.services.release_media(release["id"]), duration)
-            claimed[(release["id"], tuple(picked))] = video["display_name"]
+            claimed[(release["id"], tuple(best.picked))] = video["display_name"]
         year = f" ({release['date'][:4]})" if release.get("date") else ""
         label = f"“{release['title']}”{year}"
         if work.can_resplit():

@@ -362,6 +362,7 @@ class MainWindow(QMainWindow):
 
         self.queue_panel = QueuePanel()
         self.queue_panel.entry_activated.connect(self.play_queue_entry)
+        self.queue_panel.play_as_requested.connect(self.play_queue_entry_as)
         self.queue_panel.entries_removed.connect(self.remove_from_queue)
         self.queue_panel.order_changed.connect(self.reorder_queue)
         self.queue_panel.playlists_menu = self._fill_playlists_menu
@@ -640,6 +641,12 @@ class MainWindow(QMainWindow):
             )
         self.in_app_action.toggled.connect(self.set_video_in_app)
         play_menu.addAction(self.in_app_action)
+        self.show_video_action = QAction("Show Video", self)
+        self.show_video_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        self.show_video_action.setToolTip("Back to the video playing in the app")
+        self.show_video_action.setEnabled(False)
+        self.show_video_action.triggered.connect(self.show_video_page)
+        play_menu.addAction(self.show_video_action)
         fullscreen_action = QAction("Fullscreen", self)
         fullscreen_action.setShortcut(QKeySequence(Qt.Key_F11))
         fullscreen_action.setToolTip("The video playing in the app, filling the screen")
@@ -1104,6 +1111,16 @@ class MainWindow(QMainWindow):
         self._refresh_queue()
         self.play_chapter(entry.video_id, entry.chapter_index, entry.audio_only)
 
+    def play_queue_entry_as(self, entry_index: int, audio_only: bool) -> None:
+        """Play a queued chapter as audio or as video, whichever it was
+        queued as - and the rest of its video after it the same way."""
+        self.queue.set_audio_only(entry_index, audio_only)
+        entry = self.queue.jump_to(entry_index)
+        if entry is None:
+            return
+        self._refresh_queue()
+        self.play_chapter(entry.video_id, entry.chapter_index, entry.audio_only)
+
     def remove_from_queue(self, entry_indices) -> None:
         if isinstance(entry_indices, int):
             entry_indices = [entry_indices]
@@ -1184,6 +1201,7 @@ class MainWindow(QMainWindow):
             return
         self._refresh_queue()
         self._show_now_playing()
+        self.now_playing_bar.set_paused(False)
         self._poll.start()
         if in_app and not segment.audio_only:
             self.show_video_page()
@@ -1218,10 +1236,11 @@ class MainWindow(QMainWindow):
                 and self.now_playing is not None and not self.now_playing[2])
 
     def _update_video_controls(self) -> None:
+        here = self._video_playing_here()
         self.now_playing_bar.set_video_controls(
-            self._video_playing_here(), self.pages.currentIndex() == PAGE_VIDEO,
-            self._fullscreen,
+            here, self.pages.currentIndex() == PAGE_VIDEO, self._fullscreen,
         )
+        self.show_video_action.setEnabled(here)
 
     def toggle_play_pause(self) -> None:
         if self.editor.active():
@@ -1807,6 +1826,16 @@ class MainWindow(QMainWindow):
         rename.setEnabled(not locked)
         rename.triggered.connect(lambda: self.rename_video(video_id))
         menu.addAction(rename)
+        marked = QAction("Mark Named", menu)
+        marked.setCheckable(True)
+        marked.setChecked(bool(video.get(naming.MARKED_KEY)))
+        marked.setToolTip(
+            "It's fine as it is - shown as Marked named, and Identify Library leaves "
+            "it alone, even with chapters left unnamed"
+        )
+        marked.setEnabled(not locked)
+        marked.toggled.connect(lambda on: self.mark_video_named(video_id, on))
+        menu.addAction(marked)
         reset_video = QAction("Reset to Defaults…", menu)
         reset_video.setToolTip(
             "Clear its names, chapters made here and the name you gave it, and read "
@@ -1988,6 +2017,20 @@ class MainWindow(QMainWindow):
             return
         library.set_custom_name(video, name)
         self._save_and_refresh()
+
+    def mark_video_named(self, video_id: str, on: bool) -> None:
+        """Count a video as named whatever its chapters say - or not."""
+        video = self.data["videos"].get(video_id)
+        if video is None or self._refuse_locked(video_id):
+            return
+        if on:
+            video[naming.MARKED_KEY] = True
+        else:
+            video.pop(naming.MARKED_KEY, None)
+        self._save_and_refresh()
+        self._set_status(
+            f"{video['display_name']} is {'now marked' if on else 'no longer marked'} named."
+        )
 
     def remove_video(self, video_id: str) -> None:
         video = self.data["videos"].get(video_id)

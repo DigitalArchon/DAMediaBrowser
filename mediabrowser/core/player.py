@@ -281,7 +281,10 @@ class Player:
         return self._send(["cycle", "pause"])
 
     def set_paused(self, paused):
-        return self._send(["set_property", "pause", bool(paused)])
+        # Waited for, unlike the other transport commands: a session sets it
+        # just before loading the next file, and a command sent without
+        # waiting can arrive after that load.
+        self._call(["set_property", "pause", bool(paused)])
 
     def seek(self, seconds):
         """Jump to an absolute position, in seconds from the file's start.

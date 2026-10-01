@@ -215,7 +215,10 @@ while a disc's second copy of the same video (the feature again without
 its chapters, say) is left out. **Rename…** on any video's right-click
 menu gives an extra a proper name ("Title 5" becomes "Behind the
 Scenes"), kept across rescans; an empty name goes back to the scanned
-one. **Hide This Title** takes away any you don't want.
+one. **Hide This Title** takes away any you don't want. **Mark Named**
+says a video is fine as it is — a short music video, or one named by hand
+with a chapter or two left on purpose: it shows green as *Marked named*,
+and Identify Library leaves it alone.
 
 **Searching** matches video names and chapter names. It switches to the list
 and puts the chapters that matched underneath their video, so a song you can
@@ -227,39 +230,49 @@ using.
 Chapters** to do a whole video at once.
 
 **Just Figure It Out**, at the top, does the whole job for you: it reads
-the disc's menu if there is one, looks the show up on MusicBrainz,
-measures the audio and has the AI look at the video — as many of those as
+the disc's menu if there is one, looks the show up on MusicBrainz (the AI
+fixing the search when the file's name finds nothing, and picking which
+release is this show), measures the audio and has the AI look at the video — as many of those as
 this video turns out to need, the most accurate first. It uses the AI (a
 few cents), shows everything it found and where each name came from, and
 changes nothing until Apply.
 
-Or do it a step at a time, from the easiest to the hardest:
+Or do it yourself. A box at the top says what this video already has, as
+that decides what a tracklist does for it: **chapters that only want names**
+(a disc's or file's own — a tracklist names them where they are, and nothing
+moves), **chapters only estimated** from the audio (a tracklist with lengths
+can place them afresh), or **one piece** with no chapters at all (they have
+to be found as well as named).
 
-0. **Extract Disc Menu** — for a Blu-ray title, this tab (the one it
-   opens on) is the best source there is: the disc's own
-   scene-selection menu, its makers' list of the songs. The app decodes
-   the menu from the disc itself, works out exactly which chapter each
-   button plays by running the disc's navigation commands in a sandbox,
-   draws each button highlighted as a player would, and has the AI read
-   the text off it — so the names are the disc's, on the chapters the
-   disc puts them on, with nothing matched or guessed. Chapters no
-   button plays (the story films between songs, an encore break, the
-   credits) are named by the AI's judgement and marked as such. It
-   needs a Nano-GPT key for the reading, costs a cent or two with
-   Sonnet, and takes about half a minute. Discs whose menus are written
-   in Java (BD-J) can't be read this way yet, and a rip to a single file
-   has left its menus behind — for a file the tab is switched off and
-   says *Blu-ray only*.
-1. **Tracklist** — one page, easiest first: look the show up on
-   MusicBrainz; failing that, **Paste a Tracklist** from anywhere (a
-   sleeve, setlist.fm; durations optional); failing that, neither — a
-   video file's chapters are then found from the audio as soon as the
-   dialog opens, and a tracklist given later takes over. The search opens
+**Extract Blu-ray Menu** — for a Blu-ray title, this tab (the one it
+opens on) is the best source there is: the disc's own
+scene-selection menu, its makers' list of the songs. The app decodes
+the menu from the disc itself, works out exactly which chapter each
+button plays by running the disc's navigation commands in a sandbox,
+draws each button highlighted as a player would, and has the AI read
+the text off it — so the names are the disc's, on the chapters the
+disc puts them on, with nothing matched or guessed. Chapters no
+button plays (the story films between songs, an encore break, the
+credits) are named by the AI's judgement and marked as such. It
+needs a Nano-GPT key for the reading, costs a cent or two with
+Sonnet, and takes about half a minute. Discs whose menus are written
+in Java (BD-J) can't be read this way yet, DVDs aren't read at all, and
+a rip to a single file has left its menus behind — for anything but a
+Blu-ray the tab is switched off and says so.
+
+**Tracklist** — three steps:
+
+1. **Get a tracklist**, any one of three ways: look the show up on
+   MusicBrainz; or **Paste a Tracklist** from anywhere (a sleeve,
+   setlist.fm; durations optional); or go without — a video file in one
+   piece then has its chapters found from the audio as soon as the dialog
+   opens, and a tracklist given later takes over. The search opens
    pre-filled from the file and folder names and only runs when you press
    Search, since MusicBrainz rate-limits hard. For a box set, only the discs
    whose lengths add up to the video are ticked, so songs aren't taken from
    another night's show.
-2. **It picks the best way to use it**, and says which — you can switch:
+2. **Make the chapters from it.** It picks the best way, and says which —
+   you can switch:
    - **Name the existing chapters**, when the video came with its own (a
      disc's chapters sit where its author put them). When the tracks are
      the whole video, each song is named on the chapter where its CD track
@@ -280,14 +293,17 @@ Or do it a step at a time, from the easiest to the hardest:
 
    The audio and lighting are only measured when needed — the audio starts
    in the background while you search — and once per session.
-3. **Then ask the AI to look and check** (optional, see below). It sends
+3. **Optionally, have the AI check** — not needed when the tracklist fits;
+   worth it with no tracklist, names missing or in another script, or to
+   check where chapters start (see below). It sends
    the proposal, the tracklist and a few frames of the video to a model
    that can read the song's caption off the screen, recall the setlist,
    and give the titles as the songs are known in English (see below).
-4. **Apply.** Nothing changes until then, and the whole proposal is shown
-   first. Chapters the app made are stored in its library only, never
-   written into the file. Starts found from the audio are marked `~` until
-   you fix them.
+
+Then **Apply.** Nothing changes until then, and the whole proposal is shown
+first. Chapters the app made are stored in its library only, never
+written into the file. Starts found from the audio are marked `~` until
+you fix them.
 
 **Asking the AI.** All of the matching above goes on times and text, and
 gets things wrong: a chapter named for the song after it, a breakdown
@@ -374,7 +390,7 @@ choose which methods it may use:
 | MusicBrainz tracklists | free; only used when a release's tracks add up to the video |
 | Split videos in one piece where the music stops | free; the chapters still need names |
 | Read Blu-ray menus | AI; the disc's own names, a cent or two a disc |
-| AI looks at the video and searches the web | AI; a few cents a video |
+| AI looks at the video and searches the web | AI; a few cents a video. It also corrects a MusicBrainz search the file's name got wrong, and picks which release is the show |
 | Romanise titles | AI; as known in English (Iine!, not "So Good"); a fraction of a cent |
 
 and whether the AI is **only a last resort** (free methods first, AI for
@@ -393,7 +409,11 @@ rescan waits until it's done). **Undo Last Identification** puts back
 every video the last run changed.
 
 **Edit Tracklist** fixes names that came out shifted — shift them up or down
-rather than retyping; a name pushed off the end waits in "unused".
+rather than retyping; a name pushed off the end waits in "unused". Or drag a
+name to the chapter it belongs on: the chapters stay where they are and only
+the names move. Dropped on an unnamed chapter it fills it; dropped on a named
+one, or between two, the names in between close up. Names can be dragged out
+to "unused" and back in.
 
 The dot beside each chapter says where its name came from: green for one you
 typed, teal from the disc's own menu, blue from MusicBrainz, purple from the
@@ -439,15 +459,20 @@ in the App*, on by default), with the transport bar below it. **Fullscreen**
 (`F11`, or `F` with the video focused) fills the screen with the picture
 alone; the transport bar comes back while the mouse moves, and `Esc`
 leaves. **Back** leaves the video playing out of sight, and **Show Video**
-on the transport bar brings it back. To play one video in mpv's own window
+on the transport bar brings it back — so does clicking the cover or title
+of what's playing, or Playback → **Show Video** (`Ctrl+Shift+V`).
+Double-clicking the playing row in the queue starts it again. To play one video in mpv's own window
 instead, choose **Play Video in mpv's Own Window** — on every right-click
 menu, and on the arrow beside the detail page's **Play Video** — or untick
 the setting to make that the default (the menus then offer *Play Video in
 the App*). mpv's own window stays open from one video to the next. (On a desktop where the app runs on Wayland itself rather than
 XWayland, video always plays in mpv's own window.)
 
-**The queue.** Ctrl- or Shift-click several rows to **Remove** them at once
-(or press `Delete`), and drag rows — one or several — to reorder. Whatever
+**The queue.** Double-clicking a row plays it the way it was queued; its
+right-click menu can play it as **audio** or **video** instead, along with
+the rest of its video after it. Ctrl- or Shift-click several rows to
+**Remove** them at once (or press `Delete`), and drag rows — one or
+several — to reorder. Choosing something to play while paused plays it. Whatever
 you do to the queue while it plays, what's playing carries on and what
 comes next follows the change.
 

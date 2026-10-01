@@ -8,13 +8,16 @@ the AI, as many of them as this video turns out to need (core.autoname).
 
 Otherwise it's done a step at a time. A Blu-ray title's own
 scene-selection menu names its songs, and each button says which chapter
-it plays (core.menu_chapters), so Extract Disc Menu reads that and a model
-transcribes each button.
+it plays (core.menu_chapters), so Extract Blu-ray Menu reads that and a
+model transcribes each button.
 
-The Tracklist tab goes from the easiest way to the hardest on one page:
-look the show up on MusicBrainz; failing that, paste a tracklist; failing
-that, no tracklist at all, and a video file's chapters are found from the
-audio. Whatever tracklist there is, core.methods picks the best way to use
+The Tracklist tab is three steps. 1: get a tracklist, whichever way there
+is - look the show up on MusicBrainz, paste one, or go without, and a
+video file's chapters are found from the audio. 2: make the chapters from
+it. 3, if it's wanted: have the AI check. What the video already has -
+chapters wanting only names, or nothing at all - is said at the top, as it
+decides what a tracklist does. Whatever tracklist there is, core.methods
+picks the best way to use
 it - naming the existing chapters, placing them by the lengths (then
 splitting each song's intro off using the audio), or detecting them from
 the audio and lighting. The choice can be overridden. The audio and
@@ -39,6 +42,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -49,7 +53,9 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSpinBox,
+    QSplitter,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -66,6 +72,7 @@ from mediabrowser.core import (
     menu_chapters,
     methods,
     musicbrainz,
+    naming,
     proposal,
     store,
     utils,
@@ -74,8 +81,8 @@ from mediabrowser.gui import audio_analysis
 from mediabrowser.gui.worker import run_job
 
 TAB_MENU, TAB_TRACKLIST = range(2)
-MENU_TAB = "Extract Disc Menu"
-MENU_TAB_OFF = "Extract Disc Menu (Blu-ray only)"
+MENU_TAB = "Extract Blu-ray Menu"
+MENU_TAB_OFF = "Extract Blu-ray Menu (not a Blu-ray)"
 
 METHOD_LABELS = {
     methods.NAME: "Name the existing chapters",
@@ -113,10 +120,21 @@ LOOK_UP_HINT = (
     "Most concerts are on MusicBrainz. Check the search - add the artist or the "
     "album if it's missing - then press Search. It limits how often it can be asked."
 )
-NO_TRACKLIST = (
-    "No tracklist anywhere? Leave both empty: a video file's chapters are then found "
-    "from where the music stops between songs, and the AI below - or Manual Edit - "
-    "can name them."
+NO_TRACKLIST_CHAPTERED = (
+    "No tracklist anywhere? The chapters stay where they are, unnamed: step 3's AI "
+    "can name them, or name them by hand in Manual Edit."
+)
+NO_TRACKLIST_ONE_PIECE = (
+    "No tracklist anywhere? Leave both empty: the chapters are then found from where "
+    "the music stops between songs, and step 3's AI - or Manual Edit - can name them."
+)
+NO_TRACKLIST_DISC = (
+    "No tracklist anywhere? Step 3's AI can look at the video, or mark the songs by "
+    "hand in Manual Edit."
+)
+AI_OPTIONAL = (
+    "Not needed when the tracklist fits. Worth it with no tracklist, when names are "
+    "missing or in another script, or to check where the chapters start."
 )
 PRIVATE_NOTE = (
     "This video is private: nothing about it goes to MusicBrainz or the AI. Paste a "
@@ -149,6 +167,13 @@ MENU_NOT_A_DISC = (
 )
 MENU_PICTURE_HEIGHT = 220
 
+# The dialog's first size, at most this much of the screen.
+DEFAULT_SIZE = (1000, 1120)
+MIN_WIDTH = 640
+SCREEN_FRACTION = 0.9
+# What the result table keeps however far the steps above are opened.
+RESULT_MIN_HEIGHT = 240
+
 AI_HEADERS = ["Chapter", "Starts", "Title", "Notes"]
 CONFIDENCE_COLOURS = {"medium": "#e0af68", "low": "#f7768e"}
 AI_NOT_SET_UP = "Set a Nano-GPT API key in AI Settings to have a model look at the video."
@@ -162,13 +187,45 @@ TOTAL_WARNING_FRACTION = 0.03
 TOTAL_WARNING_MIN_SECONDS = 30.0
 
 
+def situation_text(video, can_analyse: bool) -> str:
+    """What this video already has, and so what a tracklist does for it:
+    chapters wanting only names, estimates that may be placed afresh, or
+    one piece where the chapters must be found too."""
+    chapters = video["chapters"]
+    total = len(chapters)
+    named = naming.status(video, marked=False).named
+    if total <= 1:
+        found = ("Without lengths, or without a tracklist, they're found from where the "
+                 "music stops between songs." if can_analyse else
+                 "Without lengths, the AI or Manual Edit can mark them.")
+        return ("This video is in one piece: it has no chapters yet, so they have to be "
+                "found as well as named. A tracklist with lengths places them. " + found)
+    if video.get("chapter_origin") == library.ORIGIN_ESTIMATED and not named:
+        return (f"This video's {total} chapters were only estimated from the audio, and "
+                "nothing is named yet. A tracklist with lengths can place them afresh; "
+                "otherwise it names them where they are.")
+    if named == total:
+        return (f"This video's {total} chapters are all named already. A tracklist would "
+                "rename them where they are.")
+    have = f"{named} of them named" if named else "none of them named"
+    return (f"This video already has {total} chapters, {have}. They're where the disc or "
+            "file put them, so they only want names: a tracklist names them where they "
+            "are, and nothing is moved.")
+
+
 class ChaptersDialog(QDialog):
     def __init__(self, parent, video, library_root=None, private: bool = False) -> None:
         super().__init__(parent)
         self.setWindowTitle("Detect Chapters")
         self.setModal(True)
-        self.resize(820, 900)
-        self.setMinimumWidth(640)
+        self.setMinimumWidth(MIN_WIDTH)
+        screen = (parent.screen() if parent is not None else QApplication.primaryScreen())
+        room = screen.availableGeometry() if screen is not None else None
+        width, height = DEFAULT_SIZE
+        if room is not None:
+            width = min(width, int(room.width() * SCREEN_FRACTION))
+            height = min(height, int(room.height() * SCREEN_FRACTION))
+        self.resize(width, height)
 
         self.video = video
         self._library_root = library_root
@@ -230,8 +287,12 @@ class ChaptersDialog(QDialog):
         figure_row.setSpacing(10)
         figure_row.addWidget(self.figure_button, 0, Qt.AlignTop)
         figure_row.addWidget(self.figure_note, 1)
-        step_caption = QLabel("Or a step at a time")
+        step_caption = QLabel("Or do it yourself")
         step_caption.setObjectName("sectionCaption")
+        self.situation = QLabel(situation_text(self.video, self._can_analyse))
+        self.situation.setObjectName("situationLabel")
+        self.situation.setWordWrap(True)
+        self.situation.setMinimumWidth(1)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_menu_tab(), MENU_TAB)
@@ -405,10 +466,14 @@ class ChaptersDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
-        how = QLabel("How")
-        how.setObjectName("sectionCaption")
-        ai_caption = QLabel("Then ask the AI to look and check")
-        ai_caption.setObjectName("sectionCaption")
+        how = QLabel("2 · Make the chapters from it")
+        how.setObjectName("stepCaption")
+        self.ai_caption = QLabel("3 · Optional: have the AI check")
+        self.ai_caption.setObjectName("stepCaption")
+        self.ai_optional = QLabel(AI_OPTIONAL)
+        self.ai_optional.setObjectName("hintLabel")
+        self.ai_optional.setWordWrap(True)
+        self.ai_optional.setMinimumWidth(1)
 
         # Naming and placing is the Tracklist tab's; the menu's reading is
         # the disc's own, with nothing to choose.
@@ -421,21 +486,70 @@ class ChaptersDialog(QDialog):
         how_layout.addLayout(options_row)
         how_layout.addWidget(self.method_hint)
 
+        # The steps scroll rather than squeeze: squeezed, wrapped hints
+        # overprint one another. The result below keeps its own share, and
+        # the line between them can be dragged.
+        steps = QWidget()
+        steps_layout = QVBoxLayout(steps)
+        steps_layout.setContentsMargins(0, 0, 4, 0)
+        steps_layout.setSpacing(8)
+        steps_layout.addLayout(figure_row)
+        steps_layout.addWidget(step_caption)
+        steps_layout.addWidget(self.situation)
+        steps_layout.addWidget(self.tabs)
+        steps_layout.addWidget(self.how_section)
+        steps_layout.addWidget(self.ai_caption)
+        steps_layout.addWidget(self.ai_optional)
+        steps_layout.addLayout(ai_row)
+        steps_layout.addLayout(ai_ask_row)
+        steps_layout.addStretch(1)
+        self.steps_area = QScrollArea()
+        self.steps_area.setWidgetResizable(True)
+        self.steps_area.setFrameShape(QFrame.NoFrame)
+        self.steps_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.steps_area.setWidget(steps)
+
+        result = QWidget()
+        result_layout = QVBoxLayout(result)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        result_layout.setSpacing(8)
+        result_layout.addWidget(self.progress)
+        result_layout.addWidget(self.table_caption)
+        result_layout.addWidget(self.tree, 1)
+        result_layout.addWidget(self.status)
+        result.setMinimumHeight(RESULT_MIN_HEIGHT)
+
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(self.steps_area)
+        self.splitter.addWidget(result)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
-        layout.addLayout(figure_row)
-        layout.addWidget(step_caption)
-        layout.addWidget(self.tabs)
-        layout.addWidget(self.how_section)
-        layout.addWidget(ai_caption)
-        layout.addLayout(ai_row)
-        layout.addLayout(ai_ask_row)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.table_caption)
-        layout.addWidget(self.tree, 1)
-        layout.addWidget(self.status)
+        layout.addWidget(self.splitter, 1)
         layout.addWidget(buttons)
+        QTimer.singleShot(0, self._fit_steps)
+
+    def _fit_width(self) -> None:
+        """Scrolling hides how wide the steps need to be; the window keeps
+        to it, as it is now (which options show depends on the method)."""
+        scrollbar = self.steps_area.verticalScrollBar().sizeHint().width()
+        needed = self.steps_area.widget().minimumSizeHint().width() + scrollbar + 24
+        self.setMinimumWidth(max(MIN_WIDTH, needed))
+
+    def _fit_steps(self) -> None:
+        """Give the steps all the room they ask for that the result can
+        spare - again whenever they grow (results found, a tracklist
+        pasted)."""
+        total = sum(self.splitter.sizes())
+        if total <= 0:
+            return
+        wanted = self.steps_area.widget().sizeHint().height() + 4
+        top = max(0, min(wanted, total - RESULT_MIN_HEIGHT))
+        self.splitter.setSizes([top, total - top])
 
     def _build_menu_tab(self) -> QWidget:
         tab = QWidget()
@@ -470,9 +584,12 @@ class ChaptersDialog(QDialog):
         return tab
 
     def _build_tracklist_tab(self) -> QWidget:
-        """Easiest first: look it up; else paste one; else go without."""
+        """Step 1, three ways round, easiest first: look it up; else paste
+        one; else go without."""
         tab = QWidget()
-        look_caption = QLabel("1 · Look it up")
+        get_caption = QLabel("1 · Get a tracklist - any one of these")
+        get_caption.setObjectName("stepCaption")
+        look_caption = QLabel("Look it up on MusicBrainz")
         look_caption.setObjectName("sectionCaption")
         self.query = QLineEdit(utils.suggest_search_query(self.video, self._library_root))
         self.query.setPlaceholderText("Artist and album…")
@@ -506,14 +623,17 @@ class ChaptersDialog(QDialog):
 
         self.results = QListWidget()
         self.results.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.results.setMaximumHeight(110)
+        # A search gives up to ten; enough of them in sight to choose from.
+        self.results.setMinimumHeight(150)
+        self.results.setMaximumHeight(220)
         self.results.itemSelectionChanged.connect(self._on_release_selected)
         self.results.hide()
 
         self.media_caption = QLabel("Discs making up this video")
         self.media_caption.setObjectName("sectionCaption")
         self.media_list = QListWidget()
-        self.media_list.setMaximumHeight(90)
+        self.media_list.setMinimumHeight(70)
+        self.media_list.setMaximumHeight(150)
         self.media_list.itemChanged.connect(lambda _item: self._on_discs_changed())
         self.media_caption.hide()
         self.media_list.hide()
@@ -526,7 +646,7 @@ class ChaptersDialog(QDialog):
             for widget in (self.query, self.search_button, self.xml_radio, self.json_radio):
                 widget.setEnabled(False)
 
-        paste_caption = QLabel("2 · Or paste one")
+        paste_caption = QLabel("Or paste one")
         paste_caption.setObjectName("sectionCaption")
         self.paste_toggle = QPushButton("Paste a Tracklist…")
         self.paste_toggle.setCheckable(True)
@@ -572,15 +692,20 @@ class ChaptersDialog(QDialog):
         paste_row.addStretch(1)
         paste_row.addWidget(self.paste_toggle)
 
-        none_caption = QLabel("3 · Or neither")
+        none_caption = QLabel("Or go without")
         none_caption.setObjectName("sectionCaption")
-        none_label = QLabel(NO_TRACKLIST)
+        if len(self.video["chapters"]) > 1:
+            without = NO_TRACKLIST_CHAPTERED
+        else:
+            without = NO_TRACKLIST_ONE_PIECE if self._can_analyse else NO_TRACKLIST_DISC
+        none_label = QLabel(without)
         none_label.setObjectName("hintLabel")
         none_label.setWordWrap(True)
 
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
+        layout.addWidget(get_caption)
         layout.addWidget(look_caption)
         layout.addLayout(query_row)
         layout.addLayout(format_row)
@@ -602,6 +727,7 @@ class ChaptersDialog(QDialog):
         self.paste_toggle.setText("Hide the Tracklist" if shown else "Paste a Tracklist…")
         if shown:
             self.paste.setFocus()
+        QTimer.singleShot(0, self._fit_steps)
 
     # --- results ---------------------------------------------------------
 
@@ -670,6 +796,7 @@ class ChaptersDialog(QDialog):
             f"{len(results)} release(s) found. Pick one." if results else
             "Nothing found. Try the artist and album alone - or paste a tracklist below."
         )
+        QTimer.singleShot(0, self._fit_steps)
         for release in results:
             count = f"{release['track_count']} tracks" if release["track_count"] else "? tracks"
             item = QListWidgetItem(
@@ -730,6 +857,7 @@ class ChaptersDialog(QDialog):
         several = len(media) > 1
         self.media_caption.setVisible(several)
         self.media_list.setVisible(several)
+        QTimer.singleShot(0, self._fit_steps)
         self.mb_status.setText(f"{len(self._mb_tracks)} tracks on {len(media)} disc(s).")
         self.refresh()
 
@@ -885,12 +1013,19 @@ class ChaptersDialog(QDialog):
     def refresh(self) -> None:
         tracks = self.tracks()
         self._update_method(tracks)
+        # Once the options shown or hidden have been laid out.
+        QTimer.singleShot(0, self._fit_width)
         self._result = None
         # Anything changing underneath the model's answer makes it stale.
         self._ai_result = None
         self.apply_button.setEnabled(False)
         self.tree.clear()
-        self.how_section.setVisible(self.tabs.currentIndex() == TAB_TRACKLIST)
+        tracklist = self.tabs.currentIndex() == TAB_TRACKLIST
+        self.how_section.setVisible(tracklist)
+        # Numbered where it's the third step; the menu tab has no second.
+        self.ai_caption.setText(
+            ("3 · " if tracklist else "") + "Optional: have the AI check"
+        )
         self._update_figure_controls()
 
         if self._figured is not None:
