@@ -17,7 +17,7 @@ LICENSE_URL = "https://www.gnu.org/licenses/gpl-3.0.html"
 
 def about_text() -> str:
     return (
-        f"<h3>Media Chapter Browser {config.VERSION}</h3>"
+        f"<h3>DA Media Browser {config.VERSION}</h3>"
         "<p>Browse, name and play the chapters of video files and Blu-ray discs.</p>"
         f'<p><a href="{config.PROJECT_URL}">{config.PROJECT_URL}</a></p>'
         f"<p>Copyright © {config.COPYRIGHT}</p>"
@@ -37,4 +37,4 @@ def about_text() -> str:
 
 
 def show_about(parent: QWidget) -> None:
-    QMessageBox.about(parent, "About Media Chapter Browser", about_text())
+    QMessageBox.about(parent, "About DA Media Browser", about_text())

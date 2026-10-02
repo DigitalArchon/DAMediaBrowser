@@ -4,7 +4,7 @@
 import os
 from pathlib import Path
 
-APP_NAME = "media-chapter-browser"
+APP_NAME = "da-media-browser"
 
 
 def _data_home() -> Path:
@@ -67,12 +67,12 @@ VERSION = _version()
 COPYRIGHT = "2026 Digital Archon"
 
 MUSICBRAINZ_BASE_URL = "https://musicbrainz.org/ws/2"
-PROJECT_URL = "https://github.com/DigitalArchon/MediaChapterBrowser"
+PROJECT_URL = "https://github.com/DigitalArchon/DAMediaBrowser"
 # MusicBrainz takes a web page as the contact as readily as an address.
 MUSICBRAINZ_CONTACT = PROJECT_URL
 # MusicBrainz asks every application to say what it is, which version, and
 # how its maintainers can be reached; it blocks what it can't identify.
-MUSICBRAINZ_USER_AGENT = f"MediaChapterBrowser/{VERSION} ( {MUSICBRAINZ_CONTACT} )"
+MUSICBRAINZ_USER_AGENT = f"DAMediaBrowser/{VERSION} ( {MUSICBRAINZ_CONTACT} )"
 
 MPV_BINARY = "mpv"
 

@@ -1,7 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Digital Archon
    SPDX-License-Identifier: GPL-3.0-or-later */
 
-/* Media Chapter Browser dark theme.
+/* DA Media Browser dark theme.
  *
  * Adapted from StoryLoom's style.qss so the two apps read as a pair: same
  * surfaces, same accent, same radius ladder, same letterspaced small-caps

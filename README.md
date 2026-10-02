@@ -1,4 +1,4 @@
-# Media Chapter Browser
+# DA Media Browser
 
 I made this for myself, because I have a large collection of blu ray concerts
 that I've ripped onto my NAS.
@@ -36,7 +36,7 @@ using AI tools.
 > a **USD per day** cap on each key in its dashboard, and since its credit
 > is prepaid, keeping only a small balance on the account caps it too.
 
-![Media Chapter Browser: a library of concert videos as tiles, with a playlist of chapters queued and one playing](docs/screenshot.png)
+![DA Media Browser: a library of concert videos as tiles, with a playlist of chapters queued and one playing](docs/screenshot.png)
 
 <sub>The library shown is made up: fictional bands, generated covers.</sub>
 
@@ -65,14 +65,14 @@ The app checks for these at startup and tells you what is missing.
 ### AppImage
 
 A single file, nothing to install. Download it from the
-[Releases](https://github.com/DigitalArchon/MediaChapterBrowser/releases) page, or build
+[Releases](https://github.com/DigitalArchon/DAMediaBrowser/releases) page, or build
 it from a clone:
 
 ```
-git clone https://github.com/DigitalArchon/MediaChapterBrowser.git && cd MediaChapterBrowser
-bash packaging/appimage/build.sh     # -> dist/MediaChapterBrowser-<version>-x86_64.AppImage
-chmod +x dist/MediaChapterBrowser-*.AppImage
-./dist/MediaChapterBrowser-*.AppImage
+git clone https://github.com/DigitalArchon/DAMediaBrowser.git && cd DAMediaBrowser
+bash packaging/appimage/build.sh     # -> dist/DAMediaBrowser-<version>-x86_64.AppImage
+chmod +x dist/DAMediaBrowser-*.AppImage
+./dist/DAMediaBrowser-*.AppImage
 ```
 
 The build is reproducible: a given commit always makes the same AppImage,
@@ -100,7 +100,7 @@ To put it in your desktop menu:
 ```
 mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
 cp packaging/mediabrowser.svg ~/.local/share/icons/hicolor/scalable/apps/
-sed "s|^Exec=.*|Exec=$PWD/dist/$(cd dist && ls MediaChapterBrowser-*.AppImage)|; \
+sed "s|^Exec=.*|Exec=$PWD/dist/$(cd dist && ls DAMediaBrowser-*.AppImage)|; \
      /^#/d; \$aIcon=mediabrowser" mediabrowser.desktop \
   > ~/.local/share/applications/mediabrowser.desktop
 update-desktop-database ~/.local/share/applications 2>/dev/null || true
@@ -523,7 +523,7 @@ it.
 
 ## Where things are kept
 
-Under `$XDG_DATA_HOME/media-chapter-browser` (`~/.local/share/...` by
+Under `$XDG_DATA_HOME/da-media-browser` (`~/.local/share/...` by
 default):
 
 ```
@@ -565,7 +565,7 @@ come from.
 
 ## Licence
 
-Media Chapter Browser is free software: you can redistribute it and/or modify
+DA Media Browser is free software: you can redistribute it and/or modify
 it under the terms of the [GNU General Public License](LICENSE) as published
 by the Free Software Foundation, either version 3 of the License, or (at your
 option) any later version. It comes with no warranty. Each source file says

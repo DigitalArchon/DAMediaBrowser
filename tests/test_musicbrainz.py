@@ -99,7 +99,7 @@ class TestTheirTerms:
     def test_it_says_which_version_it_is_and_how_to_reach_us(self):
         from mediabrowser.core import config
 
-        assert config.MUSICBRAINZ_USER_AGENT.startswith(f"MediaChapterBrowser/{config.VERSION} (")
+        assert config.MUSICBRAINZ_USER_AGENT.startswith(f"DAMediaBrowser/{config.VERSION} (")
         assert config.VERSION[0].isdigit()
         assert config.MUSICBRAINZ_USER_AGENT.endswith(f"( {config.PROJECT_URL} )")
 

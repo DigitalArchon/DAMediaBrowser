@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Media Chapter Browser. Drawn in the app's own palette (style.qss):
+<!-- DA Media Browser. Drawn in the app's own palette (style.qss):
      #16181d ground, #2b3040 frame, #3b4356 timeline, #7aa2f7 accent.
      A play mark over a timeline split into chapters - which is what the
      app is for: finding the chapter, not the file. -->

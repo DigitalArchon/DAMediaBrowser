@@ -159,7 +159,7 @@ def read(path) -> dict:
     if (not isinstance(data, dict) or not isinstance(data.get("videos"), dict)
             or not isinstance(data.get("settings"), dict)
             or not data["settings"].get("library_root")):
-        raise CatalogError("That file isn't a Media Chapter Browser catalog.")
+        raise CatalogError("That file isn't a DA Media Browser catalog.")
     data.pop(FORMAT_KEY, None)
     return data
 

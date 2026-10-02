@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Digital Archon
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build Media Chapter Browser as a single-file AppImage:
-#   dist/MediaChapterBrowser-<version>-x86_64.AppImage
+# Build DA Media Browser as a single-file AppImage:
+#   dist/DAMediaBrowser-<version>-x86_64.AppImage
 #
 # Runs on any x86_64 Linux with bash, curl, dpkg-deb and sha256sum. Downloads
 # (HTTPS only, each checked where a checksum can be pinned) are cached in
@@ -39,11 +39,11 @@ REPO="$(cd "$HERE/../.." && pwd)"
 BUILD="$REPO/build/appimage"
 # Downloads only: sharing one between checkouts changes nothing in the result.
 CACHE="${MCB_BUILD_CACHE:-$BUILD/cache}"
-APPDIR="$BUILD/MediaChapterBrowser.AppDir"
+APPDIR="$BUILD/DAMediaBrowser.AppDir"
 DIST="$REPO/dist"
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO/pyproject.toml" | head -1)"
-OUTPUT="$DIST/MediaChapterBrowser-$VERSION-x86_64.AppImage"
+OUTPUT="$DIST/DAMediaBrowser-$VERSION-x86_64.AppImage"
 
 PYTHON_APPIMAGE="python3.12.14-cp312-cp312-manylinux_2_28_x86_64.AppImage"
 PYTHON_URL="https://github.com/niess/python-appimage/releases/download/python3.12/$PYTHON_APPIMAGE"

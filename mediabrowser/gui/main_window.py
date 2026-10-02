@@ -112,7 +112,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, *, bluray_available: bool = True) -> None:
         super().__init__()
-        self.setWindowTitle("Media Chapter Browser")
+        self.setWindowTitle("DA Media Browser")
         self.resize(1180, 780)
 
         self.bluray_available = bluray_available
@@ -694,7 +694,7 @@ class MainWindow(QMainWindow):
         chapters_menu.addAction(self.detail.reset_action)
 
         help_menu = menu.addMenu("&Help")
-        about_action = QAction("About Media Chapter Browser…", self)
+        about_action = QAction("About DA Media Browser…", self)
         about_action.setMenuRole(QAction.AboutRole)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)

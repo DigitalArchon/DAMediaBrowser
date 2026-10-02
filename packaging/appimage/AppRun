@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-FileCopyrightText: 2026 Digital Archon
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Media Chapter Browser AppImage entry point.
+# DA Media Browser AppImage entry point.
 #
-#   MediaChapterBrowser.AppImage [--library FOLDER]
+#   DAMediaBrowser.AppImage [--library FOLDER]
 set -e
 HERE="$(dirname "$(readlink -f "$0")")"
 PYTHON="$HERE/opt/python3.12/bin/python3.12"

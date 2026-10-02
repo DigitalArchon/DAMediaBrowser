@@ -65,8 +65,8 @@ def prefer_x11(environ=os.environ) -> None:
 
 
 def build_app(argv: Sequence[str]) -> QApplication:
-    QCoreApplication.setApplicationName("Media Chapter Browser")
-    QCoreApplication.setOrganizationName("Media Chapter Browser")
+    QCoreApplication.setApplicationName("DA Media Browser")
+    QCoreApplication.setOrganizationName("DA Media Browser")
     # Drives the Wayland app_id and the X11 WM_CLASS.
     QApplication.setDesktopFileName(APP_ID)
     # Manual Edit's video surface is a native window. Without this, Qt makes

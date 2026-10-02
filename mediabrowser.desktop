@@ -4,11 +4,11 @@
 # cannot find, and the desktop portal then reports "App info not found".
 # See the README for the install command that substitutes it.
 Type=Application
-Name=Media Chapter Browser
+Name=DA Media Browser
 GenericName=Chapter Browser and Player
 Comment=Browse, name and play the chapters of videos and Blu-ray discs
 Exec=mediabrowser
 Terminal=false
 Categories=AudioVideo;Video;Player;
 Keywords=video;chapters;bluray;concert;tracklist;musicbrainz;mpv;
-StartupWMClass=Media Chapter Browser
+StartupWMClass=DA Media Browser
