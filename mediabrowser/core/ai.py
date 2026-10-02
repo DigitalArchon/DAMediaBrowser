@@ -9,9 +9,9 @@ model that can read the song caption on screen, recall a setlist, and
 translate a title - without a subscription to anyone.
 
 This module is only the wire: settings, one request, one reply. What to
-ask is ai_chapters' business. The API key lives in the app's settings.json
-(or NANOGPT_API_KEY in the environment, which wins), in plain text: it's a
-prepaid key with a balance, not a password to anything.
+ask is ai_chapters' business. The API key lives in the OS keyring (see
+creds), never in settings.json; NANOGPT_API_KEY in the environment wins
+over it.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ import json
 import os
 import urllib.error
 import urllib.request
+
+from . import creds, store
 
 DEFAULT_BASE_URL = "https://nano-gpt.com/api/v1"
 NANO_GPT_HOST = "nano-gpt.com"
@@ -32,6 +34,8 @@ DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 DEFAULT_FRAMES_PER_CHAPTER = 2
 
 API_KEY_ENV = "NANOGPT_API_KEY"
+# The key's name in the keyring.
+KEYRING_NAME = "nanogpt-api-key"
 
 SETTING_KEY = "ai_api_key"
 SETTING_MODEL = "ai_model"
@@ -103,6 +107,31 @@ def settings_from(app_settings: dict) -> dict:
     if settings[SETTING_SEARCH] not in SEARCH_PROVIDERS:
         settings[SETTING_SEARCH] = DEFAULT_SEARCH
     return settings
+
+
+def load_settings() -> dict:
+    """The AI settings in force: settings.json's, with the key from the
+    keyring. A keyring that can't be reached, or stays locked, just means
+    no key - the environment's, if it has one, doesn't need it."""
+    app_settings = store.load_app_settings()
+    app_settings[SETTING_KEY] = "" if os.environ.get(API_KEY_ENV, "").strip() else stored_key()
+    return settings_from(app_settings)
+
+
+def stored_key() -> str:
+    try:
+        return creds.get_secret(KEYRING_NAME) or ""
+    except Exception:  # noqa: BLE001 - keyring locked or unavailable
+        return ""
+
+
+def store_key(key: str) -> None:
+    """Keep the key in the keyring, or forget it when empty. Raises when
+    the keyring can't be written."""
+    if key:
+        creds.set_secret(KEYRING_NAME, key)
+    else:
+        creds.delete_secret(KEYRING_NAME)
 
 
 def is_configured(settings: dict) -> bool:

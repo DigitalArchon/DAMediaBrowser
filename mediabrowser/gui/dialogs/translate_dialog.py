@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from mediabrowser.core import ai, ai_chapters, store
+from mediabrowser.core import ai, ai_chapters
 from mediabrowser.gui.worker import run_job
 
 
@@ -38,7 +38,7 @@ class TranslateDialog(QDialog):
         self.setModal(True)
         self.resize(720, 520)
         self._jobs: list = []
-        self._settings = ai.settings_from(store.load_app_settings())
+        self._settings = ai.load_settings()
         # (chapter_index, current title) for every chapter that has one.
         self._titled = [(i, ch["title"]) for i, ch in enumerate(video["chapters"]) if ch["title"]]
         self._translated: list[tuple[str, str | None]] | None = None

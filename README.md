@@ -50,6 +50,7 @@ External programs, installed with your package manager:
 | `ffmpeg` / `ffprobe` | reading chapters and cover art |
 | `mpv` | playback |
 | `libbluray` | Blu-ray disc folders (optional) |
+| GNOME Keyring or KWallet | keeping the AI's API key (optional; any Secret Service provider) |
 
 ```
 # Debian/Ubuntu
@@ -351,9 +352,10 @@ gateway to Claude and other models: make an account, add a few dollars,
 paste an API key into **File → AI Settings** and pick a model
 (`anthropic/claude-sonnet-5` is the default and reads captions fine;
 Opus is more careful and several times the price). A concert's chapters
-cost a few cents. The key lives in `settings.json` in plain text, or set
-`NANOGPT_API_KEY` in the environment. Nothing is sent until you press Ask
-AI, and nothing is applied until Apply.
+cost a few cents. The key is kept in the system keyring (GNOME Keyring,
+KWallet), never in a file; without one, set `NANOGPT_API_KEY` in the
+environment instead. Nothing is sent until you press Ask AI, and nothing
+is applied until Apply.
 
 **Manual Edit** (`Ctrl+Shift+K`, or the button under the chapter list)
 is for doing it all by hand — no AI account needed, and the way to name
@@ -529,8 +531,10 @@ default):
 ```
 libraries/<hash>.json   one file per scanned folder: chapters and their names
 artwork/<id>.jpg        cached cover art
-settings.json           app preferences, including the Nano-GPT key
+settings.json           app preferences
 ```
+
+The Nano-GPT key is in the system keyring, under `da-media-browser`.
 
 Nothing is ever written into a library. The app opens media files only to
 read them (ffprobe, ffmpeg, libbluray and mpv all only read), never renames,

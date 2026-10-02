@@ -253,7 +253,7 @@ class ChaptersDialog(QDialog):
         self._result: tuple[str, object] | None = None
 
         # The model's answer, while it is what the table shows.
-        self._ai_settings = ai.settings_from(store.load_app_settings())
+        self._ai_settings = ai.load_settings()
         self._ai_result: ai_chapters.Result | None = None
         self._ai_job = None
         # Ask AI was pressed before the audio was measured: ask once it is.
@@ -1373,7 +1373,7 @@ class ChaptersDialog(QDialog):
         from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
 
         if AISettingsDialog(self).exec():
-            self._ai_settings = ai.settings_from(store.load_app_settings())
+            self._ai_settings = ai.load_settings()
             self._update_ai_controls()
             self._update_figure_controls()
 

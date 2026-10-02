@@ -125,7 +125,7 @@ rm -f "$APPDIR"/AppRun "$APPDIR"/*.desktop "$APPDIR"/*.png "$APPDIR"/.DirIcon
 rm -rf "$APPDIR/usr/share/applications" "$APPDIR/usr/share/metainfo" "$APPDIR/usr/share/icons"
 PYTHON="$APPDIR/opt/python3.12/bin/python3.12"
 
-log "The app and PySide6"
+log "The app, PySide6 and keyring"
 export PYTHONNOUSERSITE=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 unset PYTHONHOME PYTHONPATH
 # --no-compile: pip's .pyc files would record where they were built.
@@ -140,7 +140,9 @@ rm -rf "$REPO/build/lib" "$REPO"/build/bdist.* "$REPO"/*.egg-info
 # With the pinned setuptools above, not whatever an isolated build fetches.
 "${PIP[@]}" --no-deps --no-build-isolation "$REPO"
 rm -rf "$REPO/build/lib" "$REPO"/build/bdist.* "$REPO"/*.egg-info
-"$PYTHON" -s -c "import mediabrowser.gui.app, PySide6.QtWidgets"
+# secretstorage by name: keyring swallows its ImportError and would
+# quietly find no keyring at all.
+"$PYTHON" -s -c "import mediabrowser.gui.app, PySide6.QtWidgets, keyring, secretstorage"
 # The installed package must be exactly the source's modules, no more.
 INSTALLED="$("$PYTHON" -s -c 'import mediabrowser, os; print(os.path.dirname(mediabrowser.__file__))')"
 if ! diff <(cd "$REPO/mediabrowser" && find . -name '*.py' | sort) \

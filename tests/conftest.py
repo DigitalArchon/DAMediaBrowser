@@ -8,10 +8,42 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import keyring  # noqa: E402
 import pytest  # noqa: E402
+from keyring.backend import KeyringBackend  # noqa: E402
+from keyring.errors import PasswordDeleteError  # noqa: E402
 
 from mediabrowser.core import config, musicbrainz  # noqa: E402
 from tests.test_chaptergen import concert  # noqa: E402
+
+
+class MemoryKeyring(KeyringBackend):
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self.store = {}
+
+    def get_password(self, service, username):
+        return self.store.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.store[(service, username)] = password
+
+    def delete_password(self, service, username):
+        if (service, username) not in self.store:
+            raise PasswordDeleteError(username)
+        del self.store[(service, username)]
+
+
+@pytest.fixture(autouse=True)
+def memory_keyring():
+    """No test may read or write the real keyring."""
+    backend = MemoryKeyring()
+    old = keyring.get_keyring()
+    keyring.set_keyring(backend)
+    yield backend
+    keyring.set_keyring(old)
 
 
 @pytest.fixture(autouse=True)

@@ -5,7 +5,7 @@ the settings. The model is a stand-in; nothing leaves the machine."""
 
 import pytest
 
-from mediabrowser.core import ai, ai_chapters, library, methods, store
+from mediabrowser.core import ai, ai_chapters, config, creds, library, methods, store
 from tests.test_chapters_dialog import (
     _finished,
     dialog_for,
@@ -226,12 +226,61 @@ class TestSettings:
         dialog.frames.setValue(3)
         dialog.search.setCurrentIndex(list(ai.SEARCH_PROVIDERS).index("perplexity"))
         dialog.accept()
-        settings = ai.settings_from(store.load_app_settings())
+        settings = ai.load_settings()
         assert settings[ai.SETTING_KEY] == "sk-abc"
         assert settings[ai.SETTING_MODEL] == "anthropic/claude-opus-5.5"
         assert settings[ai.SETTING_FRAMES] == 3
         assert settings[ai.SETTING_SEARCH] == "perplexity"
         assert settings[ai.SETTING_BASE_URL] == ai.DEFAULT_BASE_URL
+
+    def test_the_key_goes_to_the_keyring_not_the_file(self, window, memory_keyring,
+                                                     monkeypatch):
+        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+        store.save_app_settings({ai.SETTING_KEY: "sk-from-before"})
+        dialog = AISettingsDialog(window)
+        assert dialog.key.text() == "", "a key in the file isn't shown, or used"
+        dialog.key.setText("sk-abc")
+        dialog.accept()
+        assert memory_keyring.store == {("da-media-browser", ai.KEYRING_NAME): "sk-abc"}
+        assert "sk-" not in config.APP_SETTINGS_FILE.read_text(encoding="utf-8")
+
+        dialog = AISettingsDialog(window)
+        assert dialog.key.text() == "sk-abc"
+        dialog.key.setText("")
+        dialog.accept()
+        assert memory_keyring.store == {}
+
+    def test_a_keyring_that_refuses_keeps_the_dialog_open(self, window, monkeypatch):
+        from keyring.errors import KeyringLocked
+
+        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+
+        def locked(name, value):
+            raise KeyringLocked("dismissed")
+
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+        monkeypatch.setattr(creds, "set_secret", locked)
+        dialog = AISettingsDialog(window)
+        dialog.key.setText("sk-abc")
+        dialog.model.setCurrentText("anthropic/claude-opus-5.5")
+        dialog.accept()
+        assert dialog.result() != dialog.DialogCode.Accepted
+        assert "keyring" in dialog.status.text()
+        assert ai.load_settings()[ai.SETTING_MODEL] == ai.DEFAULT_MODEL, "nothing saved"
+
+    def test_without_a_keyring_the_dialog_says_so(self, window, monkeypatch):
+        import keyring
+        from keyring.backends import fail
+        from PySide6.QtWidgets import QLabel
+
+        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+
+        keyring.set_keyring(fail.Keyring())
+        dialog = AISettingsDialog(window)
+        notes = " ".join(label.text() for label in dialog.findChildren(QLabel))
+        assert "no keyring" in notes and ai.API_KEY_ENV in notes
 
     def test_listing_models_fills_the_box(self, app, window, monkeypatch):
         from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog

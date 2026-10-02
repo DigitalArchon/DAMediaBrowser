@@ -7,9 +7,12 @@ import io
 import json
 import urllib.error
 
+import keyring
 import pytest
+from keyring.backends import fail
+from keyring.errors import KeyringLocked
 
-from mediabrowser.core import ai
+from mediabrowser.core import ai, config, creds, store
 
 
 class FakeResponse(io.BytesIO):
@@ -79,6 +82,53 @@ class TestSettings:
     def test_short_model_name(self):
         assert ai.short_model_name("anthropic/claude-opus-5.5") == "claude-opus-5.5"
         assert ai.short_model_name("anthropic/claude-sonnet-5:online/kagi") == "claude-sonnet-5"
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "LIBRARIES_DIR", tmp_path / "data" / "libraries")
+    monkeypatch.setattr(config, "APP_SETTINGS_FILE", tmp_path / "data" / "settings.json")
+    return tmp_path / "data"
+
+
+class TestTheKeyring:
+    def test_the_key_comes_from_the_keyring(self, data_dir, memory_keyring, monkeypatch):
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+        ai.store_key("sk-kept")
+        assert memory_keyring.store == {("da-media-browser", ai.KEYRING_NAME): "sk-kept"}
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-kept"
+
+    def test_an_empty_key_is_forgotten(self, data_dir, memory_keyring, monkeypatch):
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+        ai.store_key("sk-kept")
+        ai.store_key("")
+        ai.store_key("")  # nothing there to forget is fine too
+        assert memory_keyring.store == {}
+        assert not ai.is_configured(ai.load_settings())
+
+    def test_a_key_left_in_settings_json_isnt_used(self, data_dir, monkeypatch):
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+        store.save_app_settings({ai.SETTING_KEY: "sk-plain-text"})
+        assert not ai.is_configured(ai.load_settings())
+
+    def test_the_environment_key_wins_without_asking_the_keyring(self, data_dir, monkeypatch):
+        monkeypatch.setenv(ai.API_KEY_ENV, "env-key")
+        monkeypatch.setattr(creds, "get_secret", lambda name: pytest.fail("keyring asked"))
+        assert ai.load_settings()[ai.SETTING_KEY] == "env-key"
+
+    def test_a_locked_keyring_means_no_key(self, data_dir, monkeypatch):
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+
+        def locked(name):
+            raise KeyringLocked("dismissed")
+
+        monkeypatch.setattr(creds, "get_secret", locked)
+        assert not ai.is_configured(ai.load_settings())
+
+    def test_no_keyring_is_said_in_words(self, memory_keyring):
+        assert creds.backend_error() is None
+        keyring.set_keyring(fail.Keyring())
+        assert "GNOME Keyring" in creds.backend_error()
 
 
 class TestChat:

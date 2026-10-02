@@ -148,7 +148,7 @@ class IdentifyDialog(QDialog):
         self._cancel = threading.Event()
         self._counts = {"done": 0, "better": 0, "same": 0, "error": 0}
         self._ai_used = 0
-        self._ai_settings = ai.settings_from(store.load_app_settings())
+        self._ai_settings = ai.load_settings()
         self._build()
         self._load_options()
         self._update_estimate()

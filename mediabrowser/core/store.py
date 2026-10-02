@@ -9,8 +9,7 @@ from . import config
 
 DEFAULT_APP_SETTINGS = {
     "musicbrainz_format": "xml",
-    # The Nano-GPT key, model and endpoint: see core.ai.
-    "ai_api_key": "",
+    # The Nano-GPT model and endpoint: see core.ai. The key is in the keyring.
     "ai_model": "anthropic/claude-sonnet-5",
     "ai_base_url": "https://nano-gpt.com/api/v1",
     "ai_frames_per_chapter": 2,

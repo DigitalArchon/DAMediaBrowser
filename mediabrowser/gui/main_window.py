@@ -1919,7 +1919,7 @@ class MainWindow(QMainWindow):
         from mediabrowser.core import ai
         from mediabrowser.gui.dialogs.identify_dialog import saved_options
 
-        settings = ai.settings_from(store.load_app_settings())
+        settings = ai.load_settings()
         options = saved_options(ai.is_configured(settings))
         video = self.data["videos"][video_id]
         return options, settings, protection.is_private(self._lib(video_id), video)

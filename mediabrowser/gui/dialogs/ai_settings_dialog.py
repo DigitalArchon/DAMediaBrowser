@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Where the Nano-GPT key and model are set.
 
-The key is pasted once and kept in the app's settings; the model can be
+The key is pasted once and kept in the OS keyring; the model can be
 typed or picked from the ones Nano-GPT lists with vision (the Claude ones
 first). Test sends the smallest possible request so a wrong key or an
 empty balance is found here, not after forty frames have been sent.
@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from mediabrowser.core import ai, store
+from mediabrowser.core import ai, creds, store
 from mediabrowser.gui.worker import run_job
 
 OTHER_ENDPOINTS = (
@@ -42,8 +42,8 @@ ABOUT = (
     "to name with Sonnet; Opus is several times that and a little more careful."
 )
 KEY_NOTE = (
-    "The key is stored in this app's settings.json, in plain text. Setting "
-    f"{ai.API_KEY_ENV} in the environment overrides it."
+    "The key is kept in the system keyring (GNOME Keyring or KWallet), not in "
+    f"a file. Setting {ai.API_KEY_ENV} in the environment overrides it."
 )
 
 
@@ -58,13 +58,14 @@ class AISettingsDialog(QDialog):
         self._jobs: list = []
         self._app_settings = store.load_app_settings()
         settings = ai.settings_from(self._app_settings)
+        self._stored_key = ai.stored_key()
 
         about = QLabel(ABOUT)
         about.setObjectName("hintLabel")
         about.setWordWrap(True)
         about.setOpenExternalLinks(True)
 
-        self.key = QLineEdit(self._app_settings.get(ai.SETTING_KEY) or "")
+        self.key = QLineEdit(self._stored_key)
         self.key.setEchoMode(QLineEdit.Password)
         self.key.setPlaceholderText("Paste the API key from nano-gpt.com…")
         self.show_key = QCheckBox("Show")
@@ -75,7 +76,11 @@ class AISettingsDialog(QDialog):
         key_row.setContentsMargins(0, 0, 0, 0)
         key_row.addWidget(self.key, 1)
         key_row.addWidget(self.show_key)
-        key_note = QLabel(KEY_NOTE)
+        keyring_error = creds.backend_error()
+        key_note = QLabel(
+            KEY_NOTE if keyring_error is None
+            else f"{keyring_error} Until then, set {ai.API_KEY_ENV} in the environment."
+        )
         key_note.setObjectName("hintLabel")
         key_note.setWordWrap(True)
 
@@ -185,8 +190,16 @@ class AISettingsDialog(QDialog):
         })
 
     def accept(self) -> None:
+        key = self.key.text().strip()
+        if key != self._stored_key:
+            try:
+                ai.store_key(key)
+            except Exception as e:  # noqa: BLE001 - keyring locked or unavailable
+                self.status.setText(f"Couldn't keep the key in the keyring: {e}")
+                return
         settings = self._app_settings
-        settings[ai.SETTING_KEY] = self.key.text().strip()
+        # Not in the file: a key from before the keyring is dropped here.
+        settings.pop(ai.SETTING_KEY, None)
         settings[ai.SETTING_MODEL] = self.model.currentText().strip() or ai.DEFAULT_MODEL
         settings[ai.SETTING_BASE_URL] = self.base_url.text().strip() or ai.DEFAULT_BASE_URL
         settings[ai.SETTING_FRAMES] = self.frames.value()
