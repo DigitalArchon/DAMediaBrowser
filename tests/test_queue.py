@@ -222,11 +222,23 @@ class TestQueueEntriesFor:
         assert all(e.video_id == "vid" and e.audio_only for e in made)
 
 
-class TestPlayingAs:
-    def test_an_entry_and_the_rest_of_its_video_after_it_switch(self):
+class TestAudioOrVideo:
+    def test_the_whole_queue_switches(self):
         queue = Queue()
-        queue.set_entries(entries("a", "b", "c") + entries("x", video_id="w"))
-        changed = queue.set_audio_only(1, False)
-        assert changed == [1, 2], "not the chapter before it, nor the next video"
-        assert [e.audio_only for e in queue.entries()] == [True, False, False, True]
-        assert queue.set_audio_only(9, False) == []
+        queue.set_entries(entries("a", "b") + entries("x", video_id="w"), start=1)
+        assert queue.set_audio_only(False)
+        assert not queue.audio_only
+        assert [e.audio_only for e in queue.entries()] == [False, False, False]
+        assert queue.current().title == "b", "still on the same one"
+        assert not queue.set_audio_only(False), "already"
+
+    def test_what_starts_it_says_how_it_plays_and_what_follows_plays_so(self):
+        from dataclasses import replace
+
+        queue = Queue()
+        queue.append([replace(e, audio_only=False) for e in entries("a")])
+        assert not queue.audio_only
+        queue.append(entries("b", "c"))
+        assert [e.audio_only for e in queue.entries()] == [False, False, False]
+        queue.set_entries(entries("x"))
+        assert queue.audio_only and queue.entries()[0].audio_only

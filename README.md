@@ -446,7 +446,9 @@ Undo Reset** puts the last reset back, even after a restart.
 each one rolls into the next. Right-click a cover to add a whole video to the
 queue, or pick single chapters with **Add to Queue** — Ctrl- or Shift-click
 to pick several at once, and chapters found by a search can be queued from
-the list directly.
+the list directly. A double-click on a chapter plays it as audio; Playback →
+**Play by Default → Video** makes it video instead, and with it the detail
+page's main Play button and what Add to Queue starts an empty queue as.
 
 One mpv plays the whole queue, and is always handed the next piece before
 the one playing ends, so it opens the next file early and goes straight on:
@@ -463,16 +465,30 @@ alone; the transport bar comes back while the mouse moves, and `Esc`
 leaves. **Back** leaves the video playing out of sight, and **Show Video**
 on the transport bar brings it back — so does clicking the cover or title
 of what's playing, or Playback → **Show Video** (`Ctrl+Shift+V`).
-Double-clicking the playing row in the queue starts it again. To play one video in mpv's own window
+Double-clicking the playing row in the queue starts it again. With the
+video focused, some of mpv's own keys work too: `S` saves a screenshot
+(to *Pictures/DA Media Browser*), `V` shows or hides subtitles, `J` steps
+to the next subtitles and `#` to the next audio track.
+
+**Pop Out** on the transport bar (Playback → *Pop Out to mpv's Window*,
+`Ctrl+Shift+P`) carries the video playing in the app on in mpv's own window
+from the same moment — paused or not, with the same volume, subtitles and
+tracks — where all of mpv's own controls work, and the transport bar still
+drives it. **Into App** brings it back the same way. It takes a new mpv, so
+there's a moment's gap (a few seconds for a Blu-ray, which has to be opened
+again). The rest of the queue plays where the video went until video is
+next chosen to play. To play one video in mpv's own window
 instead, choose **Play Video in mpv's Own Window** — on every right-click
 menu, and on the arrow beside the detail page's **Play Video** — or untick
 the setting to make that the default (the menus then offer *Play Video in
 the App*). mpv's own window stays open from one video to the next. (On a desktop where the app runs on Wayland itself rather than
 XWayland, video always plays in mpv's own window.)
 
-**The queue.** Double-clicking a row plays it the way it was queued; its
-right-click menu can play it as **audio** or **video** instead, along with
-the rest of its video after it. Ctrl- or Shift-click several rows to
+**The queue.** The whole queue plays as audio or as video: what starts it
+says which, and whatever is added after plays the same way. The
+**Audio / Video** button above it switches all of it — what's playing too,
+carrying on from the same moment (video where it plays by default).
+Double-clicking a row plays it. Ctrl- or Shift-click several rows to
 **Remove** them at once (or press `Delete`), and drag rows — one or
 several — to reorder. Choosing something to play while paused plays it. Whatever
 you do to the queue while it plays, what's playing carries on and what
@@ -480,9 +496,10 @@ comes next follows the change.
 
 **Playlists.** **Playlists → Save Queue as Playlist…** in the queue panel
 (or the Playback menu) saves the queue under a name — chapters from as
-many videos and discs as you like. Each saved playlist can then be played
-as audio, or as video here or in mpv's own window, or added to the end of
-the queue; and renamed or deleted. Playlists are kept with the library, so
+many videos and discs as you like, and whether it was playing as audio or
+video. Each saved playlist can then be played that way, or as audio, or as
+video here or in mpv's own window, or added to the end of the queue
+(playing as the queue does); and renamed or deleted. Playlists are kept with the library, so
 they go with its catalog to another device, and an entry whose video's
 chapters have since been split or merged still finds its song by where it
 starts.
@@ -494,6 +511,8 @@ starts.
 | `Ctrl+Shift+←` `Ctrl+Shift+→` | previous / next chapter |
 | `Ctrl+.` | stop |
 | `F11` | fullscreen video (in it: Space, ←/→ 10s, `F`, `Esc`) |
+| `S` `V` `J` `#` | with the video in the app focused: screenshot, subtitles on/off, next subtitles, next audio track |
+| `Ctrl+Shift+P` | pop video out to mpv's window, or bring it back |
 | `Ctrl+K` | split the chapter at the playhead |
 | `Ctrl+Shift+K` | Manual Edit (in it: Space, ←/→, `,` `.`, `M`, Page Up/Down) |
 | `Ctrl+M` | merge the selected chapter with the next |
@@ -540,8 +559,8 @@ Nothing is ever written into a library. The app opens media files only to
 read them (ffprobe, ffmpeg, libbluray and mpv all only read), never renames,
 moves or deletes one, and puts no file of its own beside them: a library on
 a read-only share works exactly like any other. **Export Catalog** refuses
-to save into a library folder, and mpv runs from your home folder, so even
-a screenshot taken in its own window lands there. `tests/test_read_only.py`
+to save into a library folder, and screenshots — `S` in the app or in
+mpv's own window — go to *Pictures/DA Media Browser*. `tests/test_read_only.py`
 holds this in place: it lists every place in the code that can write a
 file, and runs a scan, cover and frame grabs, audio analysis and an export
 over a write-protected library, checking every byte and timestamp after.

@@ -112,6 +112,24 @@ QToolButton:disabled {
   font-size: 14px;
 }
 
+/* The main Play when video is what plays by default: as #primaryButton. */
+#playVideoButton[primary="true"] {
+  background: #3b5ea8;
+  border-color: #4a70bd;
+  color: #f2f5fb;
+  font-weight: 600;
+}
+
+#playVideoButton[primary="true"]:hover {
+  background: #4670c0;
+}
+
+#playVideoButton[primary="true"]:disabled {
+  background: #232733;
+  color: #565c69;
+  border-color: #23262f;
+}
+
 #playVideoButton::menu-button {
   width: 26px;
   border-left: 1px solid #3b4356;

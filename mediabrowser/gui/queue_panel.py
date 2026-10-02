@@ -8,8 +8,9 @@ going back to the tree between each one.
 
 Rows can be Ctrl- or Shift-selected several at a time, to remove or drag
 together. A queue can be saved as a playlist, and the Playlists menu plays
-saved ones - the window fills it (playlists_menu). A row's right-click
-menu plays it as it was queued, as audio, or as video.
+saved ones - the window fills it (playlists_menu). The whole queue plays
+as audio or as video, and the Audio / Video button switches it - what's
+playing too, from the same moment.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ REPEAT_LABELS = {
 
 class QueuePanel(QWidget):
     entry_activated = Signal(int)
-    play_as_requested = Signal(int, bool)  # entry index, audio only
+    audio_only_toggled = Signal(bool)  # the whole queue: audio (true) or video
     entries_removed = Signal(list)  # entry indices
     order_changed = Signal(list)  # every entry index, in the order now shown
     cleared = Signal()
@@ -97,6 +98,11 @@ class QueuePanel(QWidget):
         self.repeat_button.setToolTip(REPEAT_LABELS[REPEAT_OFF][1])
         self.repeat_button.clicked.connect(self._cycle_repeat)
 
+        # Checked: the queue plays as video. Says which it plays as now.
+        self.mode_button = QToolButton()
+        self.mode_button.setCheckable(True)
+        self.mode_button.toggled.connect(lambda video: self.audio_only_toggled.emit(not video))
+
         self.playlists_button = QToolButton()
         self.playlists_button.setText("Playlists")
         self.playlists_button.setToolTip("Save this queue as a playlist, or play a saved one")
@@ -114,6 +120,7 @@ class QueuePanel(QWidget):
         modes.setSpacing(6)
         modes.addWidget(self.shuffle_button)
         modes.addWidget(self.repeat_button)
+        modes.addWidget(self.mode_button)
         modes.addStretch(1)
 
         self.remove_button = QPushButton("Remove")
@@ -139,6 +146,7 @@ class QueuePanel(QWidget):
         layout.addLayout(buttons)
 
         self.show_queue([], None)
+        self.set_audio_only(True)
 
     # --- population ------------------------------------------------------
 
@@ -172,7 +180,19 @@ class QueuePanel(QWidget):
         self.list.setVisible(has_entries)
         self.empty.setVisible(not has_entries)
         self.clear_button.setEnabled(has_entries)
+        self.mode_button.setEnabled(has_entries)
         self._update_buttons()
+
+    def set_audio_only(self, audio_only: bool) -> None:
+        """Show how the queue plays, without asking for it to change."""
+        self.mode_button.blockSignals(True)
+        self.mode_button.setChecked(not audio_only)
+        self.mode_button.blockSignals(False)
+        self.mode_button.setText("Audio" if audio_only else "Video")
+        self.mode_button.setToolTip(
+            "The queue plays as audio - click to play all of it as video"
+            if audio_only else "The queue plays as video - click to play all of it as audio"
+        )
 
     def set_shuffle(self, on: bool) -> None:
         self.shuffle_button.setChecked(on)
@@ -187,11 +207,6 @@ class QueuePanel(QWidget):
         menu = QMenu(self.list)
         play = menu.addAction("Play")
         play.triggered.connect(lambda: self.entry_activated.emit(entry_index))
-        for label, audio_only in (("Play Audio", True), ("Play Video", False)):
-            action = menu.addAction(label)
-            action.triggered.connect(
-                lambda _checked=False, a=audio_only: self.play_as_requested.emit(entry_index, a)
-            )
         menu.addSeparator()
         remove = menu.addAction("Remove")
         chosen = self.selected_entries()

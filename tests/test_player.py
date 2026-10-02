@@ -106,3 +106,44 @@ class TestXWayland:
 
         env = x11_environment({"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0", "HOME": "/h"})
         assert env == {"DISPLAY": ":0", "HOME": "/h"}
+
+
+class TestCarryingOn:
+    """Moving playback to another mpv: what the new one is told."""
+
+    def _calls(self, monkeypatch, p):
+        calls = []
+        monkeypatch.setattr(p, "_call", lambda command, attempts=20: calls.append(command))
+        return calls
+
+    def test_the_moment_and_tracks_go_with_the_file(self, launched, monkeypatch):
+        from mediabrowser.core.playback import Segment
+
+        p = player_module.Player()
+        p.start_session(None)
+        calls = self._calls(monkeypatch, p)
+        segment = Segment("v", "file", "/v.mkv", None, False, 100.0, None, (0,), (100.0,))
+        p.resume(segment, {"time-pos": 142.5, "pause": True, "volume": 60.0,
+                           "sub-visibility": False, "aid": 2, "sid": False})
+        assert ["set_property", "volume", 60.0] in calls
+        assert ["set_property", "sub-visibility", False] in calls
+        assert ["set_property", "pause", True] in calls
+        load = calls[-1]
+        assert load["name"] == "loadfile" and load["url"] == "/v.mkv"
+        options = dict(o.split("=") for o in load["options"].split(","))
+        assert options["start"] == "142.500" and options["aid"] == "2"
+        assert options["sid"] == "no", "subtitles off stays off"
+        assert ["set_property", "aid", 2] not in calls, "a track only means anything in its file"
+
+    def test_screenshots_go_to_the_folder_given(self, launched):
+        p = player_module.Player()
+        p.screenshot_dir = "/pics/DA"
+        p.start_session(None)
+        assert "--screenshot-directory=/pics/DA" in launched[0]
+
+    def test_a_dollar_in_a_screenshots_name_is_kept(self, launched, monkeypatch, tmp_path):
+        p = player_module.Player()
+        p.start_session(7)
+        calls = self._calls(monkeypatch, p)
+        p.screenshot(tmp_path / "Ca$h 1-00.png")
+        assert calls == [["screenshot-to-file", str(tmp_path / "Ca$h 1-00.png"), "subtitles"]]

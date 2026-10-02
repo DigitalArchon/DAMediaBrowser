@@ -12,8 +12,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCursor, QKeySequence
+from PySide6.QtCore import QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QDockWidget,
@@ -77,6 +77,14 @@ SHOWN_SETTING = "shown_libraries"
 # in mpv's own window. An app setting.
 VIDEO_IN_APP_SETTING = "video_in_app"
 
+# What a chapter plays as when nothing says which: on a double-click (or
+# Enter), the main Play button, and Add to Queue into an empty queue. Audio
+# (true, the default) or video. An app setting.
+AUDIO_BY_DEFAULT_SETTING = "play_audio_by_default"
+
+# Where the S key's screenshots go, in the Pictures folder.
+SCREENSHOT_FOLDER = "DA Media Browser"
+
 # In fullscreen, how often the pointer is looked at, and how long it must be
 # still before the transport bar gets out of the way.
 POINTER_WATCH_MS = 250
@@ -117,6 +125,7 @@ class MainWindow(QMainWindow):
 
         self.bluray_available = bluray_available
         self.player = Player()
+        self.player.screenshot_dir = _screenshot_dir()
         self.now_playing: tuple[str, int, bool] | None = None
         self.queue = playback.Queue()
         self._jobs: list = []
@@ -240,7 +249,9 @@ class MainWindow(QMainWindow):
         self.list = ListView()
         self.list.video_activated.connect(self.open_video)
         self.list.enqueue_requested.connect(self.enqueue_video)
-        self.list.chapter_activated.connect(self.play_from)
+        self.list.chapter_activated.connect(
+            lambda video_id, index: self.play_from(video_id, index, self.default_audio_only())
+        )
         self.list.play_requested.connect(self.play_from)
         self.list.chapter_enqueue_requested.connect(
             lambda video_id, index: self.enqueue_chapters(video_id, [index])
@@ -276,6 +287,7 @@ class MainWindow(QMainWindow):
             protection.label(self._lib(video_id), video),
         )
         self.detail.video_choices = self._other_video_places
+        self.detail.set_default_audio_only(self.default_audio_only())
         self.detail.play_video_at.connect(
             lambda index, in_app: self._play_selected_chapter(index, False, in_app)
         )
@@ -315,6 +327,8 @@ class MainWindow(QMainWindow):
         self.video_page.leave_fullscreen_requested.connect(lambda: self.set_fullscreen(False))
         self.video_page.play_pause_requested.connect(self.toggle_play_pause)
         self.video_page.jump_requested.connect(self._nudge)
+        self.video_page.screenshot_requested.connect(self.take_screenshot)
+        self.video_page.cycle_requested.connect(self.cycle_track)
         self.pages.addWidget(self.video_page)
         self.pages.currentChanged.connect(lambda _index: self._update_video_controls())
         self._pointer_watch = QTimer(self)
@@ -330,6 +344,7 @@ class MainWindow(QMainWindow):
         self.now_playing_bar.seek_requested.connect(self.seek)
         self.now_playing_bar.show_video_requested.connect(self.show_video_page)
         self.now_playing_bar.fullscreen_requested.connect(self.toggle_fullscreen)
+        self.now_playing_bar.move_requested.connect(self.move_video)
 
         self._poll = QTimer(self)
         self._poll.setInterval(POLL_MS)
@@ -359,10 +374,11 @@ class MainWindow(QMainWindow):
         left.setWidget(self.libraries)
         left.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.LeftDockWidgetArea, left)
+        self.libraries_dock = left
 
         self.queue_panel = QueuePanel()
         self.queue_panel.entry_activated.connect(self.play_queue_entry)
-        self.queue_panel.play_as_requested.connect(self.play_queue_entry_as)
+        self.queue_panel.audio_only_toggled.connect(self.set_queue_audio_only)
         self.queue_panel.entries_removed.connect(self.remove_from_queue)
         self.queue_panel.order_changed.connect(self.reorder_queue)
         self.queue_panel.playlists_menu = self._fill_playlists_menu
@@ -374,6 +390,7 @@ class MainWindow(QMainWindow):
         right.setWidget(self.queue_panel)
         right.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
         self.addDockWidget(Qt.RightDockWidgetArea, right)
+        self.queue_dock = right
         self.resizeDocks([left, right], [240, 280], Qt.Horizontal)
 
         self._build_toolbar()
@@ -389,9 +406,9 @@ class MainWindow(QMainWindow):
         self.rescan_action.triggered.connect(lambda: self.rescan())
         bar.addAction(self.rescan_action)
 
+        # Not on the toolbar: the Libraries panel has it, and the File menu.
         self.choose_action = QAction("Add Folder…", self)
         self.choose_action.triggered.connect(self.choose_folder)
-        bar.addAction(self.choose_action)
 
         self.network_action = QAction("Add Network Folder…", self)
         self.network_action.setToolTip(
@@ -602,6 +619,10 @@ class MainWindow(QMainWindow):
         list_action.triggered.connect(lambda: self.set_view(SHELF_LIST))
         view_menu.addAction(list_action)
         view_menu.addSeparator()
+        # Either panel can be closed; these bring it back.
+        for dock in (self.libraries_dock, self.queue_dock):
+            view_menu.addAction(dock.toggleViewAction())
+        view_menu.addSeparator()
 
         back = QAction("Back to shelf", self)
         back.setShortcut(QKeySequence(Qt.Key_Escape))
@@ -641,6 +662,22 @@ class MainWindow(QMainWindow):
             )
         self.in_app_action.toggled.connect(self.set_video_in_app)
         play_menu.addAction(self.in_app_action)
+        default_menu = play_menu.addMenu("Play by Default")
+        default_menu.setToolTip(
+            "What a double-click plays a chapter as, what the main Play button does, and "
+            "what Add to Queue starts an empty queue as"
+        )
+        self.default_group = QActionGroup(self)
+        self.default_actions = {}
+        for label, audio_only in (("Audio", True), ("Video", False)):
+            action = QAction(label, self.default_group)
+            action.setCheckable(True)
+            action.setChecked(audio_only == self.default_audio_only())
+            action.triggered.connect(
+                lambda _checked=False, a=audio_only: self.set_default_audio_only(a)
+            )
+            default_menu.addAction(action)
+            self.default_actions[audio_only] = action
         self.show_video_action = QAction("Show Video", self)
         self.show_video_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
         self.show_video_action.setToolTip("Back to the video playing in the app")
@@ -652,6 +689,11 @@ class MainWindow(QMainWindow):
         fullscreen_action.setToolTip("The video playing in the app, filling the screen")
         fullscreen_action.triggered.connect(self.toggle_fullscreen)
         play_menu.addAction(fullscreen_action)
+        self.move_video_action = QAction("Pop Out to mpv's Window", self)
+        self.move_video_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        self.move_video_action.setEnabled(False)
+        self.move_video_action.triggered.connect(self.move_video)
+        play_menu.addAction(self.move_video_action)
         play_menu.addSeparator()
         playlists_menu = play_menu.addMenu("Playlists")
         playlists_menu.aboutToShow.connect(
@@ -1026,9 +1068,10 @@ class MainWindow(QMainWindow):
 
     # --- playback --------------------------------------------------------
 
-    def play_from(self, video_id: str, chapter_index: int, audio_only: bool = True,
+    def play_from(self, video_id: str, chapter_index: int, audio_only: bool | None = None,
                   in_app: bool | None = None) -> None:
         """Play one chapter, and line the rest of its video up behind it.
+        As audio or video as asked, else as the setting says.
 
         Starting a track part-way down an album and having it stop at the
         end of that one track is not what anybody means by Play.
@@ -1036,6 +1079,8 @@ class MainWindow(QMainWindow):
         video = self.data["videos"].get(video_id)
         if video is None:
             return
+        if audio_only is None:
+            audio_only = self.default_audio_only()
         self.queue.set_entries(
             playback.queue_entries_for(video_id, video, audio_only), start=chapter_index
         )
@@ -1056,20 +1101,23 @@ class MainWindow(QMainWindow):
             return [("Play Video in mpv's Own Window", False)]
         return [("Play Video in the App", True)]
 
-    def enqueue_video(self, video_id: str, audio_only: bool = True) -> None:
+    def enqueue_video(self, video_id: str, audio_only: bool | None = None) -> None:
         """Add every chapter of a video to the end of the queue."""
         video = self.data["videos"].get(video_id)
         if video is None:
             return
         self.enqueue_chapters(video_id, range(len(video["chapters"])), audio_only)
 
-    def enqueue_chapters(self, video_id: str, indices, audio_only: bool = True) -> None:
+    def enqueue_chapters(self, video_id: str, indices, audio_only: bool | None = None) -> None:
         """Add some of a video's chapters to the end of the queue, in the
-        order given. Starts playing if nothing was queued.
+        order given, playing as the queue does. Into an empty one, as audio
+        or video as asked, else as the setting says - and starts playing.
         """
         video = self.data["videos"].get(video_id)
         if video is None:
             return
+        if audio_only is None:
+            audio_only = self.default_audio_only()
         every = playback.queue_entries_for(video_id, video, audio_only)
         entries = [every[i] for i in indices if 0 <= i < len(every)]
         if not entries:
@@ -1097,6 +1145,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_queue(self) -> None:
         self.queue_panel.show_queue(self.queue.entries(), self.queue.current_index())
+        self.queue_panel.set_audio_only(self.queue.audio_only)
 
     def _queue_edited(self) -> None:
         """The queue changed: show it, and let what's playing follow."""
@@ -1111,15 +1160,35 @@ class MainWindow(QMainWindow):
         self._refresh_queue()
         self.play_chapter(entry.video_id, entry.chapter_index, entry.audio_only)
 
-    def play_queue_entry_as(self, entry_index: int, audio_only: bool) -> None:
-        """Play a queued chapter as audio or as video, whichever it was
-        queued as - and the rest of its video after it the same way."""
-        self.queue.set_audio_only(entry_index, audio_only)
-        entry = self.queue.jump_to(entry_index)
-        if entry is None:
+    def set_queue_audio_only(self, audio_only: bool) -> None:
+        """The whole queue as audio or as video - what's playing too, going
+        on from the same moment: video where it plays by default."""
+        if not self.queue.set_audio_only(audio_only):
             return
         self._refresh_queue()
-        self.play_chapter(entry.video_id, entry.chapter_index, entry.audio_only)
+        self._set_status("The queue plays as audio." if audio_only
+                         else "The queue plays as video.")
+        if self.now_playing is None or not self.session.running():
+            return
+        in_app = not audio_only and self.video_in_app()
+        if self._fullscreen:
+            self.set_fullscreen(False)
+        try:
+            segment = self.session.switch(self.video_page.window_id() if in_app else None)
+        except OSError as exc:
+            QMessageBox.critical(self, "Playback failed", f"Could not start mpv: {exc}")
+            return
+        if segment is None:
+            self.stop_playback()
+            return
+        self._last_duration = None
+        self._refresh_queue()
+        self._show_now_playing()
+        if in_app:
+            self.show_video_page()
+        elif self.pages.currentIndex() == PAGE_VIDEO:
+            self.pages.setCurrentIndex(self._page_before_video)
+            self._update_video_controls()
 
     def remove_from_queue(self, entry_indices) -> None:
         if isinstance(entry_indices, int):
@@ -1170,6 +1239,21 @@ class MainWindow(QMainWindow):
         self._set_status(
             "Video will play here, in the app." if on
             else "Video will play in mpv's own window."
+        )
+
+    def default_audio_only(self) -> bool:
+        """Whether a chapter plays as audio when nothing says which."""
+        return bool(store.load_app_settings().get(AUDIO_BY_DEFAULT_SETTING, True))
+
+    def set_default_audio_only(self, audio_only: bool) -> None:
+        settings = store.load_app_settings()
+        settings[AUDIO_BY_DEFAULT_SETTING] = bool(audio_only)
+        store.save_app_settings(settings)
+        self.default_actions[bool(audio_only)].setChecked(True)
+        self.detail.set_default_audio_only(bool(audio_only))
+        self._set_status(
+            "Chapters will play as audio by default." if audio_only
+            else "Chapters will play as video by default."
         )
 
     def play_chapter(self, video_id: str, chapter_index: int, audio_only: bool,
@@ -1235,12 +1319,22 @@ class MainWindow(QMainWindow):
         return (self.session.running() and self.session.window_id() is not None
                 and self.now_playing is not None and not self.now_playing[2])
 
+    def _video_playing_elsewhere(self) -> bool:
+        """Video playing in mpv's own window - which could come into the app."""
+        return (can_embed() and self.session.running() and self.session.window_id() is None
+                and self.now_playing is not None and not self.now_playing[2])
+
     def _update_video_controls(self) -> None:
         here = self._video_playing_here()
+        elsewhere = self._video_playing_elsewhere()
         self.now_playing_bar.set_video_controls(
-            here, self.pages.currentIndex() == PAGE_VIDEO, self._fullscreen,
+            here, self.pages.currentIndex() == PAGE_VIDEO, self._fullscreen, elsewhere,
         )
         self.show_video_action.setEnabled(here)
+        self.move_video_action.setEnabled(here or elsewhere)
+        self.move_video_action.setText(
+            "Bring Video into the App" if elsewhere else "Pop Out to mpv's Window"
+        )
 
     def toggle_play_pause(self) -> None:
         if self.editor.active():
@@ -1360,8 +1454,9 @@ class MainWindow(QMainWindow):
         return None, None
 
     def _fill_playlists_menu(self, menu) -> None:
-        """Save the queue as a playlist; and each saved one, to play as audio
-        or video - here or in mpv's own window - or add to the queue."""
+        """Save the queue as a playlist; and each saved one, to play as it
+        was saved, or as audio or as video - here or in mpv's own window - or
+        add to the queue."""
         save = menu.addAction("Save Queue as Playlist…")
         save.setEnabled(not self.queue.is_empty())
         save.triggered.connect(self.save_queue_as_playlist)
@@ -1381,12 +1476,15 @@ class MainWindow(QMainWindow):
             if several:
                 label += f"  ·  {Path(root).name}"
             sub = menu.addMenu(label)
-            choices = [("Play Audio", True, None)]
+            # Play: as it was saved. The rest say how.
+            saved_as = "Audio" if playlists.plays_audio_only(
+                playlist, self.default_audio_only()) else "Video"
+            choices = [(f"Play ({saved_as})", None, None), ("Play as Audio", True, None)]
             if embed:
-                choices += [("Play Video Here", False, True),
-                            ("Play Video in Its Own Window", False, False)]
+                choices += [("Play as Video Here", False, True),
+                            ("Play as Video in Its Own Window", False, False)]
             else:
-                choices += [("Play Video", False, False)]
+                choices += [("Play as Video", False, False)]
             for text, audio_only, in_app in choices:
                 action = sub.addAction(text)
                 action.triggered.connect(
@@ -1423,20 +1521,23 @@ class MainWindow(QMainWindow):
             owner = self._lib(entry.video_id)
             counts[id(owner)] = counts.get(id(owner), 0) + 1
         home = max(self.shown.libraries, key=lambda data: counts.get(id(data), 0))
-        playlist = playlists.save(home, name, entries, videos=self.data["videos"])
+        playlist = playlists.save(home, name, entries, videos=self.data["videos"],
+                                  audio_only=self.queue.audio_only)
         self._save()
         self._set_status(
             f"Saved {len(playlist['entries'])} chapter(s) as the playlist “{playlist['name']}”."
         )
 
-    def _playlist_entries(self, name: str, audio_only: bool, root: str | None = None):
+    def _playlist_entries(self, name: str, audio_only: bool | None, root: str | None = None):
+        """A playlist's entries: as saved, or as audio or as video."""
         _data, playlist = self._find_playlist(name, root)
         if playlist is None:
             return None
         # Entries are looked for on the whole shelf: a playlist can take in
         # videos of every library on show.
         entries, missing = playlists.queue_entries(
-            {"videos": self.data["videos"]}, playlist, audio_only
+            {"videos": self.data["videos"]}, playlist, audio_only,
+            default_audio_only=self.default_audio_only(),
         )
         if missing:
             self._set_status(
@@ -1445,9 +1546,10 @@ class MainWindow(QMainWindow):
             )
         return entries
 
-    def play_playlist(self, name: str, audio_only: bool, in_app: bool | None = None,
-                      root: str | None = None) -> None:
-        """Replace the queue with a playlist and play it."""
+    def play_playlist(self, name: str, audio_only: bool | None = None,
+                      in_app: bool | None = None, root: str | None = None) -> None:
+        """Replace the queue with a playlist and play it: as saved, or as
+        audio or as video."""
         entries = self._playlist_entries(name, audio_only, root)
         if not entries:
             return
@@ -1457,10 +1559,9 @@ class MainWindow(QMainWindow):
         self.play_chapter(entry.video_id, entry.chapter_index, entry.audio_only, in_app=in_app)
 
     def enqueue_playlist(self, name: str, root: str | None = None) -> None:
-        """A playlist added to the end of the queue, played as the queue is -
-        audio unless video is what's playing."""
-        audio_only = self.now_playing[2] if self.now_playing is not None else True
-        entries = self._playlist_entries(name, audio_only, root)
+        """A playlist added to the end of the queue - playing as the queue
+        does, or into an empty one, as it was saved."""
+        entries = self._playlist_entries(name, None, root)
         if not entries:
             return
         was_empty = self.queue.is_empty()
@@ -1516,6 +1617,66 @@ class MainWindow(QMainWindow):
             self.set_fullscreen(False)
         self.pages.setCurrentIndex(self._page_before_video)
         self._update_video_controls()
+
+    def move_video(self) -> None:
+        """Video playing in the app out into mpv's own window, or playing
+        there back into the app - carrying on from the same moment."""
+        here = self._video_playing_here()
+        if not here and not self._video_playing_elsewhere():
+            return
+        if self._fullscreen:
+            self.set_fullscreen(False)
+        try:
+            segment = self.session.move_to(None if here else self.video_page.window_id())
+        except OSError as exc:
+            QMessageBox.critical(self, "Playback failed", f"Could not start mpv: {exc}")
+            return
+        if segment is None:
+            self.stop_playback()
+            return
+        if here:
+            if self.pages.currentIndex() == PAGE_VIDEO:
+                self.pages.setCurrentIndex(self._page_before_video)
+            self._update_video_controls()
+            self._set_status("Video moved to mpv's own window.")
+        else:
+            self.show_video_page()
+            self._set_status("Video moved into the app.")
+
+    def take_screenshot(self) -> None:
+        """The picture playing in the app, as it is now, saved as a PNG in
+        the screenshot folder."""
+        if not self._video_playing_here():
+            return
+        video = self.data["videos"].get(self.now_playing[0])
+        name = video["display_name"] if video else "Screenshot"
+        folder = self.player.screenshot_dir
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._set_status(f"No screenshot: {exc}", "warning")
+            return
+        path = _unused_path(folder, name, self._last_position or 0.0)
+        if self.player.screenshot(path):
+            self._set_status(f"Screenshot saved to {path}")
+            self.player.show_text("Screenshot saved")
+        else:
+            self._set_status("mpv couldn't take a screenshot.", "warning")
+
+    def cycle_track(self, name: str) -> None:
+        """Subtitles on or off, or the next subtitles or audio track, in the
+        video playing in the app - as mpv's V, J and # would."""
+        if not self._video_playing_here():
+            return
+        value = self.player.cycle(name)
+        if name == "sub-visibility":
+            text = "Subtitles shown" if value else "Subtitles hidden"
+        else:
+            kind = "Subtitles" if name == "sub" else "Audio"
+            track = self.player.current_track(name)
+            text = f"{kind}: {_track_label(track)}" if track else f"{kind}: none"
+        self._set_status(text + ".")
+        self.player.show_text(text)
 
     def toggle_fullscreen(self) -> None:
         self.set_fullscreen(not self._fullscreen)
@@ -2584,3 +2745,28 @@ class MainWindow(QMainWindow):
             # Its own mpv, its poll and its hold on the keyboard go with it.
             self.editor._close()
         super().closeEvent(event)
+
+
+def _screenshot_dir() -> Path:
+    """Where screenshots go: a folder of the app's in Pictures."""
+    pictures = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
+    return Path(pictures or Path.home()) / SCREENSHOT_FOLDER
+
+
+def _unused_path(folder: Path, name: str, seconds: float) -> Path:
+    """A screenshot's file: the video's name and the moment, never one
+    that's there already."""
+    name = name.replace("/", "-").replace("\0", "").strip(". ") or "Screenshot"
+    stem = f"{name} {utils.format_seconds(seconds).replace(':', '-')}"
+    path = folder / f"{stem}.png"
+    count = 2
+    while path.exists():
+        path = folder / f"{stem} ({count}).png"
+        count += 1
+    return path
+
+
+def _track_label(track: dict) -> str:
+    """A track as mpv describes it, in words: "English · Commentary"."""
+    parts = [str(track[key]) for key in ("lang", "title") if track.get(key)]
+    return " · ".join(parts) or f"track {track.get('id', '?')}"

@@ -5,13 +5,14 @@
 They're kept in the library's own data, beside the chapters they point
 into, so a catalog taken to another device takes its playlists with it.
 
-An entry is a chapter of a video, by the video's id. Whether it plays as
-audio or video, in the app or in mpv's own window, is chosen each time the
-playlist is played, not saved with it. Each entry also keeps the names it
-had and where its chapter started: an entry whose video has gone still
-reads as something, and one whose video's chapters have since been split
-or merged finds the same music again by its start rather than by a number
-that now means another song.
+An entry is a chapter of a video, by the video's id. A playlist keeps
+whether its queue played as audio or as video, which playing it can
+override; where video plays, in the app or in mpv's own window, is chosen
+each time it's played, not saved with it. Each entry also keeps the
+names it had and where its chapter started: an entry whose video has gone
+still reads as something, and one whose video's chapters have since been
+split or merged finds the same music again by its start rather than by a
+number that now means another song.
 """
 
 from __future__ import annotations
@@ -37,9 +38,10 @@ def get(data: dict, name: str) -> dict | None:
     return next((p for p in data.get(KEY) or [] if p["name"].lower() == wanted), None)
 
 
-def save(data: dict, name: str, entries, videos=None) -> dict:
-    """Save queue entries as the playlist `name`, replacing one of that name.
-    `videos` (the library's) gives each entry its chapter's start."""
+def save(data: dict, name: str, entries, videos=None, audio_only: bool | None = None) -> dict:
+    """Save queue entries as the playlist `name`, replacing one of that name,
+    to play as audio or as video (`audio_only`; else as the first entry
+    does). `videos` (the library's) gives each entry its chapter's start."""
     name = name.strip()
     if not name:
         raise ValueError("a playlist needs a name")
@@ -57,7 +59,10 @@ def save(data: dict, name: str, entries, videos=None) -> dict:
         if video and 0 <= entry.chapter_index < len(video["chapters"]):
             item["start"] = video["chapters"][entry.chapter_index]["start"]
         saved.append(item)
-    playlist = {"name": name, "entries": saved, "saved": time.strftime("%Y-%m-%d %H:%M")}
+    if audio_only is None:
+        audio_only = entries[0].audio_only if entries else True
+    playlist = {"name": name, "entries": saved, "audio_only": bool(audio_only),
+                "saved": time.strftime("%Y-%m-%d %H:%M")}
     existing = get(data, name)
     playlists = data.setdefault(KEY, [])
     if existing is not None:
@@ -98,9 +103,14 @@ def _chapter_index(video: dict, item: dict) -> int | None:
     return index if isinstance(index, int) and 0 <= index < len(chapters) else None
 
 
-def queue_entries(data: dict, playlist: dict, audio_only: bool) -> tuple[list[QueueEntry], int]:
+def queue_entries(data: dict, playlist: dict, audio_only: bool | None = None,
+                  default_audio_only: bool = True) -> tuple[list[QueueEntry], int]:
     """A playlist as queue entries, named as the library names them now;
-    and how many of its entries couldn't be found."""
+    and how many of its entries couldn't be found. They play as `audio_only`
+    says, else as the playlist was saved - or, one saved before playlists
+    kept that, as `default_audio_only`."""
+    if audio_only is None:
+        audio_only = plays_audio_only(playlist, default_audio_only)
     videos = data.get("videos", {})
     entries, missing = [], 0
     for item in playlist.get("entries", []):
@@ -119,6 +129,13 @@ def queue_entries(data: dict, playlist: dict, audio_only: bool) -> tuple[list[Qu
             duration=chapter["end"] - chapter["start"],
         ))
     return entries, missing
+
+
+def plays_audio_only(playlist: dict, default: bool = True) -> bool:
+    """Whether a playlist was saved playing as audio; `default` for one
+    saved before that was kept."""
+    saved = playlist.get("audio_only")
+    return saved if isinstance(saved, bool) else default
 
 
 def length(playlist: dict) -> float:

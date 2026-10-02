@@ -36,8 +36,8 @@ class TestPieces:
         assert piece.entries == (0, 1) and (piece.start, piece.end) == (0.0, 200.0)
         assert piece.entry_at(150.0) == 1 and piece.entry_at(20.0) == 0
 
-    def test_a_gap_another_video_or_another_mode_starts_a_new_one(self):
-        for second in (entry("a", 2), entry("b", 1), entry("a", 1, audio=False)):
+    def test_a_gap_or_another_video_starts_a_new_one(self):
+        for second in (entry("a", 2), entry("b", 1)):
             queue = queue_of(entry("a", 0), second)
             assert playback.plan_segment(queue, VIDEOS.get, 0).entries == (0,)
 
@@ -154,12 +154,12 @@ class TestQueueEdits:
 
 class TestWhatMpvIsTold:
     def test_a_file_and_a_blu_ray_title(self):
-        queue = queue_of(entry("a", 1), entry("d", 0, audio=False))
+        queue = queue_of(entry("a", 1), entry("d", 0))
         piece = playback.plan_segment(queue, VIDEOS.get, 0)
         assert player_module.mpv_target(piece) == (
             "/v/a.mkv", {"start": "100.000", "end": "200.000", "vid": "no"}
         )
-        disc = playback.plan_segment(queue, VIDEOS.get, 1)
+        disc = playback.plan_segment(queue_of(entry("d", 0, audio=False)), VIDEOS.get, 0)
         assert player_module.mpv_target(disc) == (
             "bd://3//disc", {"start": "0.000", "end": "none", "vid": "auto"}
         )
@@ -192,3 +192,49 @@ class TestWhatMpvIsTold:
         for flag in ("--idle=yes", "--prefetch-playlist=yes", "--wid=9", "--osc=no",
                      "--input-default-bindings=no"):
             assert flag in args
+
+
+class TestMovingToAnotherWindow:
+    def test_a_new_mpv_carries_on_where_the_old_one_was(self):
+        mpv = FakeMpv()
+        queue = queue_of(entry("a", 0, audio=False), entry("a", 1, audio=False),
+                         entry("b", 0, audio=False))
+        session = playback.Session(mpv, queue, VIDEOS.get)
+        session.play(window_id=99)
+        mpv.state.update(position=142.0, paused=True)
+        mpv.calls.clear()
+        moved = session.move_to(None)
+        assert moved.entries == (0, 1) and session.window_id() is None
+        assert mpv.calls[0] == ("start", None)
+        assert mpv.calls[1] == ("resume", "a", (0, 1), {"time-pos": 142.0, "pause": True})
+        assert mpv.calls[2][:2] == ("load", "b"), "what comes next is lined up again"
+        assert session.current().start == 0.0, "the piece still starts where it did"
+
+    def test_nothing_playing_has_nothing_to_move(self):
+        mpv = FakeMpv()
+        session = playback.Session(mpv, queue_of(entry("a", 0)), VIDEOS.get)
+        assert session.move_to(None) is None and mpv.calls == []
+
+    def test_switching_to_video_carries_on_as_video_from_the_same_moment(self):
+        mpv = FakeMpv()
+        queue = queue_of(entry("a", 0), entry("a", 1), entry("b", 0))
+        session = playback.Session(mpv, queue, VIDEOS.get)
+        session.play()
+        mpv.state["position"] = 130.0
+        queue.jump_to(1)
+        queue.set_audio_only(False)
+        mpv.calls.clear()
+        piece = session.switch(77)
+        assert not piece.audio_only and piece.entries == (1,), "from the chapter playing"
+        assert mpv.calls[0] == ("start", 77)
+        assert mpv.calls[1][0] == "resume" and mpv.calls[1][3]["time-pos"] == 130.0
+
+    def test_a_moment_past_where_the_piece_now_ends_starts_it_over(self):
+        mpv = FakeMpv()
+        queue = queue_of(entry("a", 1, audio=False))
+        session = playback.Session(mpv, queue, VIDEOS.get)
+        session.play()
+        mpv.state["position"] = 260.0  # video ran on past chapter 2's end
+        queue.set_audio_only(True)
+        session.switch(None)
+        assert "time-pos" not in mpv.calls[-1][3]

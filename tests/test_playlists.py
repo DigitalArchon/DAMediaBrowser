@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Digital Archon
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Playlists: a queue saved by name, played back later as audio or video,
-and kept when the library moves or goes to another device."""
+"""Playlists: a queue saved by name, played back later as it was queued or
+all as audio or video, and kept when the library moves or goes to another
+device."""
 
 import pytest
 
@@ -36,6 +37,21 @@ class TestSaving:
             ("a", 2, False), ("b", 0, False), ("a", 0, False),
         ]
         assert queue[1].title == "Wembley 1" and queue[1].video_name == "Wembley"
+
+    def test_it_comes_back_playing_as_the_queue_did(self, data):
+        playlists.save(data, "Videos", entries(("a", 0), ("b", 1)), audio_only=False)
+        playlist = playlists.get(data, "Videos")
+        queue, _missing = playlists.queue_entries(data, playlist)
+        assert [e.audio_only for e in queue] == [False, False]
+        audio, _missing = playlists.queue_entries(data, playlist, True)
+        assert [e.audio_only for e in audio] == [True, True], "unless told otherwise"
+
+    def test_one_saved_before_that_was_kept_plays_the_default_way(self, data):
+        playlists.save(data, "Old", entries(("a", 0)))
+        del playlists.get(data, "Old")["audio_only"]
+        queue, _missing = playlists.queue_entries(data, playlists.get(data, "Old"),
+                                                  default_audio_only=False)
+        assert [e.audio_only for e in queue] == [False]
 
     def test_saving_under_a_name_in_use_replaces_it(self, data):
         playlists.save(data, "Mix", entries(("a", 0)))

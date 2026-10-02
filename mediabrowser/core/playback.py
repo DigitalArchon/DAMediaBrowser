@@ -42,6 +42,10 @@ class Queue:
     Insertion order is kept separately from play order, so turning shuffle
     on and off again returns the queue to how it was written down rather
     than to a third arbitrary order.
+
+    The whole queue plays one way, as audio or as video (audio_only): what
+    starts it says which, what's added after plays the same way, and
+    set_audio_only switches all of it.
     """
 
     def __init__(self):
@@ -50,6 +54,7 @@ class Queue:
         self._cursor = -1
         self.repeat = REPEAT_OFF
         self.shuffle = False
+        self.audio_only = True
 
     # --- contents --------------------------------------------------------
 
@@ -68,8 +73,12 @@ class Queue:
         self._cursor = -1
 
     def set_entries(self, entries, start: int = 0) -> QueueEntry | None:
-        """Replace the queue and start at `start` (an index into `entries`)."""
-        self._entries = list(entries)
+        """Replace the queue and start at `start` (an index into `entries`).
+        It plays the way the first entry does."""
+        entries = list(entries)
+        if entries:
+            self.audio_only = entries[0].audio_only
+        self._entries = self._as_queue_plays(entries)
         if not self._entries:
             self._order = []
             self._cursor = -1
@@ -79,9 +88,13 @@ class Queue:
         return self.current()
 
     def append(self, entries) -> None:
-        """Add to the end without disturbing what is playing."""
+        """Add to the end without disturbing what is playing - playing the
+        way the queue does, or, added to an empty one, the way they do."""
+        entries = list(entries)
+        if not self._entries and entries:
+            self.audio_only = entries[0].audio_only
         first_new = len(self._entries)
-        self._entries.extend(entries)
+        self._entries.extend(self._as_queue_plays(entries))
         added = list(range(first_new, len(self._entries)))
         if self.shuffle:
             import random
@@ -137,22 +150,18 @@ class Queue:
         if playing is not None:
             self._cursor = self._order.index(shifted(playing))
 
-    def set_audio_only(self, entry_index: int, audio_only: bool) -> list[int]:
-        """Play an entry as audio or as video, and the rest of its video's
-        run after it in the play order with it - the way Play lines up the
-        rest of a video. Returns the entry indices changed."""
-        if entry_index not in self._order:
-            return []
-        video_id = self._entries[entry_index].video_id
-        changed = []
-        for index in self._order[self._order.index(entry_index):]:
-            entry = self._entries[index]
-            if entry.video_id != video_id:
-                break
-            if entry.audio_only != audio_only:
-                self._entries[index] = replace(entry, audio_only=audio_only)
-                changed.append(index)
-        return changed
+    def set_audio_only(self, audio_only: bool) -> bool:
+        """Have the whole queue play as audio or as video. Whether that
+        changed it."""
+        if audio_only == self.audio_only:
+            return False
+        self.audio_only = audio_only
+        self._entries = self._as_queue_plays(self._entries)
+        return True
+
+    def _as_queue_plays(self, entries) -> list[QueueEntry]:
+        return [entry if entry.audio_only == self.audio_only
+                else replace(entry, audio_only=self.audio_only) for entry in entries]
 
     def remove_many(self, entry_indices) -> None:
         """Drop several entries at once, by their positions in insertion order."""
@@ -482,6 +491,41 @@ class Session:
             # mpv is opening the file, it's paused again once it has.
             self.player.set_paused(False)
         self._loaded = [(segment, self.player.load(segment))]
+        self._load_next()
+        return segment
+
+    def move_to(self, window_id: int | None) -> Segment | None:
+        """Carry what's playing on in another window - `window_id`, or
+        mpv's own window for None. None if nothing was playing."""
+        # Its own start kept: the entries before the one playing have played.
+        return self._carry_on(window_id, self.current())
+
+    def switch(self, window_id: int | None) -> Segment | None:
+        """Carry what's playing on as the queue now has it - after it has
+        switched between audio and video - in `window_id`. None if nothing
+        was playing, or it can't be played now."""
+        position = self.queue.position()
+        if not self.running() or position is None:
+            return None
+        return self._carry_on(window_id, plan_segment(self.queue, self._video_of, position))
+
+    def _carry_on(self, window_id: int | None, segment: Segment | None) -> Segment | None:
+        """`segment` in a new mpv, in `window_id`, picking up where the one
+        playing is: the same moment, paused or not, with the same tracks,
+        volume and subtitles. mpv can't move or change shape, so it's a
+        new one."""
+        if not self.running() or segment is None:
+            return None
+        carried = self.player.carry()
+        moment = carried.get("time-pos")
+        if isinstance(moment, int | float) and (
+                moment < segment.start or (segment.end is not None and moment >= segment.end)):
+            # Outside the piece as it now is - video that ran on past its
+            # last chapter, switched to audio: from the piece's start.
+            del carried["time-pos"]
+        self.player.start_session(window_id)
+        self._window_id = window_id
+        self._loaded = [(segment, self.player.resume(segment, carried))]
         self._load_next()
         return segment
 

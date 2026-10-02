@@ -61,6 +61,7 @@ REVIEWED = {
     "core/library.py": 1,       # cached covers renamed within ARTWORK_DIR
     "core/player.py": 2,        # mpv's socket, in the temporary folder
     "core/store.py": 8,         # settings and library files, config.DATA_DIR
+    "gui/main_window.py": 1,    # the screenshot folder, in Pictures
 }
 
 

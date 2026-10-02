@@ -28,6 +28,12 @@ from . import config
 # thread is polling - so keep it short.
 REQUEST_TIMEOUT_SECONDS = 0.25
 
+# What moving playback to another mpv takes along. The player's settings
+# carry on for everything after; the tracks chosen only mean anything in
+# the file they were chosen in, so they go with that file alone.
+CARRIED_SETTINGS = ("volume", "mute", "sub-visibility")
+CARRIED_TRACKS = ("aid", "sid")
+
 
 def x11_environment(environ=None) -> dict:
     """mpv's environment for drawing into an X11 window of ours. On a
@@ -52,6 +58,9 @@ class Player:
             Path(tempfile.gettempdir())
             / f"media-chapter-browser-mpv-{os.getpid()}-{uuid.uuid4().hex[:8]}.sock"
         )
+        # Where mpv's own S key puts a screenshot, in its own window. None:
+        # the folder it runs in.
+        self.screenshot_dir: Path | None = None
 
     # --- process ---------------------------------------------------------
 
@@ -98,6 +107,8 @@ class Player:
             f"--input-ipc-server={self._socket_path}",
             *extra,
         ]
+        if self.screenshot_dir is not None:
+            args.append(f"--screenshot-directory={self.screenshot_dir}")
         if start is not None:
             args.append(f"--start={start:.3f}")
         if end is not None:
@@ -131,15 +142,46 @@ class Player:
             env = x11_environment()
         self._launch([], None, None, False, extra, env)
 
-    def load(self, segment, append: bool = False) -> int | None:
+    def load(self, segment, append: bool = False, options: dict | None = None) -> int | None:
         """Give a session a playback.Segment: to play now, or (`append`) to
-        play when what's playing ends. Returns mpv's id for the entry."""
-        url, options = mpv_target(segment)
+        play when what's playing ends. Returns mpv's id for the entry.
+        `options` are mpv's, for this entry alone, over the segment's own."""
+        url, segment_options = mpv_target(segment)
+        options = {**segment_options, **(options or {})}
         reply = self._call({
             "name": "loadfile", "url": url, "flags": "append" if append else "replace",
             "options": ",".join(f"{key}={value}" for key, value in options.items()),
         })
         return reply.get("playlist_entry_id") if isinstance(reply, dict) else None
+
+    def carry(self) -> dict:
+        """What another mpv needs to carry on from where this one is: the
+        moment, whether paused, the volume and subtitles, and the tracks
+        chosen. Only what mpv could say."""
+        carried = {}
+        for name in ("time-pos", "pause", *CARRIED_SETTINGS, *CARRIED_TRACKS):
+            value = self._request(["get_property", name])
+            if value is not None:
+                carried[name] = value
+        return carried
+
+    def resume(self, segment, carried: dict) -> int | None:
+        """Load `segment` into a session just started, carrying on where
+        another mpv left off (its carry()). Returns mpv's id for the entry."""
+        for name in CARRIED_SETTINGS:
+            if name in carried:
+                self._call(["set_property", name, carried[name]])
+        # Set before the load, it holds for the file once it has opened.
+        if carried.get("pause"):
+            self.set_paused(True)
+        options = {}
+        if isinstance(carried.get("time-pos"), int | float):
+            options["start"] = f"{max(0.0, carried['time-pos']):.3f}"
+        for name in CARRIED_TRACKS:
+            if name in carried:
+                value = carried[name]
+                options[name] = "no" if value is False else str(value)
+        return self.load(segment, options=options)
 
     def playlist_clear(self) -> None:
         """Drop everything from mpv's playlist but what's playing."""
@@ -304,6 +346,36 @@ class Player:
 
     def set_volume(self, percent):
         return self._send(["set_property", "volume", float(percent)], retries=1)
+
+    # --- what mpv's own keys would do --------------------------------------
+    #
+    # Drawn into a window of the app's, mpv has no keys of its own; the app
+    # takes these and asks for them here.
+
+    def cycle(self, name: str):
+        """Step a property on - "sub-visibility", "sub", "audio" - and return
+        what it is now."""
+        self._call(["cycle", name])
+        return self._request(["get_property", name])
+
+    def current_track(self, kind: str) -> dict | None:
+        """The "sub" or "audio" track playing, as mpv describes it (id,
+        lang, title...), or None for none."""
+        track = self._request(["get_property", f"current-tracks/{kind}"])
+        return track if isinstance(track, dict) else None
+
+    def screenshot(self, path) -> bool:
+        """The picture as it is now, subtitles and all, saved to `path`
+        (its extension says the format). Whether it was."""
+        path = Path(path)
+        # Sent as a list, the name is taken as it is: no ${...} expanded.
+        self._call(["screenshot-to-file", str(path), "subtitles"])
+        return path.exists()
+
+    def show_text(self, text: str, milliseconds: int = 2000) -> None:
+        """A message over the picture. Level 0: shown even with mpv's own
+        messages turned off, as they are in the app's window."""
+        self._send(["show-text", text, int(milliseconds), 0], retries=1)
 
     # --- state -----------------------------------------------------------
 

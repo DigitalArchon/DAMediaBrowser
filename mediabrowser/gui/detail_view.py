@@ -93,6 +93,8 @@ class DetailView(QWidget):
         # protection is called ("Locked", "Private (library)"...).
         self.protection_of: Callable[[str, dict], tuple[bool, str]] | None = None
         self._locked = False
+        # What a double-click (or Enter) plays a chapter as: set_default_audio_only.
+        self.default_audio_only = True
 
         self.back_button = QPushButton("‹  All videos")
         self.back_button.setObjectName("backButton")
@@ -192,6 +194,7 @@ class DetailView(QWidget):
         chapter_actions.setSpacing(6)
         chapter_actions.addWidget(self.play_audio_button)
         chapter_actions.addWidget(self.play_video_button)
+        self._chapter_actions = chapter_actions
         chapter_actions.addWidget(self.rename_button)
         chapter_actions.addStretch(1)
         chapter_actions.addWidget(self.chapters_button)
@@ -332,8 +335,25 @@ class DetailView(QWidget):
 
     # --- actions ---------------------------------------------------------
 
+    def set_default_audio_only(self, audio_only: bool) -> None:
+        """Which of Play Audio and Play Video is the main one: first, picked
+        out, and what a double-click does."""
+        self.default_audio_only = audio_only
+        first, second = (
+            (self.play_audio_button, self.play_video_button) if audio_only
+            else (self.play_video_button, self.play_audio_button)
+        )
+        for index, button in enumerate((first, second)):
+            self._chapter_actions.removeWidget(button)
+            self._chapter_actions.insertWidget(index, button)
+        self.play_audio_button.setObjectName("primaryButton" if audio_only else "")
+        self.play_video_button.setProperty("primary", not audio_only)
+        for button in (first, second):
+            button.style().unpolish(button)
+            button.style().polish(button)
+
     def _on_activated(self, item: QTreeWidgetItem) -> None:
-        self.play_requested.emit(item.data(0, Qt.UserRole), True)
+        self.play_requested.emit(item.data(0, Qt.UserRole), self.default_audio_only)
 
     def _play(self, audio_only: bool) -> None:
         index = self.selected_chapter()

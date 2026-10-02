@@ -57,3 +57,28 @@ class FakeMpv:
     def seek(self, seconds):
         self.calls.append(("seek", seconds))
         self.state["position"] = seconds
+
+    # Moving to another window: what the old mpv says, and the new one told.
+    def carry(self):
+        return {"time-pos": self.state["position"], "pause": self.state["paused"]}
+
+    def resume(self, segment, carried):
+        self.next_id += 1
+        self.calls.append(("resume", segment.video_id, segment.entries, carried))
+        self.state["playing_id"] = self.next_id
+        return self.next_id
+
+    # mpv's own keys, taken by the app.
+    def cycle(self, name):
+        self.calls.append(("cycle", name))
+        return {"sub-visibility": False}.get(name, 2)
+
+    def current_track(self, kind):
+        return {"id": 2, "lang": "eng", "title": "Commentary"}
+
+    def screenshot(self, path):
+        self.calls.append(("screenshot", path))
+        return True
+
+    def show_text(self, text, milliseconds=2000):
+        self.calls.append(("text", text))

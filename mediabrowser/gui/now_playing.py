@@ -40,6 +40,7 @@ class NowPlayingBar(QWidget):
     seek_requested = Signal(float)
     show_video_requested = Signal()
     fullscreen_requested = Signal()
+    move_requested = Signal()  # video to the other place: out of the app, or into it
 
     def __init__(self) -> None:
         super().__init__()
@@ -77,21 +78,26 @@ class NowPlayingBar(QWidget):
         self.stop_button = _transport("⏹", "Stop", self.stop_requested)
 
         # Only while video plays in the app: back to its picture from
-        # anywhere, and fullscreen.
+        # anywhere, fullscreen, and out into mpv's own window - or, while
+        # it plays there, back in.
         self.show_video_button = QPushButton("Show Video")
         self.show_video_button.setToolTip("Back to the video playing in the app")
         self.show_video_button.clicked.connect(self.show_video_requested)
         self.fullscreen_button = QPushButton("Fullscreen")
         self.fullscreen_button.setToolTip("Fill the screen with the video (F11; Esc to leave)")
         self.fullscreen_button.clicked.connect(self.fullscreen_requested)
+        self.move_button = QPushButton("Pop Out")
+        self.move_button.clicked.connect(self.move_requested)
         self.show_video_button.hide()
         self.fullscreen_button.hide()
+        self.move_button.hide()
 
         transport = QHBoxLayout()
         transport.setContentsMargins(0, 0, 0, 0)
         transport.setSpacing(6)
         transport.addWidget(self.show_video_button)
         transport.addWidget(self.fullscreen_button)
+        transport.addWidget(self.move_button)
         for button in (
             self.previous_button, self.restart_button, self.play_button,
             self.next_button, self.stop_button,
@@ -160,12 +166,20 @@ class NowPlayingBar(QWidget):
         self.cover.setPixmap(covers.for_video(video_id, cover_name, THUMB))
         self._set_enabled(True)
 
-    def set_video_controls(self, in_app: bool, showing: bool, fullscreen: bool = False) -> None:
+    def set_video_controls(self, in_app: bool, showing: bool, fullscreen: bool = False,
+                           can_come_in: bool = False) -> None:
         """Show Video while video plays in the app out of sight; Fullscreen
-        while it's in the app at all."""
+        and Pop Out while it's in the app at all; Into App while it plays in
+        mpv's own window and `can_come_in`."""
         self._video_away = in_app and not showing
         self.show_video_button.setVisible(self._video_away)
         self.fullscreen_button.setVisible(in_app)
+        self.move_button.setVisible(in_app or can_come_in)
+        self.move_button.setText("Pop Out" if in_app else "Into App")
+        self.move_button.setToolTip(
+            "Carry on in mpv's own window, from this moment - the controls here still drive it"
+            if in_app else "Carry on here in the app, from this moment"
+        )
         for label in (self.cover, self.title, self.subtitle):
             if self._video_away:
                 label.setCursor(Qt.PointingHandCursor)

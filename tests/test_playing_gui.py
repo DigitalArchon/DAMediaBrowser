@@ -235,14 +235,28 @@ class TestPlaylists:
         from PySide6.QtWidgets import QMenu
 
         window, _mpv = playing
-        playlists.save(window.data, "Mix", window.queue.entries())
+        playlists.save(window.data, "Mix", window.queue.entries(), audio_only=False)
         menu = QMenu()
         window._fill_playlists_menu(menu)
         sub = [a for a in menu.actions() if a.menu()][0].menu()
         assert [a.text() for a in sub.actions() if a.text()] == [
-            "Play Audio", "Play Video Here", "Play Video in Its Own Window", "Add to Queue",
-            "Rename…", "Delete…",
+            "Play (Video)", "Play as Audio", "Play as Video Here",
+            "Play as Video in Its Own Window", "Add to Queue", "Rename…", "Delete…",
         ]
+
+    def test_it_plays_as_the_queue_did_when_saved(self, playing, monkeypatch, embeddable):
+        from PySide6.QtWidgets import QInputDialog
+
+        window, _mpv = playing
+        window.play_from("a", 1, audio_only=False)
+        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Videos", True))
+        window.save_queue_as_playlist()
+        window.clear_queue()
+        window.play_playlist("Videos")
+        assert not window.queue.audio_only
+        window.play_from("b", 0, audio_only=True)
+        window.enqueue_playlist("Videos")
+        assert {e.audio_only for e in window.queue.entries()} == {True}, "as the queue plays"
 
 
 class TestPlayingVideoElsewhere:
@@ -292,17 +306,229 @@ class TestSeekBar:
 
 
 class TestQueueMenu:
-    def test_a_queued_video_can_be_played_as_audio(self, playing, embeddable):
-        from mediabrowser.gui.main_window import PAGE_VIDEO
+    def test_a_row_plays_or_goes(self, playing):
+        window, _mpv = playing
+        window.play_from("b", 0, audio_only=False)
+        menu = window.queue_panel.menu_for(window.queue_panel.list.item(1))
+        assert [a.text() for a in menu.actions() if a.text()] == ["Play", "Remove"]
+
+
+class TestPoppingOut:
+    def test_video_in_the_app_carries_on_in_mpvs_window_and_comes_back(self, playing,
+                                                                        embeddable):
+        from mediabrowser.gui.main_window import PAGE_SHELF, PAGE_VIDEO
+
+        window, mpv = playing
+        window.play_from("b", 1, audio_only=False)
+        bar = window.now_playing_bar
+        assert not bar.move_button.isHidden() and bar.move_button.text() == "Pop Out"
+        mpv.state["position"] = 130.0
+        mpv.calls.clear()
+        bar.move_button.click()
+        assert mpv.calls[0] == ("start", None)
+        assert mpv.calls[1][0] == "resume" and mpv.calls[1][3]["time-pos"] == 130.0
+        assert window.pages.currentIndex() == PAGE_SHELF
+        assert bar.move_button.text() == "Into App" and bar.fullscreen_button.isHidden()
+        assert window.move_video_action.text() == "Bring Video into the App"
+        window.move_video_action.trigger()
+        assert [c for c in mpv.calls if c[0] == "start"][-1] == (
+            "start", window.video_page.window_id())
+        assert window.pages.currentIndex() == PAGE_VIDEO
+        assert bar.move_button.text() == "Pop Out"
+
+    def test_popping_out_leaves_fullscreen(self, playing, embeddable):
+        window, _mpv = playing
+        window.show()
+        window.play_from("b", 0, audio_only=False)
+        window.toggle_fullscreen()
+        window.move_video()
+        assert not window._fullscreen and not window.menuBar().isHidden()
+
+    def test_the_queue_after_it_stays_out_until_video_is_played_again(self, playing,
+                                                                     embeddable):
+        window, mpv = playing
+        window.play_from("b", 0, audio_only=False)
+        window.move_video()
+        window._skip(1)
+        assert window.session.window_id() is None
+        window.play_from("a", 0, audio_only=False)
+        assert window.session.window_id() == window.video_page.window_id()
+
+    def test_audio_has_nothing_to_move(self, playing, embeddable):
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        assert window.now_playing_bar.move_button.isHidden()
+        assert not window.move_video_action.isEnabled()
+
+    def test_without_embedding_video_cant_come_in(self, playing):
+        window, _mpv = playing
+        window.play_from("b", 0, audio_only=False)
+        assert window.now_playing_bar.move_button.isHidden()
+
+    def test_the_video_page_has_no_fullscreen_of_its_own(self, playing, embeddable):
+        window, _mpv = playing
+        assert not hasattr(window.video_page, "fullscreen_button"), "the bar's is the one"
+
+
+class TestMpvKeysInTheApp:
+    def _press(self, window, key, text=""):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        window.video_page.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier, text))
+
+    def test_s_saves_a_screenshot_named_for_the_moment(self, playing, embeddable, tmp_path):
+        from PySide6.QtCore import Qt
+
+        window, mpv = playing
+        window.player.screenshot_dir = tmp_path / "shots"
+        window.play_from("b", 0, audio_only=False)
+        window._last_position = 75.0
+        self._press(window, Qt.Key_S, "s")
+        [shot] = [c[1] for c in mpv.calls if c[0] == "screenshot"]
+        assert shot == tmp_path / "shots" / "Wembley 1-15.png"
+        assert str(shot) in window.status_label.text()
+
+    def test_a_screenshot_never_overwrites_one(self, tmp_path):
+        from mediabrowser.gui.main_window import _unused_path
+
+        (tmp_path / "AC-DC 0-05.png").write_bytes(b"")
+        assert _unused_path(tmp_path, "AC/DC", 5.0) == tmp_path / "AC-DC 0-05 (2).png"
+
+    def test_v_j_and_hash_step_subtitles_and_audio(self, playing, embeddable):
+        from PySide6.QtCore import Qt
 
         window, mpv = playing
         window.play_from("b", 0, audio_only=False)
-        window.video_page.back_button.click()
-        item = window.queue_panel.list.item(1)
-        menu = window.queue_panel.menu_for(item)
-        actions = {a.text(): a for a in menu.actions() if a.text()}
-        assert {"Play", "Play Audio", "Play Video", "Remove"} <= set(actions)
-        actions["Play Audio"].trigger()
-        assert window.now_playing == ("b", 1, True)
-        assert [e.audio_only for e in window.queue.entries()] == [False, True, True]
-        assert window.pages.currentIndex() != PAGE_VIDEO
+        self._press(window, Qt.Key_V, "v")
+        assert window.status_label.text() == "Subtitles hidden."
+        self._press(window, Qt.Key_J, "j")
+        assert window.status_label.text() == "Subtitles: eng · Commentary."
+        self._press(window, Qt.Key_NumberSign, "#")
+        assert [c[1] for c in mpv.calls if c[0] == "cycle"] == ["sub-visibility", "sub", "audio"]
+        assert ("text", "Audio: eng · Commentary") in mpv.calls, "shown over the picture too"
+
+    def test_they_do_nothing_with_no_video_in_the_app(self, playing, embeddable):
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        window.take_screenshot()
+        window.cycle_track("sub")
+        assert not [c for c in mpv.calls if c[0] in ("screenshot", "cycle")]
+
+
+class TestTheQueueAsAudioOrVideo:
+    def test_the_button_says_how_it_plays(self, playing):
+        window, _mpv = playing
+        button = window.queue_panel.mode_button
+        assert not button.isEnabled(), "nothing queued"
+        window.play_from("a", 0, audio_only=True)
+        assert button.isEnabled() and button.text() == "Audio" and not button.isChecked()
+        window.play_from("b", 0, audio_only=False)
+        assert button.text() == "Video" and button.isChecked()
+
+    def test_switching_to_video_carries_on_in_the_app(self, playing, embeddable):
+        from mediabrowser.gui.main_window import PAGE_VIDEO
+
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        window.enqueue_video("b")
+        mpv.state["position"] = 130.0
+        window._tick()
+        mpv.calls.clear()
+        window.queue_panel.mode_button.click()
+        assert {e.audio_only for e in window.queue.entries()} == {False}
+        assert mpv.calls[0] == ("start", window.video_page.window_id())
+        assert mpv.calls[1][0] == "resume" and mpv.calls[1][3]["time-pos"] == 130.0
+        assert window.now_playing == ("a", 1, False)
+        assert window.pages.currentIndex() == PAGE_VIDEO
+        assert window.queue_panel.mode_button.text() == "Video"
+
+    def test_switching_to_audio_leaves_the_video(self, playing, embeddable):
+        from mediabrowser.gui.main_window import PAGE_VIDEO
+
+        window, mpv = playing
+        window.show()
+        window.play_from("b", 0, audio_only=False)
+        window.toggle_fullscreen()
+        window.queue_panel.mode_button.click()
+        assert window.now_playing == ("b", 0, True)
+        assert [c for c in mpv.calls if c[0] == "start"][-1] == ("start", None)
+        assert not window._fullscreen and window.pages.currentIndex() != PAGE_VIDEO
+
+    def test_whatever_is_added_plays_as_the_queue_does(self, playing):
+        window, _mpv = playing
+        window.play_from("a", 0, audio_only=False)
+        window.enqueue_chapters("b", [1], audio_only=True)
+        assert {e.audio_only for e in window.queue.entries()} == {False}
+
+    def test_with_nothing_playing_it_just_switches(self, playing):
+        window, mpv = playing
+        window.enqueue_video("a")
+        window.stop_playback()
+        mpv.calls.clear()
+        window.set_queue_audio_only(False)
+        assert not window.queue.audio_only and mpv.calls == []
+
+
+class TestPlayingVideoByDefault:
+    def test_audio_until_set_otherwise(self, playing):
+        window, _mpv = playing
+        assert window.default_audio_only() and window.default_actions[True].isChecked()
+        window.set_default_audio_only(False)
+        assert not window.default_audio_only() and window.default_actions[False].isChecked()
+
+    def test_a_double_click_on_a_chapter_plays_video(self, playing):
+        window, _mpv = playing
+        window.set_default_audio_only(False)
+        window.open_video("a")
+        window.detail._on_activated(window.detail.tree.topLevelItem(1))
+        assert window.now_playing == ("a", 1, False)
+        window.set_view(1)
+        window.list.chapter_activated.emit("b", 2)
+        assert window.now_playing == ("b", 2, False)
+
+    def test_add_to_queue_queues_video(self, playing):
+        window, _mpv = playing
+        window.set_default_audio_only(False)
+        window.enqueue_video("a")
+        assert {e.audio_only for e in window.queue.entries()} == {False}
+
+    def test_play_video_becomes_the_main_button(self, playing):
+        window, _mpv = playing
+        detail = window.detail
+        layout = detail._chapter_actions
+        assert layout.indexOf(detail.play_audio_button) == 0
+        window.set_default_audio_only(False)
+        assert layout.indexOf(detail.play_video_button) == 0
+        assert detail.play_video_button.property("primary") is True
+        assert detail.play_audio_button.objectName() != "primaryButton"
+
+    def test_it_is_remembered(self, playing):
+        from mediabrowser.gui.main_window import MainWindow
+
+        window, _mpv = playing
+        window.set_default_audio_only(False)
+        again = MainWindow()
+        assert not again.default_audio_only()
+        assert again.detail.play_video_button.property("primary") is True
+        again.close()
+
+
+class TestToolbarAndPanels:
+    def test_add_folder_is_off_the_toolbar_but_in_the_file_menu(self, window):
+        from PySide6.QtWidgets import QToolBar
+
+        bar = window.findChild(QToolBar)
+        assert window.choose_action not in bar.actions()
+        file_menu = window.menuBar().actions()[0].menu()
+        assert window.choose_action in file_menu.actions()
+
+    def test_a_closed_panel_comes_back_from_the_view_menu(self, window):
+        window.show()
+        view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
+        toggles = {a.text(): a for a in view_menu.actions()}
+        window.queue_dock.close()
+        assert window.queue_dock.isHidden()
+        toggles["Queue"].trigger()
+        assert not window.queue_dock.isHidden()
+        assert "Libraries" in toggles
