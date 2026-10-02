@@ -81,7 +81,7 @@ byte for byte, whoever builds it and wherever. Each release's `.sha256`
 can be checked against your own build of its tag:
 
 ```
-bash packaging/appimage/verify-reproducible.sh v0.14.0   # builds it twice, compares
+bash packaging/appimage/verify-reproducible.sh v0.15.0   # builds it twice, compares
 ```
 
 It carries its own Python and Qt, and runs on Ubuntu 22.04 / Debian 12 /
