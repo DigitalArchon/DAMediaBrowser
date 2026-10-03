@@ -3,7 +3,7 @@
 """Playing the queue through one mpv: which pieces it's handed, how it
 follows mpv from one to the next, and what's sent to mpv for them."""
 
-from mediabrowser.core import playback
+from mediabrowser.core import letterbox, playback
 from mediabrowser.core import player as player_module
 from tests.fake_mpv import FakeMpv
 
@@ -139,6 +139,37 @@ class TestSession:
         assert queue.current_index() == 1 and mpv.calls[1] == ("load", "b", (1,), False)
 
 
+class TestBlackBars:
+    CROP = (1920, 800, 0, 140)
+
+    def session(self, *entries):
+        mpv = FakeMpv()
+        return playback.Session(mpv, queue_of(*entries), VIDEOS.get), mpv
+
+    def test_a_video_measured_already_is_cropped_from_the_start(self):
+        letterbox.remember("a", self.CROP)
+        video = playback.plan_segment(queue_of(entry("a", 0, audio=False)), VIDEOS.get, 0)
+        audio = playback.plan_segment(queue_of(entry("a", 0)), VIDEOS.get, 0)
+        assert video.crop == self.CROP and audio.crop is None
+
+    def test_measured_while_it_plays_its_cropped_then_and_handed_over_again(self):
+        session, mpv = self.session(entry("a", 0, audio=False), entry("a", 2, audio=False))
+        session.play()
+        mpv.calls.clear()
+        letterbox.remember("a", self.CROP)
+        session.crop_measured("a")
+        assert mpv.calls == [("crop", self.CROP), ("clear",), ("load", "a", (1,), True)]
+        assert session.current().crop == session.upcoming().crop == self.CROP
+
+    def test_another_videos_bars_change_nothing(self):
+        session, mpv = self.session(entry("a", 0, audio=False))
+        session.play()
+        mpv.calls.clear()
+        letterbox.remember("b", self.CROP)
+        session.crop_measured("b")
+        assert mpv.calls == []
+
+
 class TestQueueEdits:
     def test_several_can_be_removed_at_once(self):
         queue = queue_of(*(entry("a", i % 3) for i in range(5)), start=3)
@@ -163,6 +194,22 @@ class TestWhatMpvIsTold:
         assert player_module.mpv_target(disc) == (
             "bd://3//disc", {"start": "0.000", "end": "none", "vid": "auto"}
         )
+
+    def test_a_crop_as_this_mpv_takes_it(self, monkeypatch):
+        letterbox.remember("a", (1920, 800, 0, 140))
+        piece = playback.plan_segment(queue_of(entry("a", 0, audio=False)), VIDEOS.get, 0)
+        monkeypatch.setattr(player_module, "_crops_at_output", lambda: True)
+        assert player_module.mpv_target(piece)[1]["video-crop"] == "1920x800+0+140"
+        monkeypatch.setattr(player_module, "_crops_at_output", lambda: False)
+        assert player_module.mpv_target(piece)[1]["vf"] == "crop=1920:800:0:140"
+
+    def test_a_crop_found_while_playing_is_for_that_file_alone(self, monkeypatch):
+        sent = []
+        p = player_module.Player()
+        monkeypatch.setattr(p, "_call", lambda command, attempts=20: sent.append(command))
+        monkeypatch.setattr(player_module, "_crops_at_output", lambda: False)
+        p.set_crop((1920, 800, 0, 140))
+        assert sent == [["set_property", "file-local-options/vf", "crop=1920:800:0:140"]]
 
     def test_loading_uses_named_arguments(self, monkeypatch):
         """mpv 0.38 put an index before loadfile's options; named arguments

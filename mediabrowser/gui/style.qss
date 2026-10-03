@@ -505,6 +505,13 @@ QLineEdit[readOnly="true"] {
   color: #b9bfcb;
 }
 
+/* Editing a row in place: the editor has only the row's height, which the
+   padding above would leave half the text outside of. */
+QAbstractItemView QLineEdit {
+  padding: 0 4px;
+  border-radius: 0;
+}
+
 QComboBox QAbstractItemView {
   background: #1b1e25;
   border: 1px solid #2a2e39;

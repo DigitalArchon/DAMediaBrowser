@@ -58,6 +58,7 @@ REVIEWED = {
     "core/bdmenu.py": 2,        # a temporary file for ffmpeg
     "core/catalog.py": 2,       # an export, refused inside any library
     "core/config.py": 2,        # the data folders
+    "core/letterbox.py": 2,     # measured black bars, config.DATA_DIR
     "core/library.py": 1,       # cached covers renamed within ARTWORK_DIR
     "core/player.py": 2,        # mpv's socket, in the temporary folder
     "core/store.py": 8,         # settings and library files, config.DATA_DIR

@@ -456,7 +456,16 @@ chapters of one video that follow each other play as one, with no join at
 all, and a queue that jumps between videos and discs moves from one to the
 next as seamlessly as mpv can. The seek bar, transport and queue drive it
 over mpv's IPC socket. Click anywhere on the seek bar to jump there, or
-drag it.
+drag it. Playing video, the seek bar marks where each chapter starts;
+hovering a mark names the chapter.
+
+**Black bars.** A film wider than 16:9 is stored on a Blu-ray with black
+bars above and below, which would keep it boxed in on every side in a wide
+window. The first time a video plays, a few seconds of ffmpeg in the
+background finds any bars that are always black, and mpv crops them off
+from then on, so the picture fills the width. Any part of a bar that
+sometimes carries captions is kept. The result is remembered, so each
+video is only measured once.
 
 **Video in the app.** Video plays in the main area (Playback → *Play Video
 in the App*, on by default), with the transport bar below it. **Fullscreen**

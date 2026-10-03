@@ -305,6 +305,62 @@ class TestSeekBar:
         assert seeks and 65 <= seeks[-1][1] <= 85, seeks
 
 
+    def test_playing_video_it_marks_where_each_chapter_starts(self, app, playing):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QHelpEvent
+        from PySide6.QtWidgets import QToolTip
+
+        window, _mpv = playing
+        window.show()
+        window.play_from("a", 0, audio_only=False)
+        window._tick()  # mpv says how long the file is: 300s
+        slider = window.now_playing_bar.slider
+        marks = slider.marks()
+        assert [index for index, _x in marks] == [1, 2], "the first starts at the start"
+        assert marks[0][1] < marks[1][1]
+        x = int(marks[1][1])
+        assert slider.mark_at(x) == 2 and slider.mark_at(x - 40) is None
+        slider.event(QHelpEvent(QHelpEvent.ToolTip, QPoint(x, 4), slider.mapToGlobal(QPoint(x, 4))))
+        assert QToolTip.text() == "Chapter 3 · Budokan 3"
+        QToolTip.hideText()
+
+    def test_audio_has_no_marks(self, playing):
+        window, _mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        window._tick()
+        assert window.now_playing_bar.slider.marks() == []
+        window.play_from("a", 0, audio_only=False)
+        window._tick()
+        window.stop_playback()
+        assert window.now_playing_bar.slider.marks() == []
+
+
+class TestBlackBars:
+    def test_measured_while_playing_and_cropped_then(self, app, playing, monkeypatch):
+        from PySide6.QtTest import QTest
+
+        from mediabrowser.core import letterbox
+
+        window, mpv = playing
+        crop = (1920, 800, 0, 140)
+        monkeypatch.setattr(letterbox, "detect", lambda video: crop)
+        window.play_from("a", 0, audio_only=False)
+        for _ in range(100):
+            if letterbox.measured("a"):
+                break
+            QTest.qWait(10)
+        assert letterbox.crop_for("a") == crop
+        assert ("crop", crop) in mpv.calls
+
+    def test_audio_isnt_measured(self, playing, monkeypatch):
+        from mediabrowser.core import letterbox
+
+        window, _mpv = playing
+        monkeypatch.setattr(letterbox, "detect", lambda video: pytest.fail("measured"))
+        window.play_from("a", 0, audio_only=True)
+        assert not window._measuring_bars
+
+
 class TestQueueMenu:
     def test_a_row_plays_or_goes(self, playing):
         window, _mpv = playing

@@ -8,12 +8,14 @@ two rows that changed meaning with the selection.
 
 The seek slider is driven from outside: position_changed() moves it, and it
 emits seek_requested only when a person drags it, never when it is being
-updated to follow playback.
+updated to follow playback. Playing video, it marks where each chapter
+starts - only to show where they are; Manual Edit is where they move.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -21,6 +23,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QStyle,
+    QStyleOptionSlider,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +33,11 @@ from mediabrowser.core import utils
 from mediabrowser.gui import covers
 
 THUMB = 48
+# A chapter's mark on the seek slider: its colour, how far it stands out
+# above and below the groove, and how near (pixels) hovering names it.
+MARK = QColor("#c0c5d0")
+MARK_REACH = 4
+MARK_HOVER = 5
 
 
 class NowPlayingBar(QWidget):
@@ -109,7 +118,7 @@ class NowPlayingBar(QWidget):
         self.total = QLabel("0:00")
         self.total.setObjectName("nowPlayingTime")
 
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = ChapterSlider()
         self.slider.setObjectName("seekSlider")
         # A click anywhere on the bar goes there, rather than a step towards
         # it; holding on and dragging still scrubs.
@@ -197,6 +206,7 @@ class NowPlayingBar(QWidget):
         self.cover.clear()
         self.set_duration(0.0)
         self.position_changed(0.0)
+        self.set_chapters([])
         self._set_enabled(False)
 
     def set_paused(self, paused: bool) -> None:
@@ -208,6 +218,11 @@ class NowPlayingBar(QWidget):
         self.total.setText(utils.format_seconds(self._duration))
         # Nothing to seek within until mpv reports a length.
         self.slider.setEnabled(self._active and self._duration > 0)
+
+    def set_chapters(self, chapters) -> None:
+        """Mark where each chapter starts: (start seconds, title or None)
+        each, in order, on the same clock as the bar. [] for none."""
+        self.slider.set_chapters(chapters)
 
     def position_changed(self, seconds: float) -> None:
         """Follow playback. Ignored mid-drag so the handle doesn't fight the
@@ -237,6 +252,87 @@ class NowPlayingBar(QWidget):
     def _on_release(self) -> None:
         self._dragging = False
         self.seek_requested.emit(float(self.slider.value()))
+
+
+class ChapterSlider(QSlider):
+    """The seek slider, with a mark where each chapter starts. Hovering a
+    mark names its chapter; pressing anywhere still seeks there."""
+
+    def __init__(self) -> None:
+        super().__init__(Qt.Horizontal)
+        self._chapters: list[tuple[float, str | None]] = []
+
+    def set_chapters(self, chapters) -> None:
+        self._chapters = [(float(start), title) for start, title in chapters]
+        self.update()
+
+    def _option(self) -> QStyleOptionSlider:
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        return option
+
+    def marks(self) -> list[tuple[int, float]]:
+        """(chapter index, x) for each mark shown: every chapter but one
+        starting at the very beginning, which the slider's end marks."""
+        span = self.maximum() - self.minimum()
+        if span <= 0 or not self.isEnabled():
+            return []
+        option = self._option()
+        style = self.style()
+        groove = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderHandle, self)
+        # Where the handle's middle would be at each moment.
+        left = groove.left() + handle.width() / 2
+        width = max(1, groove.width() - handle.width())
+        return [
+            (i, left + width * (min(start, self.maximum()) - self.minimum()) / span)
+            for i, (start, _title) in enumerate(self._chapters)
+            if start >= 0.5 and start < self.maximum()
+        ]
+
+    def mark_at(self, x: float) -> int | None:
+        """The chapter whose mark is under x, if one is near enough."""
+        best, distance = None, MARK_HOVER + 1
+        for index, mark_x in self.marks():
+            if abs(mark_x - x) < distance:
+                best, distance = index, abs(mark_x - x)
+        return best
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        marks = self.marks()
+        if not marks:
+            return
+        # Over the slider as the stylesheet draws it, which it only does whole
+        # (drawing just the handle again repaints the background too) - so
+        # the handle stays on top by having no mark drawn under it.
+        option = self._option()
+        style = self.style()
+        groove = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderHandle, self)
+        middle = groove.top() + groove.height() / 2
+        reach = groove.height() / 2 + MARK_REACH
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(MARK, 2))
+        for _index, x in marks:
+            if handle.left() - 1 <= x <= handle.right() + 1:
+                continue
+            painter.drawLine(QPointF(x, middle - reach), QPointF(x, middle + reach))
+        painter.end()
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.ToolTip:
+            index = self.mark_at(event.pos().x())
+            if index is None:
+                QToolTip.hideText()
+                event.ignore()
+            else:
+                title = self._chapters[index][1]
+                text = f"Chapter {index + 1}" + (f" · {title}" if title else "")
+                QToolTip.showText(event.globalPos(), text, self)
+            return True
+        return super().event(event)
 
 
 class _JumpToClick(QProxyStyle):
