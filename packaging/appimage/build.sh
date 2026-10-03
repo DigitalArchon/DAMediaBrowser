@@ -191,10 +191,20 @@ for record in "$SITE"/*.dist-info/direct_url.json; do
     rm -f "$record"
 done
 find "$APPDIR" -name "__pycache__" -type d -prune -exec rm -rf {} +
+# Everything Python loads, compiled here: the standard library and every
+# package, not only the app. The AppImage is read-only, so a module without
+# its .pyc is compiled again on every launch and never kept - which was
+# most of the time Python took to start (0.7s against 0.3s to the first
+# paint, before reading anything out of the compressed image).
 # Hash-checked rather than timestamped: a .pyc stays valid whatever time its
 # source is given below, and names no build folder (-s/-p).
+STDLIB="$("$PYTHON" -s -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')"
 "$PYTHON" -s -m compileall -q --invalidation-mode unchecked-hash \
-    -s "$APPDIR" -p / "$SITE/mediabrowser" >/dev/null
+    -s "$APPDIR" -p / "$STDLIB" >/dev/null
+# site-packages sits inside the standard library's folder; if it ever moved
+# out, the app would quietly go back to compiling itself on every launch.
+[ -f "$SITE/mediabrowser/gui/__pycache__/app.cpython-312.pyc" ] \
+    || { echo "site-packages ($SITE) wasn't compiled with the standard library" >&2; exit 1; }
 
 log "Smoke test"
 # Builds the actual window offscreen, with its own data directory so the
