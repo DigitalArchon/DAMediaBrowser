@@ -261,6 +261,11 @@ class ChapterSlider(QSlider):
     def __init__(self) -> None:
         super().__init__(Qt.Horizontal)
         self._chapters: list[tuple[float, str | None]] = []
+        # Hovering is followed by hand, not left to Qt's tooltip event: Qt
+        # only sends that while the window is active, and with video in the
+        # app it's mpv's window that has the focus.
+        self.setMouseTracking(True)
+        self._hovered: int | None = None
 
     def set_chapters(self, chapters) -> None:
         self._chapters = [(float(start), title) for start, title in chapters]
@@ -321,16 +326,29 @@ class ChapterSlider(QSlider):
             painter.drawLine(QPointF(x, middle - reach), QPointF(x, middle + reach))
         painter.end()
 
+    def tooltip_for(self, index: int) -> str:
+        title = self._chapters[index][1]
+        return f"Chapter {index + 1}" + (f" · {title}" if title else "")
+
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        index = self.mark_at(event.position().x())
+        if index is not None:
+            QToolTip.showText(event.globalPosition().toPoint(), self.tooltip_for(index), self)
+        elif self._hovered is not None:
+            QToolTip.hideText()
+        self._hovered = index
+
+    def leaveEvent(self, event) -> None:
+        if self._hovered is not None:
+            QToolTip.hideText()
+            self._hovered = None
+        super().leaveEvent(event)
+
     def event(self, event) -> bool:
+        # Qt's own tooltip event: the slider has nothing more to say.
         if event.type() == QEvent.ToolTip:
-            index = self.mark_at(event.pos().x())
-            if index is None:
-                QToolTip.hideText()
-                event.ignore()
-            else:
-                title = self._chapters[index][1]
-                text = f"Chapter {index + 1}" + (f" · {title}" if title else "")
-                QToolTip.showText(event.globalPos(), text, self)
+            event.ignore()
             return True
         return super().event(event)
 

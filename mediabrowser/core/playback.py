@@ -10,7 +10,7 @@ chapter. None of it is about widgets, and all of it is worth testing.
 
 from dataclasses import dataclass, replace
 
-from . import letterbox, utils
+from . import utils
 
 REPEAT_OFF = "off"
 REPEAT_ONE = "one"
@@ -357,8 +357,6 @@ class Segment:
     end: float | None  # None: on to the end of the file
     entries: tuple[int, ...]  # the queue entries it plays (insertion order), in order
     starts: tuple[float, ...]  # where each of those entries starts in the file
-    # Black bars to crop off the picture (letterbox.Crop), as measured so far.
-    crop: tuple[int, int, int, int] | None = None
 
     def entry_at(self, position: float | None) -> int:
         """The entry playing at `position` seconds into the file."""
@@ -421,7 +419,6 @@ def plan_segment(queue: "Queue", video_of, position: int) -> Segment | None:
         end=end,
         entries=tuple(order[p] for p in chosen),
         starts=tuple(chapters[i]["start"] for i in indices),
-        crop=None if first.audio_only else letterbox.crop_for(first.video_id),
     )
 
 
@@ -472,10 +469,6 @@ class Session:
 
     def current(self) -> Segment | None:
         return self._loaded[0][0] if self._loaded else None
-
-    def upcoming(self) -> Segment | None:
-        """The piece mpv has been handed to play next, if any."""
-        return self._loaded[1][0] if len(self._loaded) > 1 else None
 
     def window_id(self) -> int | None:
         return self._window_id
@@ -595,23 +588,6 @@ class Session:
         self.player.playlist_clear()
         del self._loaded[1:]
         self._load_next()
-
-    def crop_measured(self, video_id: str) -> None:
-        """`video_id`'s black bars have been measured (letterbox.remember)
-        while it plays, or is next: crop them now rather than next time."""
-        crop = letterbox.crop_for(video_id)
-        if crop is None or not self._loaded:
-            return
-        playing, playing_id = self._loaded[0]
-        if playing.video_id == video_id and not playing.audio_only and playing.crop != crop:
-            self._loaded[0] = (replace(playing, crop=crop), playing_id)
-            self.player.set_crop(crop)
-        upcoming = self.upcoming()
-        if upcoming is not None and upcoming.video_id == video_id:
-            # Handed over without it: again, with it.
-            self.player.playlist_clear()
-            del self._loaded[1:]
-            self._load_next()
 
     # --- following it ----------------------------------------------------
 

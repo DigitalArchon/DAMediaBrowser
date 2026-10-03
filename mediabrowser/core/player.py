@@ -12,7 +12,6 @@ is already running. Playing the queue, one mpv is kept for the whole of it
 window of the app's when given one, else in mpv's own window.
 """
 
-import functools
 import json
 import os
 import socket
@@ -194,12 +193,6 @@ class Player:
     def set_end(self, end: float | None) -> None:
         """Move where what's playing stops, while it plays."""
         self._call(["set_property", "end", "none" if end is None else f"{end:.3f}"])
-
-    def set_crop(self, crop) -> None:
-        """Crop what's playing to `crop` (letterbox.Crop), for this file
-        alone: what plays after it has its own."""
-        name, value = crop_option(crop)
-        self._call(["set_property", f"file-local-options/{name}", value])
 
     def session_state(self) -> dict:
         """Everything a session's tick needs: position, duration and pause;
@@ -423,31 +416,7 @@ def mpv_target(segment) -> tuple[str, dict]:
         "end": "none" if segment.end is None else f"{segment.end:.3f}",
         "vid": "no" if segment.audio_only else "auto",
     }
-    if segment.crop and not segment.audio_only:
-        name, value = crop_option(segment.crop)
-        options[name] = value
     return url, options
-
-
-@functools.cache
-def _crops_at_output() -> bool:
-    """Whether this mpv has video-crop (0.38 on): cropped as it's drawn,
-    with any decoder. Before that it takes a filter."""
-    try:
-        proc = subprocess.run([config.MPV_BINARY, "--list-options"],
-                              capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return "--video-crop" in proc.stdout
-
-
-def crop_option(crop) -> tuple[str, str]:
-    """mpv's option, and its value, for cropping the picture to `crop`
-    (letterbox.Crop)."""
-    width, height, x, y = crop
-    if _crops_at_output():
-        return "video-crop", f"{width}x{height}+{x}+{y}"
-    return "vf", f"crop={width}:{height}:{x}:{y}"
 
 
 def _reply(sock, request_id):

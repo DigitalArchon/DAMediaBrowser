@@ -47,16 +47,6 @@ def memory_keyring():
 
 
 @pytest.fixture(autouse=True)
-def no_measured_bars(monkeypatch, tmp_path):
-    """No test reads or writes the real remembered black bars, or runs
-    ffmpeg to measure them: every video measures as having none."""
-    from mediabrowser.core import letterbox
-
-    monkeypatch.setattr(letterbox, "_file", lambda: tmp_path / "letterbox.json")
-    monkeypatch.setattr(letterbox, "detect", lambda video: None)
-
-
-@pytest.fixture(autouse=True)
 def no_real_mpv(monkeypatch):
     """No test's window may start a real mpv: its player is a stand-in."""
     try:

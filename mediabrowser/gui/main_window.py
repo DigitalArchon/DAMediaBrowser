@@ -39,7 +39,6 @@ from mediabrowser.core import (
     catalog,
     chapter_edit,
     folders,
-    letterbox,
     library,
     naming,
     network,
@@ -169,8 +168,6 @@ class MainWindow(QMainWindow):
         self._adopted = None
         # Videos being identified from their right-click menu.
         self._identifying_videos: set[str] = set()
-        # Videos whose black bars are being measured (letterbox).
-        self._measuring_bars: set[str] = set()
 
         self.shown = Shelf([self._startup_library()])
         known = {lib["root"] for lib in store.list_libraries()}
@@ -1321,34 +1318,6 @@ class MainWindow(QMainWindow):
             [(chapter["start"], chapter["title"]) for chapter in video["chapters"]]
         )
         self._update_video_controls()
-        self._measure_bars()
-
-    def _measure_bars(self) -> None:
-        """Measure the black bars of the video playing, and of the one
-        handed to mpv next, if they never have been - so they're cropped
-        off (letterbox) now, and from the start every time after."""
-        for segment in (self.session.current(), self.session.upcoming()):
-            if (segment is None or segment.audio_only
-                    or segment.video_id in self._measuring_bars
-                    or letterbox.measured(segment.video_id)):
-                continue
-            video = self.data["videos"].get(segment.video_id)
-            if video is None:
-                continue
-            video_id = segment.video_id
-            self._measuring_bars.add(video_id)
-            self._jobs.append(run_job(
-                self, lambda video=dict(video): letterbox.detect(video),
-                on_done=lambda crop, video_id=video_id: self._bars_measured(video_id, crop),
-                on_failed=lambda _message, video_id=video_id:
-                    self._measuring_bars.discard(video_id),
-            ))
-
-    def _bars_measured(self, video_id: str, crop) -> None:
-        self._measuring_bars.discard(video_id)
-        letterbox.remember(video_id, crop)
-        if crop is not None and self.session.running():
-            self.session.crop_measured(video_id)
 
     def _video_playing_here(self) -> bool:
         return (self.session.running() and self.session.window_id() is not None

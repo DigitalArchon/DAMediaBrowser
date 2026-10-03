@@ -306,9 +306,10 @@ class TestSeekBar:
 
 
     def test_playing_video_it_marks_where_each_chapter_starts(self, app, playing):
-        from PySide6.QtCore import QPoint
-        from PySide6.QtGui import QHelpEvent
-        from PySide6.QtWidgets import QToolTip
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication, QToolTip
 
         window, _mpv = playing
         window.show()
@@ -320,9 +321,19 @@ class TestSeekBar:
         assert marks[0][1] < marks[1][1]
         x = int(marks[1][1])
         assert slider.mark_at(x) == 2 and slider.mark_at(x - 40) is None
-        slider.event(QHelpEvent(QHelpEvent.ToolTip, QPoint(x, 4), slider.mapToGlobal(QPoint(x, 4))))
-        assert QToolTip.text() == "Chapter 3 · Budokan 3"
-        QToolTip.hideText()
+        # Named on hovering alone - no wait for Qt's tooltip event, which an
+        # inactive window (mpv's has the focus) never gets.
+        def hover(at):
+            point = QPointF(at, slider.height() / 2)
+            QApplication.sendEvent(slider, QMouseEvent(
+                QEvent.MouseMove, point, QPointF(slider.mapToGlobal(point.toPoint())),
+                Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+
+        hover(x)
+        assert QToolTip.isVisible() and QToolTip.text() == "Chapter 3 · Budokan 3"
+        hover(x - 40)
+        QTest.qWait(500)  # Qt takes its tooltips down after a moment
+        assert not QToolTip.isVisible()
 
     def test_audio_has_no_marks(self, playing):
         window, _mpv = playing
@@ -333,32 +344,6 @@ class TestSeekBar:
         window._tick()
         window.stop_playback()
         assert window.now_playing_bar.slider.marks() == []
-
-
-class TestBlackBars:
-    def test_measured_while_playing_and_cropped_then(self, app, playing, monkeypatch):
-        from PySide6.QtTest import QTest
-
-        from mediabrowser.core import letterbox
-
-        window, mpv = playing
-        crop = (1920, 800, 0, 140)
-        monkeypatch.setattr(letterbox, "detect", lambda video: crop)
-        window.play_from("a", 0, audio_only=False)
-        for _ in range(100):
-            if letterbox.measured("a"):
-                break
-            QTest.qWait(10)
-        assert letterbox.crop_for("a") == crop
-        assert ("crop", crop) in mpv.calls
-
-    def test_audio_isnt_measured(self, playing, monkeypatch):
-        from mediabrowser.core import letterbox
-
-        window, _mpv = playing
-        monkeypatch.setattr(letterbox, "detect", lambda video: pytest.fail("measured"))
-        window.play_from("a", 0, audio_only=True)
-        assert not window._measuring_bars
 
 
 class TestQueueMenu:

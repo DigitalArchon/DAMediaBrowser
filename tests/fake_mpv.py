@@ -38,9 +38,6 @@ class FakeMpv:
     def set_end(self, end):
         self.calls.append(("end", end))
 
-    def set_crop(self, crop):
-        self.calls.append(("crop", crop))
-
     def session_state(self):
         return dict(self.state)
 
