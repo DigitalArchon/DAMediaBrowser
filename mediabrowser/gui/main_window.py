@@ -56,6 +56,7 @@ from mediabrowser.gui.detail_view import DetailView
 from mediabrowser.gui.grid_view import GridView
 from mediabrowser.gui.library_panel import LibraryPanel
 from mediabrowser.gui.list_view import ListView
+from mediabrowser.gui.mpv_poll import MpvPoll
 from mediabrowser.gui.now_playing import NowPlayingBar
 from mediabrowser.gui.queue_panel import QueuePanel
 from mediabrowser.gui.video_page import VideoPage
@@ -346,9 +347,9 @@ class MainWindow(QMainWindow):
         self.now_playing_bar.fullscreen_requested.connect(self.toggle_fullscreen)
         self.now_playing_bar.move_requested.connect(self.move_video)
 
-        self._poll = QTimer(self)
-        self._poll.setInterval(POLL_MS)
-        self._poll.timeout.connect(self._tick)
+        # Off the GUI thread: a window waiting on an mpv stuck on the display
+        # freezes, and can keep it stuck (see mpv_poll).
+        self._poll = MpvPoll(self._ask_mpv, self._mpv_answered, POLL_MS, self)
 
         centre_layout = QVBoxLayout()
         centre_layout.setContentsMargins(0, 0, 0, 0)
@@ -1393,9 +1394,24 @@ class MainWindow(QMainWindow):
         current = self._last_position - start if end is not None else self._last_position
         self.seek(max(0.0, current + delta))
 
-    def _tick(self) -> None:
-        """Follow the playing mpv: where it is, and when it moves on."""
-        tick = self.session.tick()
+    def _ask_mpv(self):
+        """On the poll's thread: what mpv says, and what it was playing
+        then (the session's generation, asked first)."""
+        generation = self.session.generation
+        if not self.player.is_active():
+            return generation, {}
+        return generation, self.player.session_state()
+
+    def _mpv_answered(self, answer) -> None:
+        generation, state = answer
+        # Asked before playback changed under it: about something else.
+        if generation == self.session.generation:
+            self._tick(state)
+
+    def _tick(self, state: dict | None = None) -> None:
+        """Follow the playing mpv: where it is, and when it moves on.
+        `state` is what it said, asked here if not given."""
+        tick = self.session.tick(state)
         if tick.closed:
             # Its window was closed: that's stop.
             self.stop_playback()

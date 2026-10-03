@@ -139,6 +139,55 @@ class TestSession:
         assert queue.current_index() == 1 and mpv.calls[1] == ("load", "b", (1,), False)
 
 
+class TestAskedElsewhere:
+    """mpv's state can be asked off the GUI thread and handed to tick(), with
+    the generation it was asked in to tell a stale answer by."""
+
+    def session(self, *entries):
+        mpv = FakeMpv()
+        queue = queue_of(*entries)
+        return playback.Session(mpv, queue, VIDEOS.get), mpv, queue
+
+    def test_tick_takes_what_mpv_said_without_asking_again(self):
+        session, mpv, queue = self.session(entry("a", 0), entry("a", 1))
+        session.play()
+        mpv.state["position"] = 10.0  # what mpv would say if asked now
+        tick = session.tick(dict(mpv.state, position=150.0))
+        assert tick.position == 150.0 and tick.moved and queue.current_index() == 1
+
+    def test_every_change_to_what_plays_is_a_new_generation(self):
+        session, mpv, queue = self.session(entry("a", 0), entry("b", 0), entry("d", 0))
+        seen = [session.generation]
+        session.play()
+        seen.append(session.generation)
+        session.queue_changed()
+        seen.append(session.generation)
+        mpv.state.update(playing_id=session._loaded[1][1])  # on to b by itself
+        assert session.tick().moved
+        seen.append(session.generation)
+        session.move_to(5)
+        seen.append(session.generation)
+        session.stop()
+        seen.append(session.generation)
+        assert len(set(seen)) == len(seen), seen
+
+    def test_following_it_isnt_a_change(self):
+        session, mpv, _queue = self.session(entry("a", 0), entry("a", 1))
+        session.play()
+        before = session.generation
+        mpv.state["position"] = 150.0
+        session.tick()
+        assert session.generation == before
+
+    def test_an_unanswered_position_doesnt_move_the_queue(self):
+        session, mpv, queue = self.session(entry("a", 0), entry("a", 1))
+        session.play()
+        session.tick(dict(mpv.state, position=150.0))
+        assert queue.current_index() == 1
+        tick = session.tick(dict(mpv.state, position=None))
+        assert not tick.moved and queue.current_index() == 1
+
+
 class TestQueueEdits:
     def test_several_can_be_removed_at_once(self):
         queue = queue_of(*(entry("a", i % 3) for i in range(5)), start=3)

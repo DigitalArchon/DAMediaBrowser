@@ -346,6 +346,45 @@ class TestSeekBar:
         assert window.now_playing_bar.slider.marks() == []
 
 
+class TestAskingMpvOffTheGuiThread:
+    def test_an_answer_from_before_playback_changed_is_ignored(self, playing):
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        stale = window._ask_mpv()
+        mpv.state["idle"] = True  # what an mpv between files might have said
+        stale = (stale[0], dict(stale[1], idle=True))
+        window.play_from("b", 0, audio_only=True)
+        window._mpv_answered(stale)
+        assert window.now_playing == ("b", 0, True), "not stopped by a stale 'idle'"
+
+    def test_a_fresh_answer_is_followed(self, playing):
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        mpv.state["position"] = 150.0
+        window._mpv_answered(window._ask_mpv())
+        assert window.now_playing_bar.title.text() == "Budokan 2"
+
+    def test_the_window_keeps_going_while_mpv_is_stuck(self, app, playing, monkeypatch):
+        import time
+
+        from tests.test_mpv_poll import timer_ticks
+
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        stuck, asked = dict(mpv.state), []
+
+        def session_state():  # an mpv whose socket times out
+            asked.append(1)
+            time.sleep(1.0)
+            return stuck
+
+        monkeypatch.setattr(mpv, "session_state", session_state)
+        ticks = timer_ticks(1500)
+        window.stop_playback()
+        assert asked, "mpv was asked"
+        assert ticks >= 55, f"the event loop stalled: {ticks} of ~75"
+
+
 class TestQueueMenu:
     def test_a_row_plays_or_goes(self, playing):
         window, _mpv = playing

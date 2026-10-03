@@ -91,6 +91,22 @@ class TestOpening:
         assert player.calls[0][2] is None, "no window to draw into offscreen"
 
 
+class TestAskingMpvOffTheGuiThread:
+    def test_a_position_asked_before_a_seek_cant_undo_it(self, editor):
+        ed, player, _video, _window = editor
+        at(ed, player, 100.0)
+        stale = ed._ask_mpv()  # asked at 100s ...
+        ed.seek(250.0)  # ... and the seek made before it arrived
+        ed._mpv_answered(stale)
+        assert ed._position == 250.0
+
+    def test_a_fresh_answer_moves_the_playhead(self, editor):
+        ed, player, _video, _window = editor
+        player.position_value = 120.0
+        ed._mpv_answered(ed._ask_mpv())
+        assert ed._position == 120.0
+
+
 class TestMovingAround:
     def test_steps_and_frames(self, editor):
         ed, player, _video, _window = editor

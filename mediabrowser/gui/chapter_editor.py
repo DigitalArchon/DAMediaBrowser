@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import library, marking, utils
 from mediabrowser.core.player import Player
+from mediabrowser.gui.mpv_poll import MpvPoll
 from mediabrowser.gui.timeline import Timeline
 from mediabrowser.gui.video_surface import ELSEWHERE, VideoSurface, can_embed, elsewhere_text
 
@@ -85,11 +86,14 @@ class ChapterEditor(QWidget):
         self._paused: bool | None = None
         self._dirty = False
         self._embedded = False
+        # Changed by whatever moves playback from here - a seek, a step,
+        # play or pause, another mpv - so an answer asked of mpv before it,
+        # arriving after, can't put the playhead back where it was.
+        self._generation = 0
 
         self._build()
-        self._poll = QTimer(self)
-        self._poll.setInterval(POLL_MS)
-        self._poll.timeout.connect(self._tick)
+        # Off the GUI thread, as the main window's (see mpv_poll).
+        self._poll = MpvPoll(self._ask_mpv, self._mpv_answered, POLL_MS, self)
 
     # --- construction ----------------------------------------------------
 
@@ -343,6 +347,7 @@ class ChapterEditor(QWidget):
         if self.player is None:
             self.player = self._player_factory()
         window_id = int(self.surface.winId()) if self._embedded else None
+        self._generation += 1
         try:
             self.player.open_for_editing(self.video, self._position, window_id, paused=paused)
         except OSError as exc:
@@ -366,6 +371,7 @@ class ChapterEditor(QWidget):
 
     def _close(self) -> None:
         self._poll.stop()
+        self._generation += 1
         if self.player is not None:
             self.player.stop()
         app = QApplication.instance()
@@ -488,7 +494,22 @@ class ChapterEditor(QWidget):
 
     # --- playback --------------------------------------------------------------
 
-    def _tick(self) -> None:
+    def _ask_mpv(self):
+        """On the poll's thread: where mpv is and whether it's paused, with
+        the generation they were asked in."""
+        generation, player = self._generation, self.player
+        if player is None or not player.is_active():
+            return generation, None, None
+        return generation, player.position(), player.is_paused()
+
+    def _mpv_answered(self, answer) -> None:
+        generation, position, paused = answer
+        if generation == self._generation:
+            self._tick((position, paused))
+
+    def _tick(self, answer=None) -> None:
+        """Follow mpv. `answer` is (position, paused) as it said them,
+        asked here if not given."""
         if self.player is None:
             return
         if self.player.take_exit() is not None:
@@ -497,10 +518,11 @@ class ChapterEditor(QWidget):
             return
         if not self.player.is_active():
             return
-        position = self.player.position()
+        if answer is None:
+            answer = self.player.position(), self.player.is_paused()
+        position, paused = answer
         if position is not None:
             self._position = position
-        paused = self.player.is_paused()
         if paused is not None and paused != self._paused:
             self._paused = paused
             self._update_controls()
@@ -524,6 +546,7 @@ class ChapterEditor(QWidget):
         if not self._running():
             self._start_player(paused=False)
         else:
+            self._generation += 1
             self.player.toggle_pause()
             self._paused = not self._paused if self._paused is not None else False
         self._update_controls()
@@ -533,6 +556,7 @@ class ChapterEditor(QWidget):
             return
         seconds = min(max(0.0, seconds), max(0.0, self.sheet.duration - 0.05))
         self._position = seconds
+        self._generation += 1
         if self._running():
             self.player.seek_exact(seconds)
         else:
@@ -544,6 +568,7 @@ class ChapterEditor(QWidget):
 
     def frame(self, forward: bool) -> None:
         if self._running():
+            self._generation += 1
             self.player.frame_step(forward)
             self._paused = True
             self._update_controls()
@@ -567,6 +592,7 @@ class ChapterEditor(QWidget):
         if index is not None:
             self.seek(self.sheet.marks()[index].start)
             if self._paused and self._running():
+                self._generation += 1
                 self.player.set_paused(False)
                 self._paused = False
                 self._update_controls()

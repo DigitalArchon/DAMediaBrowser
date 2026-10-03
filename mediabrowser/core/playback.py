@@ -454,6 +454,12 @@ class Session:
     methods); `video_of` looks a video up by id. Where the video is drawn is
     fixed per session: into `window_id`, a window of ours, or mpv's own
     window when that's None. Asking to play somewhere else starts a new mpv.
+
+    What mpv says can be asked elsewhere - off the GUI thread - and handed
+    to tick(). `generation` changes whenever the session changes what mpv
+    is playing, so an answer asked before that, and arriving after, can be
+    told apart: ask for the generation first, then mpv's state, and tick()
+    on the pair only if the generation is still the same.
     """
 
     def __init__(self, player, queue: Queue, video_of) -> None:
@@ -463,6 +469,7 @@ class Session:
         self._window_id: int | None = None
         # What mpv's playlist holds: the piece playing, and the next.
         self._loaded: list[tuple[Segment, int | None]] = []
+        self.generation = 0
 
     def running(self) -> bool:
         return bool(self._loaded) and self.player.is_active()
@@ -490,6 +497,7 @@ class Session:
             # something to play means play it. Before the load: told while
             # mpv is opening the file, it's paused again once it has.
             self.player.set_paused(False)
+        self.generation += 1
         self._loaded = [(segment, self.player.load(segment))]
         self._load_next()
         return segment
@@ -523,6 +531,7 @@ class Session:
             # Outside the piece as it now is - video that ran on past its
             # last chapter, switched to audio: from the piece's start.
             del carried["time-pos"]
+        self.generation += 1
         self.player.start_session(window_id)
         self._window_id = window_id
         self._loaded = [(segment, self.player.resume(segment, carried))]
@@ -530,6 +539,7 @@ class Session:
         return segment
 
     def stop(self) -> None:
+        self.generation += 1
         self._loaded = []
         self.player.stop()
 
@@ -584,6 +594,7 @@ class Session:
             self.player.set_end(replanned.end)
         # Keep where the playing piece started; entries before the playing
         # one have been played.
+        self.generation += 1
         self._loaded[0] = (replace(replanned, start=playing.start), self._loaded[0][1])
         self.player.playlist_clear()
         del self._loaded[1:]
@@ -591,13 +602,16 @@ class Session:
 
     # --- following it ----------------------------------------------------
 
-    def tick(self) -> Tick:
+    def tick(self, state: dict | None = None) -> Tick:
+        """Follow mpv: `state` is what its session_state() said, asked here
+        if not given."""
         if not self._loaded:
             return Tick()
         if not self.player.is_active():
             self._loaded = []
             return Tick(closed=True)
-        state = self.player.session_state()
+        if state is None:
+            state = self.player.session_state()
         tick = Tick(state.get("position"), state.get("duration"), state.get("paused"))
         playing_id = state.get("playing_id")
         if state.get("idle"):
@@ -606,11 +620,15 @@ class Session:
             return tick
         if len(self._loaded) > 1 and playing_id is not None and playing_id == self._loaded[1][1]:
             # mpv has gone on to the next piece by itself.
+            self.generation += 1
             self.player.playlist_remove(0)
             del self._loaded[0]
             self.queue.jump_to(self.current().entries[0])
             tick.moved = True
             self._load_next()
+            return tick
+        if tick.position is None:
+            # Unanswered: no telling where in the piece it is.
             return tick
         entry = self.current().entry_at(tick.position)
         if entry != self.queue.current_index():
