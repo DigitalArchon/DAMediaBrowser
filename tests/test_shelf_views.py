@@ -286,3 +286,12 @@ class TestPlayingFromTheMenu:
         window.open_video("a")
         _trigger(window.detail.context_menu_for(window.detail.tree.topLevelItem(1)), "Play Video")
         assert played == [("a", 1, False)]
+
+
+
+def test_a_name_joined_by_underscores_wraps_rather_than_being_cut_off():
+    from mediabrowser.gui import grid_view
+
+    label = grid_view._label_for({"display_name": "BABYMETAL_LEGEND_MM_20NIGHT - Title 2"}, False)
+    assert label.replace(grid_view._WRAP_HERE, "") == "BABYMETAL_LEGEND_MM_20NIGHT - Title 2"
+    assert label.count(grid_view._WRAP_HERE) == 3

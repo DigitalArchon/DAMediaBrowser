@@ -1,11 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Digital Archon
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Where the Nano-GPT key and model are set.
+"""Settings: what may go out, and the AI it goes to.
 
-The key is pasted once and kept in the OS keyring; the model can be
-typed or picked from the ones Nano-GPT lists with vision (the Claude ones
-first). Test sends the smallest possible request so a wrong key or an
-empty balance is found here, not after forty frames have been sent.
+Privacy comes first: a tick box for each place the app can send anything
+(see core.privacy), all unticked until the person ticks them.
+
+The AI tab is where the Nano-GPT key and model are set. The key is pasted
+once and kept in the OS keyring; the model can be typed or picked from the
+ones Nano-GPT lists with vision (the Claude ones first). Test sends the
+smallest possible request so a wrong key or an empty balance is found
+here, not after forty frames have been sent.
 """
 
 from __future__ import annotations
@@ -22,10 +26,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
-from mediabrowser.core import ai, creds, store
+from mediabrowser.core import ai, creds, privacy, store
 from mediabrowser.gui.worker import run_job
 
 OTHER_ENDPOINTS = (
@@ -41,16 +47,30 @@ ABOUT = (
     "paste an API key from its settings. A concert's chapters cost a few cents "
     "to name with Sonnet; Opus is several times that and a little more careful."
 )
+PRIVACY_INTRO = (
+    "Nothing about your videos leaves this computer unless it's ticked here. "
+    "Everything else - scanning, playing, measuring the audio, reading a disc's "
+    "own chapters - works without any of it."
+)
+PRIVATE_NOTE = (
+    "A video or library marked Private (right-click it) is never sent anywhere, "
+    "whatever is ticked here."
+)
+AI_OFF_HERE = "Sending to the AI is switched off on the Privacy tab."
 KEY_NOTE = (
     "The key is kept in the system keyring (GNOME Keyring or KWallet), not in "
     f"a file. Setting {ai.API_KEY_ENV} in the environment overrides it."
 )
 
 
-class AISettingsDialog(QDialog):
-    def __init__(self, parent) -> None:
+TAB_PRIVACY = 0
+TAB_AI = 1
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent, tab: int = TAB_PRIVACY) -> None:
         super().__init__(parent)
-        self.setWindowTitle("AI Settings")
+        self.setWindowTitle("Settings")
         self.setModal(True)
         self.setMinimumWidth(620)
         # Room for the wrapped notes: a form layout doesn't grow for them.
@@ -60,6 +80,70 @@ class AISettingsDialog(QDialog):
         settings = ai.settings_from(self._app_settings)
         self._stored_key = ai.stored_key()
 
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_privacy_tab(), "Privacy")
+        self.tabs.addTab(self._build_ai_tab(settings), "AI")
+        self.tabs.setCurrentIndex(tab)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        save = buttons.addButton("Save", QDialogButtonBox.AcceptRole)
+        save.setObjectName("primaryButton")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(self.tabs, 1)
+        layout.addWidget(buttons)
+        self._describe_model(self.model.currentText())
+        self._update_search()
+        self._update_privacy()
+
+    # --- the tabs ----------------------------------------------------------
+
+    def _build_privacy_tab(self) -> QWidget:
+        intro = QLabel(PRIVACY_INTRO)
+        intro.setWordWrap(True)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(4)
+        layout.addWidget(intro)
+        layout.addSpacing(8)
+        self.privacy_checks: dict[str, QCheckBox] = {}
+        for choice in privacy.CHOICES:
+            label, sends = privacy.TEXT[choice]
+            check = QCheckBox(label)
+            check.setChecked(privacy.allowed(choice, self._app_settings))
+            note = QLabel(sends)
+            note.setObjectName("hintLabel")
+            note.setWordWrap(True)
+            # Under the box's text, not its tick.
+            indent = 26 if choice != privacy.WEB_SEARCH else 52
+            note.setContentsMargins(indent, 0, 0, 0)
+            if choice == privacy.WEB_SEARCH:
+                # Only the AI searches, so it's the AI's to allow first.
+                check.setStyleSheet("margin-left: 26px;")
+            self.privacy_checks[choice] = check
+            layout.addWidget(check)
+            layout.addWidget(note)
+            layout.addSpacing(8)
+        self.privacy_checks[privacy.AI].toggled.connect(lambda _on: self._update_privacy())
+        private = QLabel(PRIVATE_NOTE)
+        private.setObjectName("hintLabel")
+        private.setWordWrap(True)
+        layout.addWidget(private)
+        layout.addStretch(1)
+        tab = QWidget()
+        tab.setLayout(layout)
+        return tab
+
+    def _update_privacy(self) -> None:
+        self.privacy_checks[privacy.WEB_SEARCH].setEnabled(
+            self.privacy_checks[privacy.AI].isChecked()
+        )
+
+    def _build_ai_tab(self, settings: dict) -> QWidget:
         about = QLabel(ABOUT)
         about.setObjectName("hintLabel")
         about.setWordWrap(True)
@@ -160,28 +244,27 @@ class AISettingsDialog(QDialog):
         form.addRow("Endpoint:", self.base_url)
         form.addRow("", other)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
-        save = buttons.addButton("Save", QDialogButtonBox.AcceptRole)
-        save.setObjectName("primaryButton")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout()
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
         layout.addWidget(about)
         layout.addLayout(form)
         layout.addLayout(test_row)
-        layout.addWidget(buttons)
-        self._describe_model(self.model.currentText())
-        self._update_search()
+        layout.addStretch(1)
+        tab = QWidget()
+        tab.setLayout(layout)
+        return tab
 
     # --- what's on the form ----------------------------------------------
+
+    def allowed(self, choice: str) -> bool:
+        return self.privacy_checks[choice].isChecked()
 
     def settings(self) -> dict:
         """The AI settings as the form has them, in force (so with the
         environment's key if one is set)."""
         return ai.settings_from({
+            **{choice: self.allowed(choice) for choice in privacy.CHOICES},
             ai.SETTING_KEY: self.key.text().strip(),
             ai.SETTING_MODEL: self.model.currentText().strip() or ai.DEFAULT_MODEL,
             ai.SETTING_BASE_URL: self.base_url.text().strip() or ai.DEFAULT_BASE_URL,
@@ -204,6 +287,8 @@ class AISettingsDialog(QDialog):
         settings[ai.SETTING_BASE_URL] = self.base_url.text().strip() or ai.DEFAULT_BASE_URL
         settings[ai.SETTING_FRAMES] = self.frames.value()
         settings[ai.SETTING_SEARCH] = self.search.currentData()
+        for choice in privacy.CHOICES:
+            privacy.set_allowed(settings, choice, self.allowed(choice))
         store.save_app_settings(settings)
         super().accept()
 
@@ -211,6 +296,9 @@ class AISettingsDialog(QDialog):
 
     def fetch_models(self) -> None:
         settings = self.settings()
+        if not ai.allowed(settings):
+            self.status.setText(AI_OFF_HERE)
+            return
         self.fetch_button.setEnabled(False)
         self.status.setText("Asking Nano-GPT for its models…")
         self._jobs.append(run_job(
@@ -261,6 +349,9 @@ class AISettingsDialog(QDialog):
 
     def test(self) -> None:
         settings = self.settings()
+        if not ai.allowed(settings):
+            self.status.setText(AI_OFF_HERE)
+            return
         if not ai.is_configured(settings):
             self.status.setText("Paste an API key first.")
             return

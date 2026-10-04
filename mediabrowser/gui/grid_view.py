@@ -300,8 +300,15 @@ class GridView(QListWidget):
         return menu
 
 
+# A zero-width space: an invisible place a label may wrap.
+_WRAP_HERE = "\u200b"
+
+
 def _label_for(video: dict, is_missing: bool, is_hidden: bool = False) -> str:
-    name = video["display_name"]
+    # A disc's folder name is often one long word joined by underscores
+    # ("BABYMETAL_LEGEND_MM_20NIGHT"), which word wrap can't break and the
+    # tile then cuts off at both sides: let it wrap after each underscore.
+    name = video["display_name"].replace("_", "_" + _WRAP_HERE)
     if is_missing:
         return f"{name}\n(file missing)"
     if is_hidden:

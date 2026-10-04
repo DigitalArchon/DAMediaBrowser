@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mediabrowser.core import ai, autoname, naming, store
+from mediabrowser.core import ai, autoname, naming, privacy, store
 from mediabrowser.gui import identified
 
 SETTINGS_KEY = "identify_options"
@@ -84,11 +84,15 @@ OUTCOME_COLOURS = {
 
 def saved_options(ai_configured: bool) -> autoname.Options:
     """The choices last made here, for identifying a single video from its
-    right-click menu the same way - without the AI when it isn't set up."""
-    saved = store.load_app_settings().get(SETTINGS_KEY) or {}
+    right-click menu the same way - without the AI when it isn't set up,
+    and without MusicBrainz when Settings → Privacy doesn't allow it."""
+    app_settings = store.load_app_settings()
+    saved = app_settings.get(SETTINGS_KEY) or {}
     methods = set(saved.get("methods", autoname.FREE_METHODS))
     if not ai_configured:
         methods -= set(autoname.AI_METHODS)
+    if not privacy.allowed(privacy.MUSICBRAINZ, app_settings):
+        methods.discard(autoname.MUSICBRAINZ)
     return autoname.Options(
         methods=methods,
         ai_policy=saved.get("ai_policy", autoname.LAST_RESORT),
@@ -308,12 +312,16 @@ class IdentifyDialog(QDialog):
     def _load_options(self) -> None:
         saved = store.load_app_settings().get(SETTINGS_KEY) or {}
         chosen = set(saved.get("methods", autoname.FREE_METHODS))
-        configured = ai.is_configured(self._ai_settings)
+        not_ready = ai.not_ready(self._ai_settings)
+        musicbrainz = privacy.allowed(privacy.MUSICBRAINZ)
         for method, check in self.method_checks.items():
             check.setChecked(method in chosen)
-            if method in autoname.AI_METHODS and not configured:
+            if method in autoname.AI_METHODS and not_ready:
                 check.setEnabled(False)
-                check.setToolTip("Set a Nano-GPT API key in AI Settings first")
+                check.setToolTip(not_ready)
+            elif method == autoname.MUSICBRAINZ and not musicbrainz:
+                check.setEnabled(False)
+                check.setToolTip(privacy.OFF[privacy.MUSICBRAINZ])
         (self.accurate_first if saved.get("ai_policy") == autoname.ACCURATE_FIRST
          else self.last_resort).setChecked(True)
         self.budget.setValue(int(saved.get("ai_budget", 40)))
@@ -326,7 +334,10 @@ class IdentifyDialog(QDialog):
         options = self.options()
         settings = store.load_app_settings()
         settings[SETTINGS_KEY] = {
-            "methods": sorted(options.methods),
+            # Ticked, switched off or not: one that's off for now (the AI
+            # not set up, MusicBrainz not allowed) is still wanted after.
+            "methods": sorted(m for m, check in self.method_checks.items()
+                              if check.isChecked()),
             "ai_policy": options.ai_policy,
             "ai_budget": options.ai_budget,
             "only_sure": options.only_sure,
@@ -355,8 +366,8 @@ class IdentifyDialog(QDialog):
             worst = max(AI_CENTS[m] for m in ai_methods)
             model = self._ai_settings[ai.SETTING_MODEL]
             priced = (f"with {ai.short_model_name(model)}" if model == ai.DEFAULT_MODEL else
-                      f"at Claude Sonnet's prices ({ai.short_model_name(model)}, set in AI "
-                      "Settings, may cost more or less)")
+                      f"at Claude Sonnet's prices ({ai.short_model_name(model)}, set in "
+                      "Settings → AI, may cost more or less)")
             text += (f" At most {most} AI request(s), paid for from your Nano-GPT credit - "
                      f"under ${most * worst / 100:.2f} {priced}, usually much less.")
         else:

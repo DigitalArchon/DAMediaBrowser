@@ -71,7 +71,7 @@ class TestAskingFromChaptersAndNames:
         monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
         dialog = dialog_for(window, file_video(tmp_path, 900.0, starts=(0.0, 300.0, 600.0)))
         assert not dialog.ask_ai_button.isEnabled()
-        assert "AI Settings" in dialog.ai_hint.text()
+        assert "Settings → AI" in dialog.ai_hint.text()
 
     def test_a_discs_chapters_are_named_where_they_are(
         self, app, window, tmp_path, measured, no_searching, configured, model
@@ -211,16 +211,16 @@ class TestTranslating:
         video = file_video(tmp_path, 900.0, starts=(0.0, 300.0))
         video["chapters"][0]["title"] = "x"
         dialog = TranslateDialog(window, video)
-        assert "AI Settings" in dialog.status.text()
+        assert "Settings → AI" in dialog.status.text()
         assert not dialog.apply_button.isEnabled()
 
 
 class TestSettings:
     def test_saving_keeps_the_key_and_model(self, window, monkeypatch):
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
         monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
-        dialog = AISettingsDialog(window)
+        dialog = SettingsDialog(window)
         dialog.key.setText(" sk-abc ")
         dialog.model.setCurrentText("anthropic/claude-opus-5.5")
         dialog.frames.setValue(3)
@@ -235,18 +235,18 @@ class TestSettings:
 
     def test_the_key_goes_to_the_keyring_not_the_file(self, window, memory_keyring,
                                                      monkeypatch):
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
         monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
         store.save_app_settings({ai.SETTING_KEY: "sk-from-before"})
-        dialog = AISettingsDialog(window)
+        dialog = SettingsDialog(window)
         assert dialog.key.text() == "", "a key in the file isn't shown, or used"
         dialog.key.setText("sk-abc")
         dialog.accept()
         assert memory_keyring.store == {("da-media-browser", ai.KEYRING_NAME): "sk-abc"}
         assert "sk-" not in config.APP_SETTINGS_FILE.read_text(encoding="utf-8")
 
-        dialog = AISettingsDialog(window)
+        dialog = SettingsDialog(window)
         assert dialog.key.text() == "sk-abc"
         dialog.key.setText("")
         dialog.accept()
@@ -255,14 +255,14 @@ class TestSettings:
     def test_a_keyring_that_refuses_keeps_the_dialog_open(self, window, monkeypatch):
         from keyring.errors import KeyringLocked
 
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
         def locked(name, value):
             raise KeyringLocked("dismissed")
 
         monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
         monkeypatch.setattr(creds, "set_secret", locked)
-        dialog = AISettingsDialog(window)
+        dialog = SettingsDialog(window)
         dialog.key.setText("sk-abc")
         dialog.model.setCurrentText("anthropic/claude-opus-5.5")
         dialog.accept()
@@ -275,15 +275,15 @@ class TestSettings:
         from keyring.backends import fail
         from PySide6.QtWidgets import QLabel
 
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
         keyring.set_keyring(fail.Keyring())
-        dialog = AISettingsDialog(window)
+        dialog = SettingsDialog(window)
         notes = " ".join(label.text() for label in dialog.findChildren(QLabel))
         assert "no keyring" in notes and ai.API_KEY_ENV in notes
 
     def test_listing_models_fills_the_box(self, app, window, monkeypatch):
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
         monkeypatch.setattr(ai, "list_models", lambda settings: [
             {"id": "anthropic/claude-sonnet-5", "name": "Claude Sonnet 5", "vision": True,
@@ -291,7 +291,7 @@ class TestSettings:
              "note": "tested with this app - recommended"},
             {"id": "openai/gpt-x", "name": "GPT", "vision": True, "price": "", "note": ""},
         ])
-        dialog = AISettingsDialog(window)
+        dialog = SettingsDialog(window)
         dialog.fetch_models()
         assert pump(app, lambda: dialog.model.count() == 2)
         assert dialog.status.text() == "2 models can look at pictures."
@@ -303,18 +303,18 @@ class TestSettings:
         assert pump(app, lambda: _finished(dialog._jobs[-1][0]))
 
     def test_web_search_is_off_for_another_endpoint(self, app, window):
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
-        dialog = AISettingsDialog(window)
+        dialog = SettingsDialog(window)
         assert dialog.search.isEnabled()
         dialog.base_url.setText("https://api.openai.com/v1")
         assert not dialog.search.isEnabled()
 
     def test_a_test_reports_the_answer(self, app, window, monkeypatch):
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
         monkeypatch.setattr(ai, "ping", lambda settings: "OK")
-        dialog = AISettingsDialog(window)
+        dialog = SettingsDialog(window)
         dialog.key.setText("k")
         dialog.test()
         assert pump(app, lambda: dialog.status.text().endswith("answered: OK"))
@@ -424,7 +424,7 @@ class TestTheDiscMenuTab:
             window, file_video(tmp_path, 900.0, starts=(0.0, 300.0, 600.0), kind="bluray")
         )
         dialog.read_menu()
-        assert pump(app, lambda: "AI Settings" in dialog.menu_status.text())
+        assert pump(app, lambda: "Settings → AI" in dialog.menu_status.text())
         assert dialog.menu_status.text().startswith("2 button(s) on 1 menu page(s) play 2 of")
         assert menu_stub["asked"] == 0 and dialog.menu_button.isEnabled()
 

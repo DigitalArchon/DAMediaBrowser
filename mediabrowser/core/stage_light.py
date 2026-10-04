@@ -86,6 +86,12 @@ _cache: dict[tuple, dict[float, float]] = {}
 _cache_lock = threading.Lock()
 
 
+def clear_cache() -> None:
+    """Forget everything measured: all library data is being deleted."""
+    with _cache_lock:
+        _cache.clear()
+
+
 def _key(path, fingerprint, times):
     return (str(path), tuple(fingerprint) if fingerprint else None, tuple(times))
 

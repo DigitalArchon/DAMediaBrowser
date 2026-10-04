@@ -643,6 +643,20 @@ QProgressBar::chunk {
   background: transparent;
 }
 
+/* The first launch, before any library: where to start. */
+#welcomeTitle {
+  color: #e4e7ee;
+  font-size: 28px;
+  font-weight: 600;
+  background: transparent;
+}
+
+#welcomeText {
+  color: #d8dbe2;
+  font-size: 18px;
+  background: transparent;
+}
+
 /* --- checkboxes, radios --------------------------------------------- */
 
 QCheckBox, QRadioButton {

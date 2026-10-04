@@ -73,6 +73,7 @@ from mediabrowser.core import (
     methods,
     musicbrainz,
     naming,
+    privacy,
     proposal,
     store,
     utils,
@@ -140,6 +141,10 @@ PRIVATE_NOTE = (
     "This video is private: nothing about it goes to MusicBrainz or the AI. Paste a "
     "tracklist, or detect the chapters from the audio."
 )
+MUSICBRAINZ_OFF_NOTE = (
+    privacy.OFF[privacy.MUSICBRAINZ] + " Paste a tracklist, or detect the chapters "
+    "from the audio."
+)
 
 FIGURE_NOTE = (
     "Uses the AI: reads the disc's menu if it has one, looks the show up on "
@@ -176,7 +181,6 @@ RESULT_MIN_HEIGHT = 240
 
 AI_HEADERS = ["Chapter", "Starts", "Title", "Notes"]
 CONFIDENCE_COLOURS = {"medium": "#e0af68", "low": "#f7768e"}
-AI_NOT_SET_UP = "Set a Nano-GPT API key in AI Settings to have a model look at the video."
 
 # Typing a pasted tracklist or a song count updates the preview on a pause.
 TYPING_DEBOUNCE_MS = 400
@@ -396,17 +400,14 @@ class ChaptersDialog(QDialog):
             "worth it whenever the frames don't show the titles."
         )
         self.ai_online_check.setChecked(True)
-        if not ai.searches_the_web(self._ai_settings):
-            self.ai_online_check.setChecked(False)
-            self.ai_online_check.setEnabled(False)
-            self.ai_online_check.setToolTip(
-                "Web search is Nano-GPT's own; the endpoint in AI Settings is another."
-            )
+        self._online_tip = self.ai_online_check.toolTip()
+        self._update_online_check()
         self.ask_ai_button = QPushButton("Ask AI")
         self.ask_ai_button.setObjectName("primaryButton")
         self.ask_ai_button.clicked.connect(self.ask_ai)
-        self.ai_settings_button = QPushButton("AI Settings…")
-        self.ai_settings_button.clicked.connect(self._open_ai_settings)
+        self.ai_settings_button = QPushButton("Settings…")
+        self.ai_settings_button.setToolTip("The AI's key and model, and what may be sent")
+        self.ai_settings_button.clicked.connect(self._open_settings)
         for check in (self.ai_frames_check, self.ai_translate_check, self.ai_online_check):
             check.toggled.connect(lambda _on: self._update_ai_controls())
         ai_row = QHBoxLayout()
@@ -641,10 +642,7 @@ class ChaptersDialog(QDialog):
         self.mb_status = QLabel(LOOK_UP_HINT)
         self.mb_status.setObjectName("hintLabel")
         self.mb_status.setWordWrap(True)
-        if self._private:
-            self.mb_status.setText(PRIVATE_NOTE)
-            for widget in (self.query, self.search_button, self.xml_radio, self.json_radio):
-                widget.setEnabled(False)
+        self._update_mb_controls()
 
         paste_caption = QLabel("Or paste one")
         paste_caption.setObjectName("sectionCaption")
@@ -774,9 +772,22 @@ class ChaptersDialog(QDialog):
         settings["musicbrainz_format"] = self._format()
         store.save_app_settings(settings)
 
+    def _update_mb_controls(self) -> None:
+        """MusicBrainz's search, unless the video is private or Settings →
+        Privacy doesn't allow it - saying which."""
+        off = PRIVATE_NOTE if self._private else (
+            "" if privacy.allowed(privacy.MUSICBRAINZ) else MUSICBRAINZ_OFF_NOTE
+        )
+        for widget in (self.query, self.search_button, self.xml_radio, self.json_radio):
+            widget.setEnabled(not off)
+        if off:
+            self.mb_status.setText(off)
+        elif self.mb_status.text() == MUSICBRAINZ_OFF_NOTE:
+            self.mb_status.setText(LOOK_UP_HINT)
+
     def search(self) -> None:
         query = self.query.text().strip()
-        if not query or self._private:
+        if not query or self._private or not privacy.allowed(privacy.MUSICBRAINZ):
             return
         self.mb_status.setText("Searching MusicBrainz…")
         self.results.clear()
@@ -1115,7 +1126,7 @@ class ChaptersDialog(QDialog):
             frames_per_chapter=(
                 self._ai_settings[ai.SETTING_FRAMES] if self.ai_frames_check.isChecked() else 0
             ),
-            online=self.ai_online_check.isChecked(),
+            online=self.ai_online_check.isChecked() and self.ai_online_check.isEnabled(),
         )
 
     def _update_ai_controls(self) -> None:
@@ -1127,7 +1138,7 @@ class ChaptersDialog(QDialog):
             self.ai_hint.setText("This video is private: the AI isn't used for it.")
             return
         if not configured:
-            self.ai_hint.setText(AI_NOT_SET_UP)
+            self.ai_hint.setText(ai.not_ready(self._ai_settings))
             return
         model = ai.short_model_name(self._ai_settings[ai.SETTING_MODEL])
         if situation is None:
@@ -1247,14 +1258,14 @@ class ChaptersDialog(QDialog):
         )
         if not ai.is_configured(self._ai_settings):
             self.menu_button.setEnabled(True)
-            self.menu_status.setText(f"{found} {AI_NOT_SET_UP}")
+            self.menu_status.setText(f"{found} {ai.not_ready(self._ai_settings)}")
             return
         self.menu_status.setText(found)
         self._ask_menu()
 
     def _ask_menu(self) -> None:
         if not ai.is_configured(self._ai_settings):
-            self.menu_status.setText(AI_NOT_SET_UP)
+            self.menu_status.setText(ai.not_ready(self._ai_settings))
             return
         disc, video, settings = self._disc_menu, self.video, self._ai_settings
         context = ai_chapters.situation_context(self.video, self._library_root)
@@ -1369,13 +1380,37 @@ class ChaptersDialog(QDialog):
         self.status.setText(" ".join(parts))
         self.apply_button.setEnabled(self._result is not None)
 
-    def _open_ai_settings(self) -> None:
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+    def _open_settings(self) -> None:
+        from mediabrowser.gui.dialogs.settings_dialog import (
+            TAB_AI,
+            TAB_PRIVACY,
+            SettingsDialog,
+        )
 
-        if AISettingsDialog(self).exec():
+        # Straight to the key and model, unless the AI isn't allowed at all.
+        tab = TAB_AI if ai.allowed(self._ai_settings) else TAB_PRIVACY
+        if SettingsDialog(self, tab).exec():
             self._ai_settings = ai.load_settings()
+            self._update_mb_controls()
+            self._update_online_check()
             self._update_ai_controls()
             self._update_figure_controls()
+
+    def _update_online_check(self) -> None:
+        """The AI's web search, unless the endpoint can't or Settings →
+        Privacy doesn't allow it."""
+        if not ai.searches_the_web(self._ai_settings):
+            tip = "Web search is Nano-GPT's own; the endpoint in Settings → AI is another."
+        elif not ai.may_search(self._ai_settings):
+            tip = privacy.OFF[privacy.WEB_SEARCH]
+        else:
+            tip = ""
+        if tip or not self.ai_online_check.isEnabled():
+            # Unticked while it can't be had; ticked again, the default,
+            # once it can.
+            self.ai_online_check.setChecked(not tip)
+        self.ai_online_check.setEnabled(not tip)
+        self.ai_online_check.setToolTip(tip or self._online_tip)
 
     # --- the whole job ---------------------------------------------------------
 
@@ -1385,6 +1420,8 @@ class ChaptersDialog(QDialog):
         methods_wanted = set(autoname.METHODS)
         if not self.ai_translate_check.isChecked():
             methods_wanted.discard(autoname.TRANSLATE)
+        if not privacy.allowed(privacy.MUSICBRAINZ):
+            methods_wanted.discard(autoname.MUSICBRAINZ)
         return autoname.Options(
             methods=methods_wanted,
             ai_policy=autoname.ACCURATE_FIRST,
@@ -1405,7 +1442,7 @@ class ChaptersDialog(QDialog):
         elif not ai.is_configured(self._ai_settings):
             self.figure_button.setEnabled(False)
             self.figure_note.setText(
-                "Uses the AI, which isn't set up: " + AI_NOT_SET_UP
+                "Uses the AI, which can't be asked: " + ai.not_ready(self._ai_settings)
             )
         elif not busy:
             self.figure_button.setEnabled(

@@ -11,6 +11,7 @@ same and the shelf stays recognisable at a glance.
 from __future__ import annotations
 
 import hashlib
+import os
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import (
@@ -54,10 +55,32 @@ def _initials(name: str) -> str:
     return (words[0][:1] + words[1][:1]).upper()
 
 
+# Covers already drawn, so filling the shelf again - ticking a library on or
+# off, sorting, searching - doesn't paint every one afresh. A placeholder
+# depends only on the name; a cover file on its path and when it was
+# written. Emptied when it grows past this, which is plenty for one shelf.
+_drawn: dict[tuple, QPixmap] = {}
+_MOST_DRAWN = 6000
+
+
+def _remember(key: tuple, pixmap: QPixmap) -> QPixmap:
+    if len(_drawn) >= _MOST_DRAWN:
+        _drawn.clear()
+    _drawn[key] = pixmap
+    return pixmap
+
+
 def placeholder(name: str, size: int) -> QPixmap:
     """A cover for a video with no artwork: its initials on a tint chosen
     from its name.
     """
+    drawn = _drawn.get(("placeholder", name, size))
+    if drawn is not None:
+        return drawn
+    return _remember(("placeholder", name, size), _paint_placeholder(name, size))
+
+
+def _paint_placeholder(name: str, size: int) -> QPixmap:
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
 
@@ -127,7 +150,15 @@ def for_video(video_id: str, name: str, size: int) -> QPixmap:
     """
     path = artwork.lookup(video_id)
     if path is not None:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return placeholder(name, size)
+        key = ("file", str(path), size, stat.st_mtime_ns, stat.st_size)
+        drawn = _drawn.get(key)
+        if drawn is not None:
+            return drawn
         pixmap = from_file(path, size)
         if pixmap is not None:
-            return pixmap
+            return _remember(key, pixmap)
     return placeholder(name, size)

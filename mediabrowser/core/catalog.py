@@ -26,13 +26,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import library, naming, network, playlists, protection, store
+from . import library, network, playlists, protection, store
 
 # How many of a catalog's videos are looked for, and what share of them
-# must be found, for a folder to be its folder. A few are looked at, not
-# all: over a network share each look is a round trip.
-SAMPLE = 40
-MATCH_FRACTION = 0.6
+# must be found, for a folder to be its folder (see library.located).
+SAMPLE = library.SAMPLE
+MATCH_FRACTION = library.FOUND_FRACTION
 
 FORMAT_KEY = "catalog_format"
 FORMAT = 1
@@ -54,15 +53,6 @@ class Match:
         return self.found / max(1, self.looked)
 
 
-def _sample(videos: list[dict]) -> list[dict]:
-    """Up to SAMPLE videos, spread across the whole catalog."""
-    videos = sorted(videos, key=lambda v: v["path"])
-    if len(videos) <= SAMPLE:
-        return videos
-    step = len(videos) / SAMPLE
-    return [videos[int(i * step)] for i in range(SAMPLE)]
-
-
 def match(data: dict, folder) -> Match | None:
     """Whether `folder` holds this catalog's videos where it had them,
     relative to its own folder; None if too few are there."""
@@ -71,12 +61,8 @@ def match(data: dict, folder) -> Match | None:
     if not old_root or not videos:
         return None
     new_root = str(Path(folder).resolve())
-    sample = _sample(videos)
-    found = sum(
-        1 for video in sample
-        if Path(library.moved_path(video["path"], old_root, new_root)).exists()
-    )
-    result = Match(old_root, new_root, found, len(sample))
+    found, looked = library.located(videos, old_root, new_root)
+    result = Match(old_root, new_root, found, looked)
     return result if result.fraction >= MATCH_FRACTION else None
 
 
@@ -164,10 +150,7 @@ def read(path) -> dict:
     return data
 
 
-def _further_along(a: dict, b: dict) -> bool:
-    """Whether video `a` is more identified than `b`."""
-    sa, sb = naming.status(a), naming.status(b)
-    return (sa.named, sa.fraction) > (sb.named, sb.fraction)
+_further_along = store.further_along
 
 
 def merge(current: dict, incoming: dict) -> int:

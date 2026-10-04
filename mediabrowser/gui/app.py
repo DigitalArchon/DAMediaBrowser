@@ -88,6 +88,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     options, qt_arguments = parser.parse_known_args(arguments[1:])
 
     store.migrate_legacy_library()
+    # Libraries stored apart before overlapping ones shared their videos.
+    store.merge_overlapping()
     missing_required, bluray_missing = depcheck.check()
     prefer_x11()
 

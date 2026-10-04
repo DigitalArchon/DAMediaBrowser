@@ -17,6 +17,7 @@ someone or something has checked it: Unverified.
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass
 
@@ -54,6 +55,9 @@ MARKED_KEY = "marked_named"
 NEEDS_WORK = (PARTLY, UNNAMED, UNSPLIT, UNVERIFIED)
 
 
+# Asked of every chapter of every video each time the shelf is filled, and
+# the same few thousand titles come round again: worth remembering.
+@functools.lru_cache(maxsize=65536)
 def is_placeholder(title: str | None) -> bool:
     """Whether a chapter title is only a number dressed as a name."""
     return not (title or "").strip() or bool(_PLACEHOLDER.match(title))

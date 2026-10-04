@@ -11,7 +11,8 @@ translate a title - without a subscription to anyone.
 This module is only the wire: settings, one request, one reply. What to
 ask is ai_chapters' business. The API key lives in the OS keyring (see
 creds), never in settings.json; NANOGPT_API_KEY in the environment wins
-over it.
+over it. Nothing is sent unless Settings → Privacy allows the AI, and no
+web search is asked for unless it allows that too (see privacy).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import os
 import urllib.error
 import urllib.request
 
-from . import creds, store
+from . import creds, privacy, store
 
 DEFAULT_BASE_URL = "https://nano-gpt.com/api/v1"
 NANO_GPT_HOST = "nano-gpt.com"
@@ -106,6 +107,8 @@ def settings_from(app_settings: dict) -> dict:
         settings[SETTING_FRAMES] = DEFAULT_FRAMES_PER_CHAPTER
     if settings[SETTING_SEARCH] not in SEARCH_PROVIDERS:
         settings[SETTING_SEARCH] = DEFAULT_SEARCH
+    for choice in (privacy.AI, privacy.WEB_SEARCH):
+        settings[choice] = privacy.allowed(choice, app_settings)
     return settings
 
 
@@ -134,8 +137,23 @@ def store_key(key: str) -> None:
         creds.delete_secret(KEYRING_NAME)
 
 
+def allowed(settings: dict) -> bool:
+    """Whether Settings → Privacy lets anything be sent to the AI."""
+    return bool(settings.get(privacy.AI, privacy.DEFAULTS[privacy.AI]))
+
+
 def is_configured(settings: dict) -> bool:
-    return bool(settings.get(SETTING_KEY))
+    """Whether the AI may be asked: it's allowed, and there's a key."""
+    return allowed(settings) and bool(settings.get(SETTING_KEY))
+
+
+def not_ready(settings: dict) -> str:
+    """Why the AI can't be asked, for saying so; empty when it can."""
+    if not allowed(settings):
+        return privacy.OFF[privacy.AI]
+    if not settings.get(SETTING_KEY):
+        return "Set a Nano-GPT API key in Settings → AI."
+    return ""
 
 
 def short_model_name(model: str) -> str:
@@ -216,9 +234,20 @@ def searches_the_web(settings: dict) -> bool:
     return host == NANO_GPT_HOST or host.endswith("." + NANO_GPT_HOST)
 
 
+def may_search(settings: dict) -> bool:
+    """Whether the model may have the web searched for it: the endpoint
+    can, and Settings → Privacy allows it."""
+    return searches_the_web(settings) and bool(
+        settings.get(privacy.WEB_SEARCH, privacy.DEFAULTS[privacy.WEB_SEARCH])
+    )
+
+
 def model_name(settings: dict, online: bool = False) -> str:
     model = settings[SETTING_MODEL]
-    if online and ONLINE_SUFFIX not in model and searches_the_web(settings):
+    if not may_search(settings):
+        # Not even when the model was set with the suffix already on.
+        return model.split(ONLINE_SUFFIX, 1)[0] if searches_the_web(settings) else model
+    if online and ONLINE_SUFFIX not in model:
         model += f"{ONLINE_SUFFIX}/{settings.get(SETTING_SEARCH) or DEFAULT_SEARCH}"
     return model
 
@@ -235,7 +264,7 @@ def chat(messages, settings: dict, *, json_reply: bool = True, online: bool = Fa
     between guessing a show's setlist and reading it off setlist.fm.
     """
     if not is_configured(settings):
-        raise NotConfigured("no Nano-GPT API key is set")
+        raise NotConfigured(not_ready(settings))
     body = {
         "model": model_name(settings, online),
         "messages": messages,
@@ -275,7 +304,7 @@ def reply_text(reply) -> str:
     message = choices[0].get("message") or {}
     if choices[0].get("finish_reason") == "length" and not (message.get("content") or "").strip():
         raise AIError("the model ran out of room before it answered - try again, or "
-                      "a bigger model in AI Settings")
+                      "a bigger model in Settings → AI")
     content = message.get("content")
     if isinstance(content, list):
         content = "".join(
@@ -338,6 +367,8 @@ def list_models(settings: dict, vision_only: bool = True) -> list[dict]:
     the recommended ones first, then the other Claude models, then the rest.
     `vision` is None for an endpoint that doesn't say, whose models are all
     listed (see vision_known). The key is optional but gives real prices."""
+    if not allowed(settings):
+        raise NotConfigured(privacy.OFF[privacy.AI])
     reply = _request(
         f"{settings[SETTING_BASE_URL]}/models?detailed=true",
         settings.get(SETTING_KEY) or None,

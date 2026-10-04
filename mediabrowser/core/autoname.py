@@ -406,7 +406,7 @@ class _Step:
 
     def _ai(self) -> bool:
         if not ai.is_configured(self.settings):
-            self.log("AI: no Nano-GPT key is set")
+            self.log(f"AI: {ai.not_ready(self.settings)}")
             return False
         if not self.budget.take():
             self.log("AI: this run's requests are used up")

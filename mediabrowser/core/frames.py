@@ -133,6 +133,12 @@ _cache: dict[tuple, bytes | None] = {}
 _cache_lock = threading.Lock()
 
 
+def clear_cache() -> None:
+    """Forget everything measured: all library data is being deleted."""
+    with _cache_lock:
+        _cache.clear()
+
+
 def _key(video: dict, seconds: float, width: int):
     return (video["path"], video.get("playlist"), round(seconds, 2), width)
 

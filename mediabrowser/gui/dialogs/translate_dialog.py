@@ -86,7 +86,7 @@ class TranslateDialog(QDialog):
             self.status.setText("None of these chapters has a name yet.")
             return
         if not ai.is_configured(self._settings):
-            self.status.setText("Set a Nano-GPT API key first (File → AI Settings).")
+            self.status.setText(ai.not_ready(self._settings))
             return
         settings = self._settings
         titles = [title for _, title in self._titled]

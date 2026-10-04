@@ -53,14 +53,14 @@ NOT_FILES = {"shown", "playlists", "sheet", "painter"}
 # Each module's writes, and where they go. Change a number only after
 # checking that the new write can't reach a library.
 REVIEWED = {
-    "core/artwork.py": 6,       # the cover cache, config.ARTWORK_DIR
+    "core/artwork.py": 8,       # the cover cache, config.ARTWORK_DIR
     "core/audio_levels.py": 2,  # its own temporary folder
     "core/bdmenu.py": 2,        # a temporary file for ffmpeg
     "core/catalog.py": 2,       # an export, refused inside any library
     "core/config.py": 2,        # the data folders
     "core/library.py": 1,       # cached covers renamed within ARTWORK_DIR
     "core/player.py": 2,        # mpv's socket, in the temporary folder
-    "core/store.py": 8,         # settings and library files, config.DATA_DIR
+    "core/store.py": 17,        # settings, library files and backups - all through config.own
     "gui/main_window.py": 1,    # the screenshot folder, in Pictures
 }
 
@@ -215,6 +215,66 @@ def test_nothing_in_a_library_changes_whatever_is_done_with_it(
     assert _snapshot(root) == before
     written = {p.parent.name for p in data_dir.rglob("*") if p.is_file()}
     assert written <= {"data", "libraries", "artwork"}
+
+
+@needs_ffmpeg
+def test_nothing_in_a_library_changes_whatever_is_done_to_the_libraries(
+        read_only_library, data_dir, tmp_path):
+    """Every way of changing the libraries themselves - nesting, forgetting,
+    restoring, moving, a rename found by a rescan, deleting one library's
+    data and then everything - changes only the app's records."""
+    root = read_only_library
+    before = _snapshot(root)
+    inner = root / "Tokyo Dome"
+
+    library.rescan(inner)
+    data = library.rescan(root)
+    for video in data["videos"].values():
+        for chapter in video["chapters"]:
+            chapter["title"], chapter["source"] = "Named", "manual"
+    store.save_library(data)
+    store.delete_library(inner)
+    store.restore_backup(store.list_backups()[0]["path"])
+    store.delete_library(root)
+    store.restore_backup(store.list_backups()[0]["path"])
+    _set_writable(root, True)
+    moved = tmp_path / "Moved"
+    root.rename(moved)
+    _set_writable(moved, False)
+    library.relocate(root, moved)
+    library.rescan(moved)
+    library.delete_library_data(moved / "Tokyo Dome")
+    library.rescan(moved)
+    library.delete_library_data(moved)
+    library.rescan(moved)
+    library.delete_all_data()
+    _set_writable(moved, True)
+    moved.rename(root)
+    _set_writable(root, False)
+
+    assert _snapshot(root) == before
+    assert all(p.is_relative_to(data_dir) for p in data_dir.rglob("*"))
+
+
+def test_the_app_refuses_to_change_any_file_but_its_own(tmp_path, data_dir):
+    video = tmp_path / "Concerts" / "Budokan.mkv"
+    video.parent.mkdir()
+    video.write_bytes(b"video")
+    for path in (video, video.parent, data_dir / ".." / "Concerts" / "Budokan.mkv",
+                 tmp_path / "elsewhere.json"):
+        with pytest.raises(config.NotOwnFile):
+            config.own(path)
+    # Nor through a link that leads out of the data folder.
+    (data_dir / "libraries").mkdir(parents=True)
+    (data_dir / "libraries" / "out").symlink_to(video.parent)
+    with pytest.raises(config.NotOwnFile):
+        config.own(data_dir / "libraries" / "out" / "Budokan.mkv")
+    with pytest.raises(ValueError):
+        store.delete_backup(video)
+    assert video.read_bytes() == b"video"
+    for path in (data_dir / "libraries" / "a.json", data_dir / "artwork" / "x.jpg",
+                 data_dir / "settings.json", data_dir / "libraries" / "backups" / "b.json"):
+        assert config.own(path) == path
 
 
 def test_a_catalog_is_never_saved_into_a_library(tmp_path, data_dir):

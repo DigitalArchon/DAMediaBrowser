@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -44,8 +45,10 @@ from mediabrowser.core import (
     network,
     playback,
     playlists,
+    privacy,
     protection,
     reset,
+    sharing,
     store,
     utils,
 )
@@ -313,7 +316,12 @@ class MainWindow(QMainWindow):
         self.empty_label.setObjectName("placeholder")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setTextFormat(Qt.PlainText)
-        self.pages.addWidget(self.empty_label)
+        self.welcome = self._build_welcome()
+        empty_page = QWidget()
+        empty_layout = QVBoxLayout(empty_page)
+        empty_layout.addWidget(self.empty_label, 1)
+        empty_layout.addWidget(self.welcome, 1)
+        self.pages.addWidget(empty_page)
 
         # Manual Edit: the video in the main area, where the chapters were.
         self.editor = ChapterEditor()
@@ -370,6 +378,10 @@ class MainWindow(QMainWindow):
         self.libraries.network_requested.connect(self.add_network_folder)
         self.libraries.flag_toggled.connect(self.set_library_flag)
         self.libraries.reset_requested.connect(self.reset_library)
+        self.libraries.locate_requested.connect(self.locate_library)
+        self.libraries.forgotten.connect(self._on_library_forgotten)
+        self.libraries.restore_requested.connect(self.restore_library)
+        self.libraries.erase_requested.connect(self.delete_library_data)
         left = QDockWidget("Libraries", self)
         left.setObjectName("librariesDock")
         left.setWidget(self.libraries)
@@ -581,6 +593,21 @@ class MainWindow(QMainWindow):
         self.undo_reset_action.setToolTip("Put back what the last reset cleared")
         self.undo_reset_action.triggered.connect(self.undo_reset)
         file_menu.addAction(self.undo_reset_action)
+        file_menu.addSeparator()
+        restore_action = QAction("Restore Library…", self)
+        restore_action.setToolTip(
+            "Bring back a library from the backup kept when it was forgotten, folded "
+            "into another or moved"
+        )
+        restore_action.triggered.connect(self.restore_library)
+        file_menu.addAction(restore_action)
+        delete_all_action = QAction("Delete All Library Data…", self)
+        delete_all_action.setToolTip(
+            "Permanently delete every library's titles, chapters and backups from this "
+            "app - your video files are never touched"
+        )
+        delete_all_action.triggered.connect(self.delete_all_library_data)
+        file_menu.addAction(delete_all_action)
 
         def before_file_menu():
             busy = self.identifying() or self._scanning
@@ -591,13 +618,19 @@ class MainWindow(QMainWindow):
                 f"Undo {reset.describe(undo[1])}" if undo else "Undo Reset"
             )
             reset_action.setEnabled(not busy)
+            restore_action.setEnabled(not busy)
+            delete_all_action.setEnabled(not busy)
 
         file_menu.aboutToShow.connect(before_file_menu)
         file_menu.addSeparator()
-        ai_settings_action = QAction("AI Settings…", self)
-        ai_settings_action.setToolTip("The Nano-GPT key and model used to look at videos")
-        ai_settings_action.triggered.connect(self.ai_settings)
-        file_menu.addAction(ai_settings_action)
+        settings_action = QAction("Settings…", self)
+        settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        settings_action.setToolTip(
+            "What may be sent online - MusicBrainz, cover art, the AI - and the AI's "
+            "key and model"
+        )
+        settings_action.triggered.connect(lambda: self.open_settings())
+        file_menu.addAction(settings_action)
         file_menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut(QKeySequence.Quit)
@@ -817,6 +850,10 @@ class MainWindow(QMainWindow):
         # view was in use before.
         self.set_view(SHELF_LIST if search else self._preferred_view, remember=False)
 
+        # No library at all, as on the first launch: where to start.
+        first = not self.shown.roots()
+        self.welcome.setVisible(first)
+        self.empty_label.setVisible(not first)
         if not self.data["videos"]:
             self.pages.setCurrentIndex(PAGE_EMPTY)
         elif self.pages.currentIndex() == PAGE_EMPTY:
@@ -856,10 +893,12 @@ class MainWindow(QMainWindow):
         rather than waiting for the whole library.
         """
         # A private video's release isn't looked up online, not even for
-        # its cover: the Cover Art Archive is MusicBrainz's.
+        # its cover: the Cover Art Archive is MusicBrainz's. Nor is anyone's
+        # until Settings → Privacy allows it.
+        fetch = privacy.allowed(privacy.COVER_ART)
         pending = [
             (video_id, video,
-             None if protection.is_private(self._lib(video_id), video)
+             None if not fetch or protection.is_private(self._lib(video_id), video)
              else video.get("musicbrainz_release_id"))
             for video_id, video in self.data["videos"].items()
             if not artwork.is_resolved(video_id)
@@ -906,8 +945,20 @@ class MainWindow(QMainWindow):
 
     def choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Choose media library folder")
-        if path:
+        if path and self._confirm_adding(path):
             self.rescan(path)
+
+    def _confirm_adding(self, path: str) -> bool:
+        """Before a folder overlapping libraries there are becomes one: what
+        it shares with them, and that nothing of theirs is lost."""
+        detail = sharing.adding(path)
+        if detail is None:
+            return True
+        accepted, _ = self._confirm(
+            "Add Library", f"Add “{sharing.name(path)}” as a library?", detail,
+            f"Add {sharing.name(path)}",
+        )
+        return accepted
 
     def add_network_folder(self) -> None:
         from mediabrowser.gui.dialogs.network_dialog import NetworkFolderDialog
@@ -917,7 +968,158 @@ class MainWindow(QMainWindow):
         dialog = NetworkFolderDialog(self)
         if dialog.exec() and dialog.result_folder():
             path, uri = dialog.result_folder()
-            self.rescan(path, network_uri=uri)
+            if self._confirm_adding(path):
+                self.rescan(path, network_uri=uri)
+
+    def locate_library(self, root: str, on_network: bool = False) -> None:
+        """A library whose folder was renamed or moved, or whose NAS has a
+        new address or is a new one: moved to where its videos are now,
+        titles, chapters and all - after saying what will move."""
+        if self._scanning or self.identifying():
+            self._set_status("Wait for the scan or identification to finish first.", "warning")
+            return
+        uri = None
+        if on_network:
+            from mediabrowser.gui.dialogs.network_dialog import NetworkFolderDialog
+
+            dialog = NetworkFolderDialog(self)
+            if not dialog.exec() or not dialog.result_folder():
+                return
+            path, uri = dialog.result_folder()
+        else:
+            path = QFileDialog.getExistingDirectory(
+                self, f"Where is {sharing.name(root)} now?"
+            )
+            if not path:
+                return
+        new_root = str(Path(path).resolve())
+        if new_root == str(Path(root).resolve()):
+            self._set_status(f"{sharing.name(root)} is there already.")
+            return
+        found, looked = library.located(
+            store.load_library_for_root(root)["videos"].values(), root, new_root
+        )
+        title = (f"Move the library to “{sharing.name(new_root)}”?" if found or not looked
+                 else f"None of the {looked} videos checked are in “{sharing.name(new_root)}” "
+                      "- is it the right folder? Move the library there anyway?")
+        accepted, _ = self._confirm(
+            "Locate Moved Folder", title, sharing.locating(root, new_root), "Move Library"
+        )
+        if not accepted:
+            return
+        library.relocate(root, new_root)
+        self.libraries.refresh()
+        self.rescan(new_root, network_uri=uri)
+
+    def restore_library(self) -> None:
+        """Bring a library back from a backup. Nothing here now is lost by
+        it; the libraries on show are reloaded, so they show what came back."""
+        from mediabrowser.gui.dialogs.restore_dialog import RestoreDialog
+
+        if self._scanning or self.identifying():
+            self._set_status("Wait for the scan or identification to finish first.", "warning")
+            return
+        dialog = RestoreDialog(self)
+        if not dialog.exec() or not dialog.restored:
+            self.libraries.refresh()  # a backup may have been deleted
+            return
+        roots = [root for root in self.shown.roots() if store.has_library(root)]
+        self.show_libraries_fresh(roots or dialog.restored[:1])
+        names = ", ".join(sharing.name(root) for root in dialog.restored)
+        self._set_status(f"Restored {names}.")
+
+    def show_libraries_fresh(self, roots) -> None:
+        """Put these libraries on show as they're stored now, not as the
+        shelf had them."""
+        roots = [root for root in roots if root]
+        if not roots:
+            return
+        self.shown = Shelf([self._prepared(store.load_library_for_root(root))
+                            for root in roots])
+        self._remember_shown()
+        self.libraries.refresh(roots)
+        self.show_grid()
+        self.refresh_library()
+
+    def _confirm_for_good(self, title: str, text: str, detail: str, action: str) -> bool:
+        """The plainest warning the app gives: what is deleted, counted, and
+        that it is for good - with a box to tick before the button works."""
+        box = QMessageBox(QMessageBox.Critical, title, text, QMessageBox.Cancel, self)
+        box.setInformativeText(detail)
+        check = QCheckBox("I understand: every title and chapter is deleted for good, "
+                          "with no backup to restore")
+        box.setCheckBox(check)
+        go = box.addButton(action, QMessageBox.DestructiveRole)
+        go.setEnabled(False)
+        check.toggled.connect(go.setEnabled)
+        box.setDefaultButton(QMessageBox.Cancel)
+        box.exec()
+        return box.clickedButton() is go and check.isChecked()
+
+    def _confirm_delete_everything(self) -> bool:
+        return self._confirm_for_good(
+            "Delete All Library Data", "Delete all library data, permanently?",
+            sharing.everything(), "Delete Everything",
+        )
+
+    def _confirm_erase(self, root: str) -> bool:
+        return self._confirm_for_good(
+            "Delete Library Data",
+            f"Delete everything recorded for “{sharing.name(root)}”, permanently?\n\n{root}",
+            sharing.erasing(root), "Delete Library Data",
+        )
+
+    def delete_library_data(self, root: str) -> None:
+        """One library's records deleted for good, after the warning: off
+        the shelf, out of the queue, and out of any library around it."""
+        if self._scanning or self.identifying():
+            self._set_status("Wait for the scan or identification to finish first.", "warning")
+            return
+        if not self._confirm_erase(root):
+            return
+        erased = set(library.delete_library_data(root))
+        gone = [i for i, entry in enumerate(self.queue.entries()) if entry.video_id in erased]
+        if gone:
+            self.remove_from_queue(gone)
+        roots = [r for r in self.shown.roots() if store.has_library(r)]
+        if roots:
+            self.show_libraries_fresh(roots)
+        else:
+            self.shown = Shelf([store.default_library()])
+            self._remember_shown()
+            self.libraries.refresh([])
+            self.show_grid()
+            self.refresh_library()
+        self._set_status(f"Deleted everything recorded for {sharing.name(root)}.")
+
+    def delete_all_library_data(self) -> None:
+        if self._scanning or self.identifying():
+            self._set_status("Wait for the scan or identification to finish first.", "warning")
+            return
+        if not self._confirm_delete_everything():
+            return
+        self.clear_queue()
+        library.delete_all_data()
+        self.shown = Shelf([store.default_library()])
+        self._remember_shown()
+        self.libraries.refresh([])
+        self.show_grid()
+        self.refresh_library()
+        self._set_status("All library data deleted. Add a folder to start again.")
+
+    def _on_library_forgotten(self, root: str) -> None:
+        """A forgotten library comes off the shelf, so nothing saves it back."""
+        roots = self.shown.roots()
+        if root not in roots:
+            return
+        remaining = [r for r in roots if r != root]
+        if remaining:
+            self.show_libraries(remaining)
+            return
+        self.shown = Shelf([store.default_library()])
+        self._remember_shown()
+        self.show_grid()
+        self.refresh_library()
 
     def rescan(self, root: str | None = None, network_uri: str | None = None) -> None:
         if self._scanning:
@@ -1007,6 +1209,10 @@ class MainWindow(QMainWindow):
         self.refresh_library()
         count = sum(len(data["videos"]) for data in scanned)
         text = f"Done. {count} video{'' if count == 1 else 's'} found."
+        moved = sum(data.get(library.MOVED_KEY, 0) for data in scanned)
+        if moved:
+            text += (f" {moved} had been moved or renamed - their titles and chapters "
+                     "came with them.")
         adopted, self._adopted = self._adopted, None
         if adopted is not None:
             text += (f" Its names came across from the catalog made at {adopted.old_root} "
@@ -1919,10 +2125,74 @@ class MainWindow(QMainWindow):
             chapters, origin = payload
             self.replace_chapters(chapters, origin)
 
-    def ai_settings(self) -> None:
-        from mediabrowser.gui.dialogs.ai_settings_dialog import AISettingsDialog
+    def open_settings(self, tab: int | None = None) -> None:
+        from mediabrowser.gui.dialogs.settings_dialog import TAB_PRIVACY, SettingsDialog
 
-        AISettingsDialog(self).exec()
+        covers_before = privacy.allowed(privacy.COVER_ART)
+        if not SettingsDialog(self, TAB_PRIVACY if tab is None else tab).exec():
+            return
+        if privacy.allowed(privacy.COVER_ART) and not covers_before:
+            self._refetch_release_covers()
+
+    def _refetch_release_covers(self) -> None:
+        """Cover art has just been allowed: a video matched to a release
+        got a frame for its cover meanwhile, or nothing, and the sleeve
+        may now be fetched instead. Whatever was beside it or inside it is
+        found first again, as before."""
+        refetch = [video_id for data in self.shown.libraries
+                   for video_id, video in data["videos"].items()
+                   if video.get("musicbrainz_release_id")
+                   and not protection.is_private(data, video)]
+        for video_id in refetch:
+            artwork.forget(video_id)
+        if refetch:
+            self.refresh_library()
+
+    def _build_welcome(self) -> QWidget:
+        """What the first launch shows, before there's any library: choose
+        what may go online, then add a folder."""
+        title = QLabel("Welcome to DA Media Browser")
+        title.setObjectName("welcomeTitle")
+        title.setAlignment(Qt.AlignCenter)
+        text = QLabel(
+            "Before you add a library, open Settings (File → Settings) to choose what "
+            "the app may send online - MusicBrainz tracklists, cover art, the AI and "
+            "its web search - and to set up the AI.\n\n"
+            "Nothing about your videos leaves this computer until you allow it there."
+        )
+        text.setObjectName("welcomeText")
+        text.setAlignment(Qt.AlignCenter)
+        text.setWordWrap(True)
+        text.setTextFormat(Qt.PlainText)
+        settings_button = QPushButton("Open Settings…")
+        settings_button.setObjectName("primaryButton")
+        settings_button.clicked.connect(lambda: self.open_settings())
+        add_button = QPushButton("Add Folder…")
+        add_button.clicked.connect(self.choose_folder)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(settings_button)
+        buttons.addWidget(add_button)
+        buttons.addStretch(1)
+        # A column of its own, so the wrapped text is as tall as it needs:
+        # a label centred by the layout's alignment is given one line.
+        column = QWidget()
+        column.setMaximumWidth(760)
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(18)
+        layout.addStretch(1)
+        layout.addWidget(title)
+        layout.addWidget(text)
+        layout.addLayout(buttons)
+        layout.addStretch(2)
+        welcome = QWidget()
+        row = QHBoxLayout(welcome)
+        row.setContentsMargins(24, 24, 24, 24)
+        row.addStretch(1)
+        row.addWidget(column, 4)
+        row.addStretch(1)
+        return welcome
 
     def translate_titles(self) -> None:
         from mediabrowser.gui.dialogs.translate_dialog import TranslateDialog
@@ -2527,7 +2797,9 @@ class MainWindow(QMainWindow):
             "and discs again, which can take a while.\n\n"
             "Kept: locked videos, whole; whether each video is locked or private; and any "
             "video whose file can't be read right now.\n\n"
-            "File ▸ Undo Reset puts it all back.",
+            "File ▸ Undo Reset puts it all back."
+            + (f"\n\nIts videos are shared with {' and '.join(map(sharing.name, shared))}, "
+               "so they're reset there too." if (shared := sharing.shared_with(root)) else ""),
             "Reset Library",
             checkbox=(f"Also delete its {saved} playlist{'' if saved == 1 else 's'}"
                       if saved else None),

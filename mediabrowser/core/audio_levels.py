@@ -169,6 +169,12 @@ _cache: dict[tuple, Levels] = {}
 _cache_lock = threading.Lock()
 
 
+def clear_cache() -> None:
+    """Forget everything measured: all library data is being deleted."""
+    with _cache_lock:
+        _cache.clear()
+
+
 def cached_levels(path, fingerprint, duration=None, progress_cb=None, cancel=None) -> Levels:
     key = (str(path), tuple(fingerprint) if fingerprint else None)
     with _cache_lock:

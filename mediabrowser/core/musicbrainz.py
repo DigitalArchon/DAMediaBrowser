@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from . import config
+from . import config, privacy
 
 _last_request_time = 0.0
 # Held from one request's turn to the next's: an Identify run and a search in
@@ -37,7 +37,11 @@ def _get(path: str, params: dict, fmt: str = "xml") -> dict:
     as a user-facing toggle because in practice one or the other has been
     observed to fail far more often depending on network path (VPNs in
     particular seem to have worse luck with the JSON endpoint).
+
+    Nothing is sent unless Settings → Privacy allows MusicBrainz.
     """
+    if not privacy.allowed(privacy.MUSICBRAINZ):
+        raise MusicBrainzError(privacy.OFF[privacy.MUSICBRAINZ])
     with _turn:
         return _get_in_turn(path, params, fmt)
 

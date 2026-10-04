@@ -272,7 +272,7 @@ class TestJustFigureItOut:
         monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
         dialog = dialog_for(window, file_video(tmp_path, 900.0, starts=(0.0, 300.0)))
         assert not dialog.figure_button.isEnabled()
-        assert "isn't set up" in dialog.figure_note.text()
+        assert "Settings → AI" in dialog.figure_note.text()
 
     def test_its_answer_is_shown_then_applied(self, app, shelf, measured, no_searching,
                                               configured, monkeypatch):

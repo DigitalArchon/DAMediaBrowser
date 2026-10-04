@@ -392,7 +392,8 @@ class TestNetworkLibraries:
         def resolver(uri):
             raise RuntimeError("no route to host")
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(library.LibraryUnavailable,
+                           match="(?s)no route to host.*Locate Moved Folder"):
             library.reconnect(root, resolver)
 
 

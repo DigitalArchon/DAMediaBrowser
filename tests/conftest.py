@@ -47,6 +47,30 @@ def memory_keyring():
 
 
 @pytest.fixture(autouse=True)
+def own_settings(tmp_path, monkeypatch):
+    """No test may read or write the real settings.json."""
+    monkeypatch.setattr(config, "APP_SETTINGS_FILE", tmp_path / "settings.json")
+
+
+@pytest.fixture(autouse=True)
+def everything_allowed(monkeypatch):
+    """The network is faked wherever a test reaches for it, so the tests
+    are written as if Settings → Privacy allowed everything. The ones about
+    privacy itself start from what ships instead (`shipped_privacy`)."""
+    from mediabrowser.core import privacy
+
+    monkeypatch.setattr(privacy, "DEFAULTS", dict.fromkeys(privacy.CHOICES, True))
+
+
+@pytest.fixture
+def shipped_privacy(monkeypatch):
+    """Settings → Privacy as a fresh install has it: nothing allowed."""
+    from mediabrowser.core import privacy
+
+    monkeypatch.setattr(privacy, "DEFAULTS", dict.fromkeys(privacy.CHOICES, False))
+
+
+@pytest.fixture(autouse=True)
 def no_real_mpv(monkeypatch):
     """No test's window may start a real mpv: its player is a stand-in."""
     try:

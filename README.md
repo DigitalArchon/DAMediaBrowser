@@ -36,10 +36,7 @@ using AI tools.
 > a **USD per day** cap on each key in its dashboard, and since its credit
 > is prepaid, keeping only a small balance on the account caps it too.
 
-![DA Media Browser: a library of concert videos as tiles, with a playlist of chapters queued and one playing](docs/screenshot.png)
-
-<sub>The library shown is made up: fictional bands, generated covers.</sub>
-
+![DA Media Browser: concert Blu-rays and videos by BABYMETAL, Epica, Nightwish and Within Temptation as tiles, each with its cover](docs/social-preview.png)
 
 ## Requirements
 
@@ -123,6 +120,27 @@ particular folder on start.
 
 ## Using it
 
+**First, Settings.** The first start says so: open **File → Settings**
+(`Ctrl+,`) and choose, under *Privacy*, what the app may send online —
+each is off until you tick it:
+
+- **Look up tracklists on MusicBrainz** — a search, usually the video's
+  file or folder name, and the ids of the releases it finds.
+- **Fetch cover art from the Cover Art Archive** — asks for the sleeve of
+  the release a video was matched to. Without it, covers come from the
+  video's folder, the file itself (for a Blu-ray, the artwork the disc
+  carries for players' menus), or a frame of it; tick it later and the
+  matched videos get their sleeves then.
+- **Send videos to the AI** — chapter times, file and folder names,
+  tracklists and frames, to the AI service on the *AI* tab.
+- **Let the AI search the web** — the AI service searches for the show
+  for the model.
+
+Everything else — scanning, playing, detecting chapters from the audio,
+reading a disc's own chapters, Manual Edit — works with none of them. A
+video or library marked **Private** (below) is never sent anywhere,
+whatever is ticked.
+
 **Add a folder** scans it for videos and Blu-ray disc folders. Everything it
 finds appears on the shelf; click a cover to see that video's chapters.
 
@@ -132,6 +150,66 @@ identified as one, each video still stored in (and locked, private or
 hidden by) its own library. Double-click one, or **Open**, to see it
 alone. **Rescan** rescans every library on show, and the next start shows
 the same ones again.
+
+**Libraries inside libraries.** A video's titles and chapters belong to
+the video, not to the library it was named in. Add `BABYMETAL` as a
+library, name its concerts, then add the `MusicVids` folder around it:
+MusicVids picks up every name BABYMETAL has, and from then on the two
+share them — name a song in either and it's named in both. It works the
+other way round too: add a folder inside a library and it shows that
+library's videos from there, already named. Before either, the app says
+what it found and that nothing is lost. The *Libraries* panel shows a
+nested library as "in MusicVids"; each keeps its own hidden folders,
+playlists and Locked/Private setting, and a nested library set Locked or
+Private covers its videos when they're seen through the one around it too.
+
+**Forget** says first exactly what would go. Forgetting a library inside
+another loses nothing — the one around it keeps every video, named, and
+adding it again finds them all there. Forgetting one that holds videos no
+other library does says how many, and how many of those had work done on
+them. Either way a copy of the library as it was is kept in
+`libraries/backups/`.
+
+**Restore…** (under the *Libraries* panel, or **File → Restore Library…**)
+lists those backups, newest first — kept whenever a library is forgotten,
+folded into one around it, moved, or restored into — each saying what it
+holds and why it was made. Restoring brings its libraries and videos back
+without losing anything done since: a video that's still here keeps
+whichever copy is further along, a library that's still here keeps its
+settings, and the library it goes into is backed up first. A backup you
+don't want can be deleted there too.
+
+**Delete Library Data…** (right-click a library) is Forget for good: it
+permanently deletes every title, chapter and name recorded for that
+library's videos, its settings and playlists, the libraries inside it,
+and its part of every backup — so Restore can't bring it back, and adding
+the folder again starts from scratch. A library inside another shares its
+videos with it, so they're deleted there too; the one around it shows
+them again, untitled, on its next rescan. The warning counts what will go,
+and the button only works once you tick that you understand.
+
+**File → Delete All Library Data…** does that for every library: it permanently
+deletes every library's titles, chapters, names, hidden folders,
+playlists and Identify history, *every backup*, and the cached covers.
+Nothing can be restored afterwards, and a folder added again starts from
+scratch. The warning counts what will go, and **Delete Everything** only
+works once you tick that you understand. Your video files are never
+touched, and Settings (privacy, the AI and its key) are kept.
+
+**Renamed, moved, a new NAS.** Video files renamed or moved around inside
+a library are found on the next rescan — by their size and modification
+time, or name and size, or for a disc its titles — and keep their titles
+and chapters; the status bar says how many. If the library's own folder
+was renamed or moved, the NAS has a new IP address, or the library now
+lives on another NAS, right-click it and choose **Locate Moved Folder…**
+(or **Locate on Network…**) and point at where it is now: it checks the
+videos are there, says what will move, and moves everything with it. When
+a library inside another is located and the one around it is at the new
+place too — a NAS with a new address — the whole share moves together.
+Simply adding the folder at its new place also finds the old catalog by
+itself, once the old place is gone. Giving the NAS a fixed address, or
+connecting to it by name (`smb://nas.local/…`) rather than by IP, avoids
+the address ever changing.
 
 **Network folders.** **Add Network Folder** lists the shares your file
 manager is connected to or has bookmarked (or takes an address like
@@ -323,12 +401,13 @@ all. By default it also **looks the show up online** first (Nano-GPT runs
 a web search for the model): on a rip whose frames show no captions,
 that is the difference between guessing a plausible setlist and reading
 the real one off setlist.fm — untick it for a show no site lists, or to
-save a little. AI Settings picks who searches: Kagi (the default) or
+save a little; it's only offered when Settings → Privacy allows the AI's
+web search. Settings → AI picks who searches: Kagi (the default) or
 Perplexity find the right page most reliably; LinkUp is Nano-GPT's own
 and the only one allowed on an account with Zero Data Retention switched
 on, so the app falls back to it, and says so, when the other is refused.
 
-**List Models** in AI Settings shows only models that can look at
+**List Models** in Settings → AI shows only models that can look at
 pictures, which everything here needs, with `anthropic/claude-sonnet-5`
 (the default, and the one this app was tested with) and
 `anthropic/claude-opus-5.5` first. Any other OpenAI-compatible service
@@ -349,7 +428,8 @@ it is purple).
 
 It runs through [Nano-GPT](https://nano-gpt.com), a pay-as-you-go
 gateway to Claude and other models: make an account, add a few dollars,
-paste an API key into **File → AI Settings** and pick a model
+tick *Send videos to the AI* under **File → Settings → Privacy**, then
+paste an API key on the *AI* tab and pick a model
 (`anthropic/claude-sonnet-5` is the default and reads captions fine;
 Opus is more careful and several times the price). A concert's chapters
 cost a few cents. The key is kept in the system keyring (GNOME Keyring,
@@ -549,14 +629,21 @@ Under `$XDG_DATA_HOME/da-media-browser` (`~/.local/share/...` by
 default):
 
 ```
-libraries/<hash>.json   one file per scanned folder: chapters and their names
+libraries/<hash>.json   one file per outermost library folder: chapters and their
+                        names, with the libraries nested inside it
+libraries/backups/      a copy of a library file before it's merged, moved, restored
+                        into or forgotten (File → Restore Library…)
 artwork/<id>.jpg        cached cover art
 settings.json           app preferences
 ```
 
 The Nano-GPT key is in the system keyring, under `da-media-browser`.
 
-Nothing is ever written into a library. The app opens media files only to
+Nothing is ever written into a library. Every file the app writes,
+renames or deletes — library records, backups, covers, settings — is
+checked first to be inside its own data folder, and anything else is
+refused, so even a bug can't reach a video. Forgetting, restoring,
+moving or deleting a library's data only ever changes those records. The app opens media files only to
 read them (ffprobe, ffmpeg, libbluray and mpv all only read), never renames,
 moves or deletes one, and puts no file of its own beside them: a library on
 a read-only share works exactly like any other. **Export Catalog** refuses
@@ -573,7 +660,8 @@ A rescan never forgets a video just because its file isn't there right now.
 If the library folder itself is unavailable — a network share that has
 dropped, a drive that's unplugged — the rescan stops and changes nothing.
 Individual files that are away are kept, names and all, and listed as
-missing; putting them back and rescanning restores them. A file that
+missing; putting them back and rescanning restores them, and one renamed
+or moved within the library is found under its new name. A file that
 couldn't be read this time keeps what was known about it too. To let go of
 videos that are gone for good, right-click one and **Remove from Library**,
 or use **File → Remove Missing Videos**.

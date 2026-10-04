@@ -90,6 +90,30 @@ COVER_FILENAMES = (
 COVER_ART_ARCHIVE_URL = "https://coverartarchive.org/release/{mbid}/front-500"
 
 
+class NotOwnFile(Exception):
+    """A file the app was about to write, rename or delete isn't one of its
+    own - so it's left alone, whatever asked."""
+
+
+def own(path) -> Path:
+    """`path`, once it's certain to be one of this app's own files: in its
+    data folder (the libraries' records, their backups, the cover cache,
+    settings). Everything that writes, renames or deletes a file there goes
+    through this first, so no bug can reach a video, a disc or anything else
+    in a library - it raises NotOwnFile instead.
+
+    The folder a file is in is resolved, so a link can't lead out of the
+    data folder; the file itself isn't, so deleting a link deletes the link.
+    """
+    target = Path(path)
+    where = target.parent.resolve() / target.name
+    for folder in (DATA_DIR, LIBRARIES_DIR, ARTWORK_DIR, APP_SETTINGS_FILE.parent):
+        folder = Path(folder).resolve()
+        if where == folder or where.is_relative_to(folder):
+            return target
+    raise NotOwnFile(f"Refused to change {path}: it isn't one of this app's own files.")
+
+
 def ensure_data_dir() -> None:
     LIBRARIES_DIR.mkdir(parents=True, exist_ok=True)
 

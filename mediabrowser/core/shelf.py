@@ -13,14 +13,27 @@ all of theirs (MergedVideos reads and writes each in its own library) and
 its "settings" are the first library's, which is where anything about the
 shelf as a whole - an Identify run's history - is kept. Saving goes
 through the shelf, library by library.
+
+Libraries that overlap (one inside another) share their videos, so the
+same video can be in two of them: it's on the shelf once, worked on in the
+first library listed that has it, and the others' copies are brought into
+step when it's saved.
 """
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 
 from . import store
+
+
+def _overlap(a, b) -> bool:
+    if not a or not b:
+        return False
+    a, b = Path(a), Path(b)
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
 class MergedVideos(MutableMapping):
@@ -48,17 +61,22 @@ class MergedVideos(MutableMapping):
         owner["videos"][video_id] = video
 
     def __delitem__(self, video_id) -> None:
-        owner = self._owner(video_id)
-        if owner is None:
+        owners = [data for data in self._libraries if video_id in data["videos"]]
+        if not owners:
             raise KeyError(video_id)
-        del owner["videos"][video_id]
+        for data in owners:
+            del data["videos"][video_id]
 
     def __iter__(self) -> Iterator:
+        seen = set()
         for data in self._libraries:
-            yield from data["videos"]
+            for video_id in data["videos"]:
+                if video_id not in seen:
+                    seen.add(video_id)
+                    yield video_id
 
     def __len__(self) -> int:
-        return sum(len(data["videos"]) for data in self._libraries)
+        return sum(1 for _ in self)
 
 
 class Shelf:
@@ -118,9 +136,14 @@ class Shelf:
         for i, existing in enumerate(self.libraries):
             if existing["settings"].get("library_root") == root:
                 self.libraries[i] = data
-                self._view = None
-                return
-        self.libraries.append(data)
+                break
+        else:
+            self.libraries.append(data)
+        # Any library sharing its videos has older copies of them now.
+        for i, other in enumerate(self.libraries):
+            other_root = other["settings"].get("library_root")
+            if other is not data and _overlap(other_root, root):
+                self.libraries[i] = store.load_library_for_root(other_root)
         self._view = None
 
     def save(self, video_id=None) -> None:
@@ -129,3 +152,16 @@ class Shelf:
         for data in targets:
             if data["settings"].get("library_root"):
                 store.save_library(data)
+        self._bring_into_step([video_id] if video_id is not None else None)
+
+    def _bring_into_step(self, video_ids=None) -> None:
+        """Give the other libraries holding a saved video its saved copy."""
+        for i, data in enumerate(self.libraries):
+            for other in self.libraries[i + 1:]:
+                shared = (set(data["videos"]) & set(other["videos"]) if video_ids is None
+                          else [v for v in video_ids
+                                if v in data["videos"] and v in other["videos"]])
+                for video_id in shared:
+                    if other["videos"][video_id] is not data["videos"][video_id]:
+                        other["videos"][video_id] = copy.deepcopy(data["videos"][video_id])
+                    store.mark_saved(other, video_id)

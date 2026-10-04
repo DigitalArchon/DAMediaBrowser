@@ -557,7 +557,7 @@ class TestTheAI:
         outcome = autoname.identify("v", file_video(starts=(0.0, 300.0), kind="bluray"),
                                     options(autoname.MENU), ai.settings_from({}), services,
                                     autoname.Budget(5))
-        assert outcome.log == ["AI: no Nano-GPT key is set"]
+        assert outcome.log == ["AI: Set a Nano-GPT API key in Settings → AI."]
 
     def test_looking_names_chapters_it_is_sure_of(self, services, settings):
         video = file_video(starts=(0.0, 300.0, 600.0))

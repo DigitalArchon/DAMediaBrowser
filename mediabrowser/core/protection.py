@@ -10,10 +10,15 @@
   it goes out: no MusicBrainz search, no AI.
 
 Either is set on a single video, or on a whole library (in its settings),
-which then holds for every video in it whatever the video's own says.
+which then holds for every video in it whatever the video's own says - and
+wherever the video is seen from: a library nested in another shares its
+videos with it, so BABYMETAL made private keeps its videos private when
+they're on the shelf as MusicVids' too.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 LOCKED = "locked"
 PRIVATE = "private"
@@ -48,12 +53,28 @@ def set_flag(video: dict, flag: str, on: bool) -> None:
         video.pop(flag, None)
 
 
+def covering(video: dict, flag: str) -> str | None:
+    """The stored library, set locked or private as a whole, that holds this
+    video - whichever library it's seen from."""
+    from . import store
+
+    path = video.get("path")
+    if not path:
+        return None
+    for root, settings in store.flagged_roots():
+        if settings.get(flag) and store.is_under(path, root):
+            return root
+    return None
+
+
 def is_locked(data: dict, video: dict) -> bool:
-    return library_flag(data, LOCKED) or bool(video.get(LOCKED))
+    return (library_flag(data, LOCKED) or bool(video.get(LOCKED))
+            or covering(video, LOCKED) is not None)
 
 
 def is_private(data: dict, video: dict) -> bool:
-    return library_flag(data, PRIVATE) or bool(video.get(PRIVATE))
+    return (library_flag(data, PRIVATE) or bool(video.get(PRIVATE))
+            or covering(video, PRIVATE) is not None)
 
 
 def may_change(data: dict, video: dict) -> bool:
@@ -73,6 +94,9 @@ def label(data: dict, video: dict) -> str:
             return f"{text} (library)"
         if video.get(flag):
             return text
+        root = covering(video, flag)
+        if root is not None:
+            return f"{text} ({Path(root).name or root})"
     return ""
 
 
@@ -87,4 +111,8 @@ def tip(data: dict, video: dict) -> str:
         return ""
     if library_flag(data, flag):
         text += " Set for the whole library."
+    elif not video.get(flag):
+        root = covering(video, flag)
+        if root is not None:
+            text += f" Set for the whole {Path(root).name or root} library, which holds it."
     return text

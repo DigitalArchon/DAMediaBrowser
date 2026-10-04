@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mediabrowser.core import network, protection, store
+from mediabrowser.core import network, protection, sharing, store
 
 LIBRARY_FLAG_TEXT = {
     protection.LOCKED: (
@@ -53,6 +53,10 @@ class LibraryPanel(QWidget):
     add_requested = Signal()
     network_requested = Signal()
     flag_toggled = Signal(str, str, bool)  # root, protection flag, on
+    locate_requested = Signal(str, bool)  # root, on a network share
+    forgotten = Signal(str)  # root
+    restore_requested = Signal()
+    erase_requested = Signal(str)  # root: delete its data for good
 
     def __init__(self) -> None:
         super().__init__()
@@ -90,10 +94,16 @@ class LibraryPanel(QWidget):
         self.forget_button = QPushButton("Forget")
         self.forget_button.setObjectName("dangerButton")
         self.forget_button.setToolTip(
-            "Delete this app's stored chapter names for that folder.\n"
-            "Your media files are never touched."
+            "Forget this library. Titles and chapters another library shares are kept;\n"
+            "it says what would be lost first. Your media files are never touched."
         )
         self.forget_button.clicked.connect(self._forget_selected)
+        self.restore_button = QPushButton("Restore…")
+        self.restore_button.setToolTip(
+            "Bring back a library from the backup kept when it was forgotten,\n"
+            "folded into another or moved"
+        )
+        self.restore_button.clicked.connect(self.restore_requested)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
@@ -110,6 +120,8 @@ class LibraryPanel(QWidget):
         layout.addWidget(self.list, 1)
         layout.addWidget(self.hint)
         layout.addLayout(buttons)
+        # A row of its own: the panel is too narrow for three side by side.
+        layout.addWidget(self.restore_button)
 
         self.refresh()
 
@@ -144,6 +156,11 @@ class LibraryPanel(QWidget):
             count = lib["video_count"]
             text = f"{name}\n{count} video{'' if count == 1 else 's'}"
             self._flags[root] = {flag: bool(lib.get(flag)) for flag in protection.FLAGS}
+            within = lib.get("within")
+            if within:
+                text += f" · in {Path(within).name or within}"
+                tip += (f"\n\nInside the {Path(within).name or within} library: they share "
+                        "titles and chapters.")
             if lib.get("locked"):
                 text += " · Locked"
                 tip += f"\n\n{protection.LOCKED_TIP}"
@@ -204,6 +221,22 @@ class LibraryPanel(QWidget):
         reset.triggered.connect(lambda: self.reset_requested.emit(root))
         menu.addAction(reset)
         menu.addSeparator()
+        for label, on_network, tip in (
+            ("Locate Moved Folder…", False,
+             "It was renamed or moved, or the drive is mounted somewhere else: point to "
+             "where it is now, and its titles and chapters go with it."),
+            ("Locate on Network…", True,
+             "The NAS has a new address, or the library is on a new NAS: connect to it "
+             "there, and its titles and chapters go with it."),
+        ):
+            action = QAction(label, menu)
+            action.setToolTip(tip)
+            action.setStatusTip(tip)
+            action.triggered.connect(
+                lambda _checked=False, n=on_network: self.locate_requested.emit(root, n)
+            )
+            menu.addAction(action)
+        menu.addSeparator()
         for flag, (label, tip) in LIBRARY_FLAG_TEXT.items():
             action = QAction(label, menu)
             action.setCheckable(True)
@@ -214,6 +247,16 @@ class LibraryPanel(QWidget):
                 lambda on, f=flag: self.flag_toggled.emit(root, f, on)
             )
             menu.addAction(action)
+        menu.addSeparator()
+        erase = QAction("Delete Library Data…", menu)
+        erase.setToolTip(
+            "Permanently delete every title and chapter recorded for this library, "
+            "backups included - unlike Forget, nothing can be restored. Its videos are "
+            "never touched."
+        )
+        erase.setStatusTip(erase.toolTip())
+        erase.triggered.connect(lambda: self.erase_requested.emit(root))
+        menu.addAction(erase)
         menu.setToolTipsVisible(True)
         return menu
 
@@ -229,19 +272,23 @@ class LibraryPanel(QWidget):
         root = self.selected_root()
         if root is None:
             return
-        confirmed = QMessageBox.question(
-            self,
-            "Forget stored data",
-            f"Delete the stored chapter names and history for:\n\n{root}\n\n"
-            "This only removes this app's own data about that folder - your "
-            "media files are never touched. This can't be undone.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if confirmed != QMessageBox.Yes:
+        if not self._confirm_forget(root):
             return
         store.delete_library(root)
         self.refresh()
+        self.forgotten.emit(root)
+
+    def _confirm_forget(self, root: str) -> bool:
+        """What forgetting it loses and what other libraries keep, then
+        Forget or Cancel (the default)."""
+        box = QMessageBox(QMessageBox.Warning, "Forget Library",
+                          f"Forget the library “{sharing.name(root)}”?\n\n{root}",
+                          QMessageBox.Cancel, self)
+        box.setInformativeText(sharing.forgetting(root))
+        forget = box.addButton("Forget", QMessageBox.DestructiveRole)
+        box.setDefaultButton(QMessageBox.Cancel)
+        box.exec()
+        return box.clickedButton() is forget
 
     def _update_buttons(self) -> None:
         has_selection = self.list.currentItem() is not None
