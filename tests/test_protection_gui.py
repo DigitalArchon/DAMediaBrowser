@@ -298,6 +298,57 @@ class TestJustFigureItOut:
         assert [c["title"] for c in video["chapters"]] == ["Opening", "Megitsune", "Karate"]
         assert autoname.last_run(window.data) is None, "not a run's to undo"
 
+    def test_its_report_can_be_read_afterwards(self, app, shelf, measured, no_searching,
+                                               configured, monkeypatch):
+        window, video = shelf
+
+        def identify(video_id, snapshot, *args, **kwargs):
+            outcome = outcome_for(snapshot, a_change())
+            outcome.report = ["— The disc's menu", "  ⇒ Disc menu: named 3 chapter(s)"]
+            return outcome
+
+        monkeypatch.setattr(autoname, "identify", identify)
+        dialog = dialog_for(window, video)
+        assert not dialog.report_button.isEnabled(), "nothing to report yet"
+        dialog.figure_it_out()
+        assert pump(app, lambda: dialog._figured is not None)
+        assert dialog.report_button.isEnabled()
+        dialog.clear_proposal()
+        assert dialog.report_button.isEnabled(), "still readable once cleared"
+        dialog.show_report()
+        from PySide6.QtWidgets import QPlainTextEdit
+
+        shown = dialog._report_dialog.findChild(QPlainTextEdit)
+        assert shown.toPlainText().startswith("— The disc's menu")
+        dialog._report_dialog.close()
+
+    def test_what_the_person_knows_goes_along_as_hints(self, app, shelf, measured,
+                                                       no_searching, configured, monkeypatch):
+        window, video = shelf
+        asked = {}
+
+        def identify(video_id, snapshot, *args, hints=None, **kwargs):
+            asked["hints"] = hints
+            return outcome_for(snapshot, a_change())
+
+        monkeypatch.setattr(autoname, "identify", identify)
+        dialog = dialog_for(window, video)
+        assert not dialog.hints_area.isVisibleTo(dialog)
+        dialog.hint_known_as.setText("BABYMETAL LEGEND - METAL FORTH")
+        dialog.figure_it_out()
+        assert pump(app, lambda: dialog._figured is not None)
+        assert not asked["hints"], "put away, they aren't used"
+        dialog.hints_toggle.setChecked(True)
+        assert dialog.hints_area.isVisibleTo(dialog)
+        dialog.hint_songs.setValue(15)
+        dialog.hint_setlist.setPlainText("1. METAL FORTH\n2. from me to u 4:01\n")
+        dialog._figured = None
+        dialog.figure_it_out()
+        assert pump(app, lambda: dialog._figured is not None)
+        hints = asked["hints"]
+        assert hints.known_as == "BABYMETAL LEGEND - METAL FORTH" and hints.songs == 15
+        assert hints.titles() == ["METAL FORTH", "from me to u"]
+
     def test_a_tracklist_given_afterwards_takes_over(self, app, shelf, measured,
                                                       no_searching, configured,
                                                       monkeypatch):

@@ -254,6 +254,8 @@ def _describe(video: dict, context: str) -> str:
     lines = [f"Title: {video['display_name']}"]
     if context:
         lines.append(f"Folders: {context}")
+    if video.get("hints"):
+        lines.append(video["hints"])
     lines.append(f"Length: {utils.format_seconds(video['duration'])}")
     lines.append("Its chapters:")
     for i, chapter in enumerate(video["chapters"]):

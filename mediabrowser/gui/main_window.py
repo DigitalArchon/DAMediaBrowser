@@ -12,10 +12,14 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QAbstractSpinBox,
+    QApplication,
     QCheckBox,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
@@ -25,9 +29,11 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QStackedWidget,
+    QTextEdit,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -131,6 +137,9 @@ class MainWindow(QMainWindow):
         self.player = Player()
         self.player.screenshot_dir = _screenshot_dir()
         self.now_playing: tuple[str, int, bool] | None = None
+        # The chapter the transport bar names: the queue's, or the one under
+        # the playhead when a seek has gone where the queue doesn't follow.
+        self._shown_chapter: int | None = None
         self.queue = playback.Queue()
         self._jobs: list = []
         self._artwork_job = None
@@ -666,7 +675,8 @@ class MainWindow(QMainWindow):
         play_menu = menu.addMenu("&Playback")
         # Ctrl+Space rather than bare Space: a shortcut takes the key before
         # the focused widget sees it, so plain Space would be swallowed
-        # whenever anyone typed it into the search box.
+        # whenever anyone typed it into the search box. Bare Space works too
+        # while something plays, unless it's being typed (eventFilter).
         for label, sequence, slot in (
             ("Play / Pause", "Ctrl+Space", self.toggle_play_pause),
             ("Next Chapter", "Ctrl+Shift+Right", lambda: self._skip(1)),
@@ -1508,6 +1518,10 @@ class MainWindow(QMainWindow):
         # Audio's bar spans its chapter; video's the whole file, whose length
         # mpv says.
         self._window = (chapter["start"], chapter["end"] if entry.audio_only else None)
+        self._shown_chapter = entry.chapter_index
+        # Space plays and pauses from anywhere in the window while it plays
+        # (eventFilter); watching every key costs nothing worth having otherwise.
+        QApplication.instance().installEventFilter(self)
         title = utils.chapter_label(entry.chapter_index, chapter)
         self.now_playing_bar.show_playing(
             title=title,
@@ -1563,6 +1577,7 @@ class MainWindow(QMainWindow):
     def stop_playback(self) -> None:
         self._poll.stop()
         self.session.stop()
+        QApplication.instance().removeEventFilter(self)
         self.now_playing = None
         self._last_position = None
         self._last_duration = None
@@ -1635,6 +1650,7 @@ class MainWindow(QMainWindow):
             self.now_playing_bar.position_changed(
                 tick.position - start if end is not None else tick.position
             )
+            self._name_chapter_at(tick.position)
         self.detail.set_playhead(self.playhead_in_open_video())
         if tick.paused is not None:
             self.now_playing_bar.set_paused(tick.paused)
@@ -1642,6 +1658,24 @@ class MainWindow(QMainWindow):
             self._last_duration = tick.duration
             if self._window[1] is None:
                 self.now_playing_bar.set_duration(tick.duration)
+
+    def _name_chapter_at(self, position: float) -> None:
+        """Have the bar name the chapter video is playing, though the queue
+        may not hold it: a seek on the bar can land anywhere in the file,
+        and a shuffled queue's neighbours aren't the file's."""
+        if self.now_playing is None or self.now_playing[2]:
+            return
+        video = self.data["videos"].get(self.now_playing[0])
+        if video is None:
+            return
+        # A seek lands a hair before where it was aimed.
+        index = chapter_edit.chapter_at(video["chapters"], position + 0.25)
+        if index is None or index == self._shown_chapter:
+            return
+        self._shown_chapter = index
+        title = utils.chapter_label(index, video["chapters"][index])
+        self.now_playing_bar.set_title(title)
+        self.video_page.set_title(f"{title} · {video['display_name']}")
 
     def playhead_in_open_video(self) -> float | None:
         """Where playback has got to, if the video playing is the one open
@@ -3025,6 +3059,31 @@ class MainWindow(QMainWindow):
 
     # --- lifecycle -------------------------------------------------------
 
+    def _typing(self) -> bool:
+        """Whether what has the keyboard takes Space as text."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)):
+            return True
+        if isinstance(focus, QComboBox) and focus.isEditable():
+            return True
+        return (isinstance(focus, QAbstractItemView)
+                and focus.state() == QAbstractItemView.EditingState)
+
+    def eventFilter(self, watched, event) -> bool:
+        """Space plays and pauses while something plays, wherever the
+        keyboard is in the window - not only on the video - unless it's
+        being typed. A dialog keeps its own Space, and the chapter editor
+        has its own keys."""
+        if (event.type() != QEvent.KeyPress or event.key() != Qt.Key_Space
+                or event.modifiers() & ~Qt.KeypadModifier):
+            return False
+        if (self.now_playing is None or self.editor.active()
+                or QApplication.activeWindow() is not self or self._typing()):
+            return False
+        if not event.isAutoRepeat():
+            self.toggle_play_pause()
+        return True
+
     def closeEvent(self, event) -> None:
         if self._identify_dialog is not None and self._identify_dialog.running():
             # A run finishes the video it's on and stops; what's done is kept.
@@ -3033,6 +3092,7 @@ class MainWindow(QMainWindow):
         # window that started it has gone.
         self._poll.stop()
         self.session.stop()
+        QApplication.instance().removeEventFilter(self)
         if self.editor.active():
             # Its own mpv, its poll and its hold on the keyboard go with it.
             self.editor._close()

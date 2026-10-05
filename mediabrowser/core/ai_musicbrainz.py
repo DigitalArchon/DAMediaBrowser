@@ -73,10 +73,12 @@ def _describe_video(video: dict, context: str) -> str:
     if len(chapters) > 1:
         lines.append(f"Chapters: {len(chapters)}"
                      + (f", some named: {'; '.join(names)}" if names else ", none named"))
+    if video.get("hints"):
+        lines.append(video["hints"])
     return "\n".join(lines)
 
 
-def _describe_release(release: dict) -> str:
+def describe_release(release: dict) -> str:
     year = f" ({release['date'][:4]})" if release.get("date") else ""
     count = f", {release['track_count']} tracks" if release.get("track_count") else ""
     return f"“{release.get('title')}” by {release.get('artist') or 'unknown'}{year}{count}"
@@ -124,7 +126,7 @@ def better_queries(video: dict, context: str, tried: list[str], found: list[dict
         lines.append(f"Searched MusicBrainz for: {query}")
     if found:
         lines.append("It found these, none of them this video's release:")
-        lines += [f"- {_describe_release(r)}" for r in found]
+        lines += [f"- {describe_release(r)}" for r in found]
     else:
         lines.append("It found nothing.")
     lines += ["", QUERIES_PROMPT.format(most=MAX_QUERIES)]
@@ -164,7 +166,7 @@ def _describe_candidate(n: int, candidate: Candidate, duration: float) -> str:
     if len(tracks) > TRACKS_SHOWN:
         titles += f"; and {len(tracks) - TRACKS_SHOWN} more"
     lines = [
-        f"{n}. {_describe_release(candidate.release)}",
+        f"{n}. {describe_release(candidate.release)}",
         f"   {candidate.discs}: {len(tracks)} tracks, {_time(total)} "
         f"(the video is {_time(duration)})",
         f"   Tracks: {titles}",

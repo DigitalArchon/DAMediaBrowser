@@ -133,6 +133,31 @@ class TestReadingTheAnswer:
         assert result.rows[0].note == "not named" and result.rows[0].confidence == "low"
         assert result.mapping() == [(1, "Karate", None, "ai")]
 
+    def test_a_song_it_couldnt_tell_is_left_unnamed(self):
+        s = ai_chapters.Situation(video(), chapters([0.0, 300.0, 600.0, 700.0], 900.0),
+                                  ai_chapters.NAME)
+        result = ai_chapters.parse_reply(reply([
+            {"chapter": 1, "title": "Unknown", "confidence": "low"},
+            {"chapter": 2, "title": "Unknown song 2", "confidence": "low"},
+            {"chapter": 3, "title": "Song", "confidence": "low"},
+            {"chapter": 4, "title": "Unknown Soldier", "confidence": "medium"},
+        ]), s)
+        assert [c["title"] for c in result.chapters] == [None, None, None, "Unknown Soldier"]
+        assert result.mapping() == [(3, "Unknown Soldier", None, "ai")]
+
+    def test_a_song_numbered_for_want_of_its_name_is_left_unnamed(self):
+        s = ai_chapters.Situation(video(), chapters([0.0, 300.0, 600.0, 700.0], 900.0),
+                                  ai_chapters.NAME, tracks=[{"title": "Song 3"}])
+        result = ai_chapters.parse_reply(reply([
+            {"chapter": 1, "title": "Song 5", "confidence": "medium"},
+            {"chapter": 2, "title": "Intro to Song 14", "confidence": "low"},
+            {"chapter": 3, "title": "Song 3", "confidence": "medium"},
+            {"chapter": 4, "title": "Song 4", "confidence": "high"},
+        ]), s)
+        assert [c["title"] for c in result.chapters] == [None, None, "Song 3", "Song 4"], (
+            "BABYMETAL's Song 3 is a song; a numbered one the model is sure of may be too"
+        )
+
     def test_placing_snaps_to_known_moments_and_marks_what_moved(self):
         proposed = chapters([0.0, 310.0, 620.0], 1200.0)
         proposed[1]["estimated"] = True

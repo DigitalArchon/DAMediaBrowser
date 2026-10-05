@@ -86,6 +86,12 @@ class TestParsePastedTracklist:
             {"title": "Two", "length": None},
         ]
 
+    def test_what_a_title_ends_with_is_kept(self):
+        text = "White Flame -Byakuen-\nCatch me if you can / Elevator Girl (medley)\n- Bulleted"
+        assert [t["title"] for t in utils.parse_pasted_tracklist(text)] == [
+            "White Flame -Byakuen-", "Catch me if you can / Elevator Girl (medley)", "Bulleted",
+        ]
+
     def test_a_number_that_is_not_a_duration_stays_in_the_title(self):
         assert utils.parse_pasted_tracklist("Nineteen 99")[0]["title"] == "Nineteen 99"
 
@@ -181,3 +187,11 @@ class TestSuggestedSearch:
 
     def test_a_name_that_is_only_a_number_is_kept(self):
         assert self._suggest("1.mkv", "1") == "1"
+
+    def test_when_a_tv_recorder_made_it_is_left_out(self):
+        name = ("20260419 2100 [初]BABYMETAL WORLD TOUR 2025-2026 SPECIAL ARENA SHOW IN "
+                "JAPAN LEGEND - METAL FORTH")
+        assert self._suggest(f"BABYMETAL/{name}.ts", name) == (
+            "BABYMETAL WORLD TOUR 2025 2026 SPECIAL ARENA SHOW IN JAPAN LEGEND METAL FORTH"
+        )
+        assert self._suggest("20190101.mkv", "20190101") == "20190101"

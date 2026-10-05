@@ -314,14 +314,23 @@ fixing the search when the file's name finds nothing, and picking which
 release is this show), measures the audio and has the AI look at the video — as many of those as
 this video turns out to need, the most accurate first. It uses the AI (a
 few cents), shows everything it found and where each name came from, and
-changes nothing until Apply.
+changes nothing until Apply. **Report…** then tells you, step by step,
+what it searched for, which releases it turned down and why, and what the
+AI saw in each chapter and how sure it was.
+
+**Hints…** beside it lets you say what you know, all optional: what the
+show is known as (searched first), how many songs it has, and the setlist
+in order. A release must then have those songs, and the AI is told all of
+it. For a broadcast or a cut of a show - whose setlist isn't the concert's
+you'd find online - the setlist is what makes the difference.
 
 Or do it yourself. A box at the top says what this video already has, as
 that decides what a tracklist does for it: **chapters that only want names**
 (a disc's or file's own — a tracklist names them where they are, and nothing
 moves), **chapters only estimated** from the audio (a tracklist with lengths
 can place them afresh), or **one piece** with no chapters at all (they have
-to be found as well as named).
+to be found as well as named). Nothing is proposed until you give a
+tracklist or choose how; **Clear** beside the table starts again.
 
 **Extract Blu-ray Menu** — for a Blu-ray title, this tab (the one it
 opens on) is the best source there is: the disc's own
@@ -587,7 +596,7 @@ starts.
 
 | | |
 |---|---|
-| `Ctrl+Space` | play / pause |
+| `Space` | play / pause, while something plays - wherever you aren't typing (`Ctrl+Space` too) |
 | `Ctrl+←` `Ctrl+→` | back / forward 10s |
 | `Ctrl+Shift+←` `Ctrl+Shift+→` | previous / next chapter |
 | `Ctrl+.` | stop |

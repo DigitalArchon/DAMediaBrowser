@@ -304,6 +304,23 @@ class TestSeekBar:
         seeks = [c for c in mpv.calls if c[0] == "seek"]
         assert seeks and 65 <= seeks[-1][1] <= 85, seeks
 
+    def test_a_seek_back_from_where_video_began_names_that_chapter(self, playing):
+        window, mpv = playing
+        window.play_from("a", 2, audio_only=False)
+        assert window.now_playing_bar.title.text() == "Budokan 3"
+        mpv.state["position"] = 120.0
+        window._tick()
+        assert window.now_playing_bar.title.text() == "Budokan 2"
+        assert window.queue.current_index() == 1
+
+    def test_a_seek_to_a_chapter_the_queue_hasnt_got_still_names_it(self, playing):
+        window, mpv = playing
+        window.enqueue_chapters("a", [2], audio_only=False)
+        window.play_queue_entry(0)
+        mpv.state["position"] = 40.0
+        window._tick()
+        assert window.now_playing_bar.title.text() == "Budokan 1"
+        assert window.video_page.title.text().startswith("Budokan 1")
 
     def test_playing_video_it_marks_where_each_chapter_starts(self, app, playing):
         from PySide6.QtCore import QEvent, QPointF, Qt
@@ -344,6 +361,35 @@ class TestSeekBar:
         window._tick()
         window.stop_playback()
         assert window.now_playing_bar.slider.marks() == []
+
+
+class TestSpace:
+    def press_space(self, app, window, on):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        window.show()
+        window.activateWindow()
+        QTest.qWaitForWindowActive(window)
+        on.setFocus()
+        QTest.keyClick(on, Qt.Key_Space)
+
+    def test_space_plays_and_pauses_from_anywhere_in_the_window(self, app, playing):
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        self.press_space(app, window, window.now_playing_bar.next_button)
+        assert mpv.calls.count(("toggle",)) == 1
+        assert window.queue.current_index() == 0, "the focused button wasn't pressed"
+
+    def test_but_not_while_typing_or_with_nothing_playing(self, app, playing):
+        window, mpv = playing
+        window.play_from("a", 0, audio_only=True)
+        self.press_space(app, window, window.search)
+        assert ("toggle",) not in mpv.calls and window.search.text() == " "
+        window.search.clear()
+        window.stop_playback()
+        self.press_space(app, window, window.now_playing_bar.next_button)
+        assert ("toggle",) not in mpv.calls
 
 
 class TestAskingMpvOffTheGuiThread:

@@ -151,6 +151,13 @@ FIGURE_NOTE = (
     "MusicBrainz, measures the audio and has {model} look at the video - whatever "
     "this video turns out to need. A few cents; nothing changes until Apply."
 )
+HINTS_TIP = "Tell it what you know about this video: what it's called, how many songs, the setlist"
+HINTS_NOTE = (
+    "All optional. What it's known as is searched on MusicBrainz first; a release "
+    "must have that many songs, and most of the setlist's; the audio is split into "
+    "that many; and the AI is told all of it. A setlist with a song per chapter "
+    "names them if nothing else does."
+)
 FIGURE_SOURCES = {
     "menu": "disc menu",
     "musicbrainz": "MusicBrainz",
@@ -268,8 +275,10 @@ class ChaptersDialog(QDialog):
         self._menu_result: ai_chapters.Result | None = None
         self._menu_job = None
 
-        # Just Figure It Out's answer, while it is what the table shows.
+        # Just Figure It Out's answer, while it is what the table shows; and
+        # the last one's report, which stays readable after.
         self._figured: autoname.Outcome | None = None
+        self._report: str = ""
         self._figure_job = None
 
         self._build()
@@ -286,11 +295,28 @@ class ChaptersDialog(QDialog):
         self.figure_note.setObjectName("hintLabel")
         self.figure_note.setWordWrap(True)
         self.figure_note.setMinimumWidth(1)
+        self.hints_toggle = QPushButton("Hints…")
+        self.hints_toggle.setCheckable(True)
+        self.hints_toggle.setToolTip(HINTS_TIP)
+        self.hints_toggle.toggled.connect(self._show_hints)
+        figure_buttons = QVBoxLayout()
+        figure_buttons.setContentsMargins(0, 0, 0, 0)
+        figure_buttons.setSpacing(6)
+        self.report_button = QPushButton("Report…")
+        self.report_button.setToolTip(
+            "What Just Figure It Out did, step by step, and why it decided as it did"
+        )
+        self.report_button.setEnabled(False)
+        self.report_button.clicked.connect(self.show_report)
+        figure_buttons.addWidget(self.figure_button)
+        figure_buttons.addWidget(self.hints_toggle)
+        figure_buttons.addWidget(self.report_button)
         figure_row = QHBoxLayout()
         figure_row.setContentsMargins(0, 0, 0, 0)
         figure_row.setSpacing(10)
-        figure_row.addWidget(self.figure_button, 0, Qt.AlignTop)
-        figure_row.addWidget(self.figure_note, 1)
+        figure_row.addLayout(figure_buttons)
+        figure_row.addWidget(self.figure_note, 1, Qt.AlignTop)
+        self.hints_area = self._build_hints()
         step_caption = QLabel("Or do it yourself")
         step_caption.setObjectName("sectionCaption")
         self.situation = QLabel(situation_text(self.video, self._can_analyse))
@@ -495,6 +521,7 @@ class ChaptersDialog(QDialog):
         steps_layout.setContentsMargins(0, 0, 4, 0)
         steps_layout.setSpacing(8)
         steps_layout.addLayout(figure_row)
+        steps_layout.addWidget(self.hints_area)
         steps_layout.addWidget(step_caption)
         steps_layout.addWidget(self.situation)
         steps_layout.addWidget(self.tabs)
@@ -515,7 +542,17 @@ class ChaptersDialog(QDialog):
         result_layout.setContentsMargins(0, 0, 0, 0)
         result_layout.setSpacing(8)
         result_layout.addWidget(self.progress)
-        result_layout.addWidget(self.table_caption)
+        self.clear_button = QPushButton("Clear")
+        self.clear_button.setToolTip(
+            "Start again: drop what's proposed here - the tracklist, the method, and any "
+            "answer from Just Figure It Out or the AI"
+        )
+        self.clear_button.clicked.connect(self.clear_proposal)
+        caption_row = QHBoxLayout()
+        caption_row.setContentsMargins(0, 0, 0, 0)
+        caption_row.addWidget(self.table_caption, 1)
+        caption_row.addWidget(self.clear_button)
+        result_layout.addLayout(caption_row)
         result_layout.addWidget(self.tree, 1)
         result_layout.addWidget(self.status)
         result.setMinimumHeight(RESULT_MIN_HEIGHT)
@@ -886,6 +923,30 @@ class ChaptersDialog(QDialog):
         self._figured = None
         self.refresh()
 
+    def clear_proposal(self) -> None:
+        """Back to nothing proposed: no tracklist, no method chosen, no
+        answer from Just Figure It Out, the AI or the disc's menu. What's
+        been measured is kept - it's the same video."""
+        if self._figure_job is not None or self._ai_job is not None or self._menu_job is not None:
+            return
+        self._figured = None
+        self._menu_result = None
+        self._method, self._method_picked = None, False
+        self._paste_timer.stop()
+        self.paste.blockSignals(True)
+        self.paste.clear()
+        self.paste.blockSignals(False)
+        self._paste_tracks = []
+        self._mb_media, self._mb_tracks, self._release_id = [], None, None
+        self.results.blockSignals(True)
+        self.results.clearSelection()
+        self.results.setCurrentItem(None)
+        self.results.blockSignals(False)
+        self.media_list.clear()
+        self.media_list.hide()
+        self.mb_status.setText(LOOK_UP_HINT)
+        self.refresh()
+
     def _on_paste_changed(self) -> None:
         self._figured = None
         self._paste_tracks = utils.parse_pasted_tracklist(self.paste.toPlainText())
@@ -906,12 +967,16 @@ class ChaptersDialog(QDialog):
         self.refresh()
 
     def _update_method(self, tracks) -> None:
-        # With no tracklist yet, the best there is without one: a video file
-        # in one piece is detected from the audio straight away, and a
-        # tracklist found later takes over.
+        # A tracklist picks the best way to use it. Without one nothing is
+        # proposed until asked for: detecting from the audio straight away
+        # filled the table with chapters nobody had asked for, there the
+        # moment the dialog opened once the audio was measured - which, on
+        # opening it again after a reset, looked like the last try left over.
         usable = methods.available(self.video, tracks, self._can_analyse)
         if not self._method_picked or self._method not in usable:
-            self._method = methods.choose(self.video, tracks, self._can_analyse)
+            self._method_picked = False
+            self._method = (methods.choose(self.video, tracks, self._can_analyse)
+                            if tracks else None)
         for method, radio in self.method_radios.items():
             radio.setEnabled(method in usable)
             radio.setChecked(method == self._method)
@@ -1024,6 +1089,9 @@ class ChaptersDialog(QDialog):
     def refresh(self) -> None:
         tracks = self.tracks()
         self._update_method(tracks)
+        self.clear_button.setEnabled(bool(
+            tracks or self._method or self._figured or self._menu_result
+        ))
         # Once the options shown or hidden have been laid out.
         QTimer.singleShot(0, self._fit_width)
         self._result = None
@@ -1057,13 +1125,17 @@ class ChaptersDialog(QDialog):
 
         if self._method is None:
             self._prefetch_levels()
-            self.status.setText(
-                "Search MusicBrainz or paste a tracklist to name these chapters - or "
-                "ask the AI to, or let Just Figure It Out."
-                if len(self.video["chapters"]) > 1
-                else "Search MusicBrainz or paste a tracklist - there's nothing to detect "
-                     "the chapters from without one."
-            )
+            if len(self.video["chapters"]) > 1:
+                hint = ("Search MusicBrainz or paste a tracklist to name these chapters - "
+                        "or ask the AI to, or let Just Figure It Out.")
+            elif self._can_analyse:
+                hint = ("Search MusicBrainz or paste a tracklist, or choose "
+                        f"“{METHOD_LABELS[methods.DETECT]}” to find the chapters where the "
+                        "music stops - or let Just Figure It Out.")
+            else:
+                hint = ("Search MusicBrainz or paste a tracklist - there's nothing to "
+                        "detect the chapters from without one.")
+            self.status.setText(hint)
             self._update_ai_controls()
             return
         if not self._ensure_measured():
@@ -1311,6 +1383,7 @@ class ChaptersDialog(QDialog):
         from PySide6.QtGui import QColor
 
         self._ai_result = result
+        self.clear_button.setEnabled(True)
         self.tree.clear()
         self.tree.setHeaderLabels(AI_HEADERS)
         from_menu = any(r.note == menu_chapters.MENU_NOTE for r in result.rows)
@@ -1414,6 +1487,58 @@ class ChaptersDialog(QDialog):
 
     # --- the whole job ---------------------------------------------------------
 
+    def _build_hints(self) -> QWidget:
+        """What the person knows about the video, for Just Figure It Out:
+        what it's known as, how many songs, the setlist. All optional."""
+        self.hint_known_as = QLineEdit()
+        self.hint_known_as.setPlaceholderText(
+            "What it's likely to be found under - e.g. BABYMETAL LEGEND - METAL FORTH"
+        )
+        self.hint_songs = QSpinBox()
+        self.hint_songs.setRange(0, 200)
+        self.hint_songs.setSpecialValueText("Don't know")
+        self.hint_songs.setToolTip("How many songs this video has")
+        self.hint_setlist = QPlainTextEdit()
+        self.hint_setlist.setPlaceholderText(
+            "The songs in order, one per line (numbers and times are fine)…"
+        )
+        self.hint_setlist.setMinimumHeight(90)
+        note = QLabel(HINTS_NOTE)
+        note.setObjectName("hintLabel")
+        note.setWordWrap(True)
+        note.setMinimumWidth(1)
+        known_row = QHBoxLayout()
+        known_row.setContentsMargins(0, 0, 0, 0)
+        known_row.setSpacing(8)
+        known_row.addWidget(QLabel("Known as:"))
+        known_row.addWidget(self.hint_known_as, 1)
+        known_row.addWidget(QLabel("Songs:"))
+        known_row.addWidget(self.hint_songs)
+        area = QWidget()
+        layout = QVBoxLayout(area)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(note)
+        layout.addLayout(known_row)
+        layout.addWidget(self.hint_setlist)
+        area.hide()
+        return area
+
+    def _show_hints(self, shown: bool) -> None:
+        self.hints_area.setVisible(shown)
+
+    def figure_hints(self) -> autoname.Hints:
+        """What the person filled in of the hints; nothing while they're
+        put away."""
+        if not self.hints_toggle.isChecked():
+            return autoname.Hints()
+        setlist = utils.parse_pasted_tracklist(self.hint_setlist.toPlainText())
+        return autoname.Hints(
+            known_as=self.hint_known_as.text().strip(),
+            songs=self.hint_songs.value(),
+            setlist=setlist,
+        )
+
     def _figure_options(self) -> autoname.Options:
         """Everything there is, the most accurate first - someone is here to
         check, so the AI's guesses are shown too, marked."""
@@ -1433,6 +1558,7 @@ class ChaptersDialog(QDialog):
     def _update_figure_controls(self) -> None:
         model = ai.short_model_name(self._ai_settings[ai.SETTING_MODEL])
         busy = self._figure_job is not None
+        self.hints_toggle.setEnabled(not self._private and ai.is_configured(self._ai_settings))
         if self._private:
             self.figure_button.setEnabled(False)
             self.figure_note.setText(
@@ -1458,6 +1584,7 @@ class ChaptersDialog(QDialog):
             return
         video = dict(self.video, chapters=[dict(c) for c in self.video["chapters"]])
         options = self._figure_options()
+        hints = self.figure_hints()
         settings = self._ai_settings
         root, cancel = self._library_root, self._cancel
         mb_format = self._format()
@@ -1465,7 +1592,7 @@ class ChaptersDialog(QDialog):
         def work():
             return autoname.identify(
                 "", video, options, settings, autoname.Services(mb_format),
-                autoname.Budget(options.ai_budget), root, cancel,
+                autoname.Budget(options.ai_budget), root, cancel, hints=hints,
             )
 
         self.figure_button.setEnabled(False)
@@ -1489,6 +1616,8 @@ class ChaptersDialog(QDialog):
 
     def _on_figured(self, outcome: autoname.Outcome) -> None:
         self._figure_finished()
+        self._report = outcome.report_text()
+        self.report_button.setEnabled(bool(self._report))
         if outcome.error:
             self._on_figure_failed(outcome.error)
             return
@@ -1500,6 +1629,27 @@ class ChaptersDialog(QDialog):
         self._update_figure_controls()
         self._update_ai_controls()
         self.status.setText(f"It couldn't be worked out: {message}")
+
+    def show_report(self) -> None:
+        """The last Just Figure It Out, at length, to read and copy."""
+        if not self._report:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("What Just Figure It Out Did")
+        text = QPlainTextEdit(self._report)
+        text.setReadOnly(True)
+        text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        copy = QPushButton("Copy")
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(self._report))
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.addButton(copy, QDialogButtonBox.ActionRole)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(text, 1)
+        layout.addWidget(buttons)
+        dialog.resize(760, 620)
+        self._report_dialog = dialog  # for tests
+        dialog.open()
 
     def _render_figured(self, outcome: autoname.Outcome) -> None:
         from PySide6.QtGui import QColor

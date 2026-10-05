@@ -8,9 +8,9 @@ import pytest
 from mediabrowser.core import ai, ai_chapters, config, creds, library, methods, store
 from tests.test_chapters_dialog import (
     _finished,
+    detect,
     dialog_for,
     file_video,
-    no_tracklist,
     paste,
     pump,
 )
@@ -119,7 +119,7 @@ class TestAskingFromChaptersAndNames:
     ):
         levels, starts, _ = measured
         model["reply"] = names_reply("A", "B", "C", "D")
-        dialog = no_tracklist(dialog_for(window, file_video(tmp_path, levels.duration)))
+        dialog = detect(dialog_for(window, file_video(tmp_path, levels.duration)))
         assert dialog._method == methods.DETECT
         dialog.ask_ai()
         assert wait_for_answer(app, dialog)

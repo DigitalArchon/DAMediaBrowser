@@ -23,6 +23,9 @@ def guess_search_query(display_name: str) -> str:
 # "1. ", "02 - ", "3) " at the start of a file name: a position in a
 # series, not part of anything MusicBrainz would know it by.
 _LEADING_NUMBER_RE = re.compile(r"^\s*\d{1,3}\s*[.\-)]\s+")
+# When a TV recorder made it: "20260419 2100 [初]BABYMETAL ..." is a
+# broadcast that started at 9pm on 19 April 2026. No release is known by it.
+_RECORDED_AT_RE = re.compile(r"^\s*(?:19|20)\d{6}(?:[\s_-]*\d{4}(?!\d))?\s*")
 # The suffix a multi-title Blu-ray's titles get: "Disc - Title 8".
 _TITLE_SUFFIX_RE = re.compile(r"\s+-\s+Title\s+\d+$")
 # What MusicBrainz's search reads as syntax rather than words: in
@@ -54,7 +57,8 @@ def suggest_search_query(video, library_root=None, max_folders: int = 2) -> str:
     folder whose name is already in the text adds nothing and is skipped.
     """
     name = _TITLE_SUFFIX_RE.sub("", video["display_name"])
-    name = guess_search_query(_LEADING_NUMBER_RE.sub("", name)) or guess_search_query(name)
+    bare = _RECORDED_AT_RE.sub("", _LEADING_NUMBER_RE.sub("", name))
+    name = guess_search_query(bare) or guess_search_query(name)
 
     path = PurePath(video["path"])
     # A disc's own folder is where its name came from; start above it.
@@ -107,10 +111,14 @@ def parse_pasted_tracklist(text: str):
         match = _DURATION_RE.search(line)
         if match:
             length = _parse_duration_token(match.group(1))
+            # What held the duration goes with it: "Title (8:23)", "Title - 8:23".
             line = (line[: match.start()] + line[match.end() :]).strip()
+            line = re.sub(r"\(\s*\)|\[\s*\]", "", line).strip(" \t-–—")
 
         line = _LEADING_TRACK_NUMBER_RE.sub("", line)
-        title = line.strip(" \t-–—()[]")
+        # A bullet before it, but nothing a title ends with: "White Flame
+        # -Byakuen-", "Elevator Girl (medley)".
+        title = line.strip().lstrip("-–—•* \t").strip()
         if not title:
             continue
 

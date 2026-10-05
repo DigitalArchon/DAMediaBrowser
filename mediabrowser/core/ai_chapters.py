@@ -98,6 +98,7 @@ class Row:
     confidence: str
     note: str
     moved: bool  # PLACE mode: not one of the proposed starts
+    seen: str = ""  # what the model says the chapter's frames show
 
 
 @dataclass(frozen=True)
@@ -214,6 +215,8 @@ def _describe_video(situation: Situation) -> str:
     ]
     if situation.context:
         lines.append(f"Folders: {situation.context}")
+    if video.get("hints"):
+        lines.append(video["hints"])
     return "\n".join(lines)
 
 
@@ -246,8 +249,17 @@ def _describe_tracks(situation: Situation) -> str:
         "musicbrainz": "from MusicBrainz",
         "manual": "pasted by the person",
         "pasted": "pasted by the person",
+        "hint": "given by the person watching",
     }.get(situation.tracks_source, "")
     lines = [f"Tracklist {where}, in order. Use its titles for the songs it lists:".strip()]
+    if situation.tracks_source == "hint":
+        lines = [
+            "The setlist, given by the person watching: exactly the songs this video "
+            "has, in this order. Each song is one chapter, used once and in this order. "
+            "Anything else in the video - an opening, a video interlude, a band solo, the "
+            "broadcaster's own segments - is not a song, and may have a chapter of its own. "
+            "Write each song's title exactly as it is here:"
+        ]
     for i, track in enumerate(situation.tracks):
         length = f" ({utils.format_seconds(track['length'])})" if track.get("length") else ""
         lines.append(f"  {i + 1}. {track['title']}{length}")
@@ -284,7 +296,10 @@ def _instructions(situation: Situation) -> str:
             "seconds, in time order, starting with one at 0. One chapter per song; a "
             "long opening, MC or encore break may have its own. Prefer starts that are "
             "listed quiet moments; only put one elsewhere if the frames show it must "
-            "be. A part that belongs to the song after it is \"Intro to <song>\"."
+            "be. A part that belongs to the song after it is \"Intro to <song>\". "
+            "The chapters run the whole length of the video: each song's chapter is "
+            "about as long as that song, so they spread across it, and no song's title "
+            "is used twice."
         )
     if situation.translate:
         rules.append(
@@ -393,8 +408,35 @@ def _entries(reply: dict) -> list[dict]:
     return [e for e in entries if isinstance(e, dict)]
 
 
-def _titles(entry: dict) -> tuple[str | None, str | None]:
+# What a model writes for a song it can't tell: no name, rather than one
+# that would count as the chapter being named.
+_NO_IDEA = re.compile(
+    r"^\W*(?:unknown|unidentified|untitled|unclear|unsure|n/?a|tbd|\?+)"
+    r"(?:\s+(?:song|track|title|chapter|section|piece))?(?:\s*#?\d+)?\W*$"
+    r"|^\W*(?:a\s+)?(?:song|track|music|performance)\W*$",
+    re.IGNORECASE,
+)
+
+
+# A song numbered for want of its name: "Song 5", "Intro to Song 14". Not
+# always - BABYMETAL have a "Song 3" - so only when the tracklist hasn't a
+# song of that name and the model wasn't sure.
+_NUMBERED_SONG = re.compile(r"^\s*(?:intro to\s+)?(song\s*#?\d+)\s*$", re.IGNORECASE)
+
+
+def _numbered_for_want_of_a_name(title: str, entry: dict, situation: Situation) -> bool:
+    match = _NUMBERED_SONG.match(title)
+    if not match or _confidence(entry.get("confidence")) == "high":
+        return False
+    song = match.group(1).casefold()
+    return not any((t.get("title") or "").strip().casefold() == song for t in situation.tracks)
+
+
+def _titles(entry: dict, situation: Situation | None = None) -> tuple[str | None, str | None]:
     title = _clean(entry.get("title"))
+    if title and (_NO_IDEA.match(title) or (
+            situation is not None and _numbered_for_want_of_a_name(title, entry, situation))):
+        return None, None
     original = _clean(entry.get("original_title"))
     if original and title and original == title:
         original = None
@@ -414,7 +456,7 @@ def _named_chapters(situation: Situation, entries) -> tuple[list[dict], list[Row
         if not 0 <= index < len(chapters) or index in seen:
             continue
         seen.add(index)
-        title, original = _titles(entry)
+        title, original = _titles(entry, situation)
         if not title:
             continue
         chapter = chapters[index]
@@ -428,6 +470,7 @@ def _named_chapters(situation: Situation, entries) -> tuple[list[dict], list[Row
             chapter=index + 1, start=chapter["start"], title=title,
             original_title=original, confidence=_confidence(entry.get("confidence")),
             note=_clean(entry.get("note")) or "", moved=False,
+            seen=_clean(entry.get("seen")) or "",
         ))
     for index, chapter in enumerate(chapters):
         if index not in seen:
@@ -476,7 +519,7 @@ def _placed_chapters(situation: Situation, entries) -> tuple[list[dict], list[Ro
     rows: list[Row] = []
     for i, (start, was_proposed, entry) in enumerate(kept):
         end = kept[i + 1][0] if i + 1 < len(kept) else duration
-        title, original = _titles(entry)
+        title, original = _titles(entry, situation)
         chapter = {
             "index": i, "start": start, "end": end,
             "title": title, "source": SOURCE if title else "auto-numbered",
@@ -491,7 +534,7 @@ def _placed_chapters(situation: Situation, entries) -> tuple[list[dict], list[Ro
             chapter=i + 1, start=start, title=title, original_title=original,
             confidence=_confidence(entry.get("confidence")) if entry else "low",
             note=_clean(entry.get("note")) or ("" if entry else "added: the video starts here"),
-            moved=moved,
+            moved=moved, seen=_clean(entry.get("seen")) or "",
         ))
     return chapters, rows
 

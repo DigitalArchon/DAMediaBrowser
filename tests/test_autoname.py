@@ -17,6 +17,7 @@ from mediabrowser.core import (
     menu_chapters,
     naming,
     store,
+    utils,
 )
 from tests.test_chaptergen import concert
 
@@ -722,3 +723,187 @@ class TestUndo:
 
     def test_nothing_to_undo(self, tmp_path):
         assert autoname.undo(store.default_library(str(tmp_path))) == []
+
+
+FORTH = ("20260419 2100 [初]BABYMETAL WORLD TOUR 2025-2026 SPECIAL ARENA SHOW IN JAPAN "
+         "LEGEND - METAL FORTH")
+MM = {"id": "mm", "title": "BABYMETAL WORLD TOUR 2023-2024 LEGEND-MM", "artist": "BABYMETAL",
+      "date": "2024-07-11"}
+MM_SONGS = ["BABYMETAL DEATH", "Megitsune", "DA DA DANCE", "Metali!!", "Gimme Chocolate!!",
+            "Headbangeeeeerrrrr!!!!!", "Road of Resistance"]
+FORTH_SONGS = ["METAL FORTH", "from me to u", "RATATATA", "Song 3", "Kon! Kon!", "METALI!!",
+               "Road of Resistance"]
+
+
+def broadcast(duration=2100.0):
+    video = file_video(duration=duration)
+    video.update(display_name=FORTH, path=f"/lib/BABYMETAL/{FORTH}.ts")
+    return video
+
+
+class TestAnEarlierShowThatHappensToFit:
+    """A broadcast of LEGEND - METAL FORTH (2026), and LEGEND - MM (2024)
+    whose first two discs add up to it within 20 seconds."""
+
+    def mm(self, services):
+        services.releases = [MM]
+        services.media["mm"] = release([(t, 300.0) for t in MM_SONGS], "mm")[1]
+
+    def test_a_release_out_before_the_show_isnt_recognised(self, services, settings):
+        self.mm(services)
+        outcome = autoname.identify("v", broadcast(), options(autoname.MUSICBRAINZ), settings,
+                                    services, autoname.Budget(0), "/lib")
+        assert outcome.change is None
+        assert ("media", "mm") not in services.calls, "not even fetched"
+
+    def test_with_the_ai_it_is_put_to_the_ai_rather_than_taken(self, services, settings):
+        self.mm(services)
+        outcome = autoname.identify("v", broadcast(),
+                                    options(autoname.MUSICBRAINZ, autoname.AI_LOOK), settings,
+                                    services, autoname.Budget(5), "/lib")
+        assert ("choose", ("mm",)) in services.calls
+        assert outcome.change is None, "the AI said none of them"
+
+    def test_the_report_says_why(self, services, settings):
+        self.mm(services)
+        services.look_answer = lambda situation: ai_chapters.Result(
+            situation.mode, [dict(c) for c in situation.chapters],
+            [ai_chapters.Row(1, 0.0, None, None, "low", "can't tell", False,
+                             seen="the WOWOW logo")],
+            "BABYMETAL at Saitama", "check the end", 2, "m", ["METAL FORTH"])
+        video = broadcast()
+        video["chapters"] = file_video(starts=(0.0, 300.0))["chapters"]
+        outcome = autoname.identify("v", video,
+                                    options(autoname.MUSICBRAINZ, autoname.AI_LOOK), settings,
+                                    services, autoname.Budget(5), "/lib")
+        report = outcome.report_text()
+        assert "— MusicBrainz" in report and "— The AI looks at the video" in report
+        assert "it came out before the years the file's name mentions" in report
+        assert "adds up: 7 tracks" in report
+        assert "The AI was asked which of “BABYMETAL WORLD TOUR 2023-2024 LEGEND-MM”" in report
+        assert "The AI says the video is: BABYMETAL at Saitama" in report
+        assert "seen: the WOWOW logo" in report and "note: can't tell" in report
+        assert "AI requests made: 3" in report, "the choice, a better search, the look"
+
+    def test_a_file_named_for_when_its_disc_came_out_still_matches(self):
+        video = {"path": "/lib/BABYMETAL/x.mkv",
+                 "display_name": "BABYMETAL WORLD TOUR 2023 - 2024 LEGEND - MM (2024) [BDMV]"}
+        assert not autoname.predates(MM, video, "/lib")
+        tour = dict(MM, title="LIVE AT WEMBLEY", date="2017-04-05")
+        assert not autoname.predates(tour, {"path": "/lib/[2016.04.02] Wembley.mkv",
+                                            "display_name": "x"}, "/lib")
+        assert not autoname.predates(MM, {"path": "/lib/Budokan 1920x1080.mkv",
+                                          "display_name": "x"}, "/lib")
+
+
+class TestHints:
+    def test_what_its_known_as_is_searched_first(self, services, settings):
+        rid, media = release([(t, 300.0) for t in FORTH_SONGS], "forth")
+        known = "BABYMETAL LEGEND - METAL FORTH"
+        services.searches[utils.search_words(known)] = [
+            {"id": rid, "title": "LEGEND - METAL FORTH", "artist": "BABYMETAL",
+             "date": "2026-09-01"}]
+        services.media[rid] = media
+        outcome = autoname.identify("v", broadcast(), options(autoname.MUSICBRAINZ), settings,
+                                    services, autoname.Budget(0), "/lib",
+                                    hints=autoname.Hints(known_as=known))
+        assert services.calls[0] == ("search", "BABYMETAL LEGEND METAL FORTH")
+        assert [c["title"] for c in outcome.change.chapters] == FORTH_SONGS
+
+    def test_a_release_without_that_many_songs_is_turned_down(self, services, settings):
+        rid, media = release([("Intro", 100.0), ("A", 1000.0), ("B", 1000.0)])
+        services.releases = [{"id": rid, "title": "BABYMETAL LEGEND", "artist": "BABYMETAL"}]
+        services.media[rid] = media
+        video = dict(broadcast(), display_name="BABYMETAL LEGEND")
+        hints = autoname.Hints(songs=2)
+        outcome = autoname.identify("v", video, options(autoname.MUSICBRAINZ), settings,
+                                    services, autoname.Budget(0), "/lib", hints=hints)
+        assert outcome.change is not None, "two songs once the intro is left out"
+        hints.songs = 15
+        outcome = autoname.identify("v", video, options(autoname.MUSICBRAINZ), settings,
+                                    services,
+                                    autoname.Budget(0), "/lib", hints=hints)
+        assert outcome.change is None
+        assert "has 3 tracks, not the 15 songs this video has" in outcome.log[0]
+
+    def test_a_release_without_the_setlists_songs_is_turned_down(self, services, settings):
+        services.releases = [dict(MM, title="LEGEND - MM", date="")]  # nothing dates it
+        services.media["mm"] = release([(t, 300.0) for t in MM_SONGS], "mm")[1]
+        hints = autoname.Hints(setlist=[{"title": t, "length": None} for t in FORTH_SONGS])
+        outcome = autoname.identify("v", broadcast(), options(autoname.MUSICBRAINZ), settings,
+                                    services, autoname.Budget(0), "/lib", hints=hints)
+        assert outcome.change is None
+        assert "its songs aren't this video's" in outcome.log[0]
+
+    def test_the_audio_keeps_every_gap_but_finds_at_least_that_many(self, services,
+                                                                     settings):
+        # A broadcast of 15 songs has 22 pieces: forced into 15 chapters, their
+        # starts land in the wrong places. Only too few gaps are made up.
+        levels, _ = concert([300, 300, 300, 300], gap=12.0)
+        services.levels_value = levels
+        video = file_video(duration=levels.duration)
+        outcome = autoname.identify("v", video, options(autoname.AUDIO), settings, services,
+                                    autoname.Budget(0), hints=autoname.Hints(songs=3))
+        assert len(outcome.change.chapters) == 4
+        assert outcome.log == ["Audio: split into 4 chapters where the music stops, "
+                               "for the 3 songs it has"]
+        levels, _ = concert([300, 300, 300, 300], gap=12.0, gap_db=-25.0)  # faint gaps
+        services.levels_value = levels
+        quiet = autoname.identify("v", video, options(autoname.AUDIO), settings, services,
+                                  autoname.Budget(0))
+        counted = autoname.identify("v", video, options(autoname.AUDIO), settings, services,
+                                    autoname.Budget(0), hints=autoname.Hints(songs=4))
+        assert quiet.change is None, "too faint to split on alone"
+        assert len(counted.change.chapters) == 4
+
+    def test_the_ai_is_told_and_given_the_setlist(self, services, settings):
+        video = file_video(starts=(0.0, 300.0))
+        seen = {}
+
+        def look(situation):
+            seen.update(tracks=situation.tracks, source=situation.tracks_source,
+                        said=situation.video.get("hints"))
+            return result([dict(c) for c in situation.chapters], [])
+
+        services.look_answer = look
+        hints = autoname.Hints(known_as="LEGEND - METAL FORTH",
+                               setlist=[{"title": "A", "length": None},
+                                        {"title": "B", "length": None}])
+        autoname.identify("v", video, options(autoname.AI_LOOK), settings, services,
+                          autoname.Budget(5), hints=hints)
+        assert [t["title"] for t in seen["tracks"]] == ["A", "B"] and seen["source"] == "hint"
+        assert "known as “LEGEND - METAL FORTH”" in seen["said"]
+        assert "2 songs" in seen["said"] and "A; B" in seen["said"]
+
+    def test_a_setlist_names_one_chapter_per_song_when_nothing_else_does(self, services,
+                                                                       settings):
+        hints = autoname.Hints(setlist=[{"title": "A", "length": None},
+                                        {"title": "B", "length": None}])
+        video = file_video(starts=(0.0, 300.0))
+        outcome = autoname.identify("v", video, options(), settings, services,
+                                    autoname.Budget(0), hints=hints)
+        assert [c["title"] for c in outcome.change.chapters] == ["A", "B"]
+        three = file_video(starts=(0.0, 300.0, 600.0))
+        assert autoname.identify("v", three, options(), settings, services,
+                                 autoname.Budget(0), hints=hints).change is None
+
+    def test_names_out_of_the_setlists_order_are_left_off(self, services, settings):
+        setlist = ["METAL FORTH", "White Flame -Byakuen-", "BABYMETAL DEATH",
+                   "Headbangeeeeerrrrr!!!!!"]
+        # Headbanger too early, and BABYMETAL DEATH twice.
+        titles = ["METAL FORTH", "Headbangeeeeerrrrr!!!!!", "White Flame -Byakuen-",
+                  "BABYMETAL DEATH", "BABYMETAL DEATH (cont.)", "Headbangeeeeerrrrr!!!!!"]
+        assert autoname.out_of_order([{"title": t} for t in titles], setlist) == [1, 4]
+        video = file_video(starts=tuple(300.0 * i for i in range(6)), duration=1800.0)
+        services.look_answer = lambda situation: result(
+            named(situation.chapters, dict(enumerate(titles))),
+            [ai_chapters.Row(i + 1, 300.0 * i, t, None, "high", "", False)
+             for i, t in enumerate(titles)])
+        hints = autoname.Hints(setlist=[{"title": t, "length": None} for t in setlist])
+        outcome = autoname.identify("v", video, options(autoname.AI_LOOK), settings, services,
+                                    autoname.Budget(5), hints=hints)
+        assert [c["title"] for c in outcome.change.chapters] == [
+            "METAL FORTH", None, "White Flame -Byakuen-", "BABYMETAL DEATH", None,
+            "Headbangeeeeerrrrr!!!!!"]
+        assert "out of the setlist's order or a repeat: 2. Headbangeeeeerrrrr!!!!!" in (
+            outcome.report_text())

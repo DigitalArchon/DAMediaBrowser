@@ -357,11 +357,22 @@ class Segment:
     end: float | None  # None: on to the end of the file
     entries: tuple[int, ...]  # the queue entries it plays (insertion order), in order
     starts: tuple[float, ...]  # where each of those entries starts in the file
+    # The queue entries straight before it that the same file plays, and
+    # where they start: video's seek bar spans the whole file, so a seek
+    # back from the chapter playing began at lands in one of them.
+    earlier: tuple[int, ...] = ()
+    earlier_starts: tuple[float, ...] = ()
 
     def entry_at(self, position: float | None) -> int:
         """The entry playing at `position` seconds into the file."""
         chosen = self.entries[0]
         if position is None:
+            return chosen
+        if position < self.starts[0] - 0.25:
+            # Before it: the earlier entry there, if the queue has one.
+            for entry, start in zip(self.earlier, self.earlier_starts, strict=True):
+                if position >= start - 0.25:
+                    chosen = entry
             return chosen
         for entry, start in zip(self.entries, self.starts, strict=True):
             # A seek lands a hair before where it was aimed.
@@ -404,6 +415,16 @@ def plan_segment(queue: "Queue", video_of, position: int) -> Segment | None:
                     or after.chapter_index >= len(chapters)):
                 break
             chosen.append(chosen[-1] + 1)
+    # And the ones straight before it that lead up to it the same way.
+    before = []
+    first_kept = position
+    while queue.repeat != REPEAT_ONE and first_kept > 0:
+        prior, after = entries[order[first_kept - 1]], entries[order[first_kept]]
+        if (prior.video_id != after.video_id or prior.audio_only != after.audio_only
+                or prior.chapter_index != after.chapter_index - 1):
+            break
+        first_kept -= 1
+        before.insert(0, first_kept)
     indices = [entries[order[p]].chapter_index for p in chosen]
     followed = chosen[-1] + 1 < len(order) or queue.repeat in (REPEAT_ALL, REPEAT_ONE)
     end = chapters[indices[-1]]["end"]
@@ -419,6 +440,8 @@ def plan_segment(queue: "Queue", video_of, position: int) -> Segment | None:
         end=end,
         entries=tuple(order[p] for p in chosen),
         starts=tuple(chapters[i]["start"] for i in indices),
+        earlier=tuple(order[p] for p in before),
+        earlier_starts=tuple(chapters[entries[order[p]].chapter_index]["start"] for p in before),
     )
 
 
@@ -526,8 +549,10 @@ class Session:
             return None
         carried = self.player.carry()
         moment = carried.get("time-pos")
+        # A seek back may have gone into the entries before it.
+        first = segment.earlier_starts[0] if segment.earlier_starts else segment.start
         if isinstance(moment, int | float) and (
-                moment < segment.start or (segment.end is not None and moment >= segment.end)):
+                moment < first or (segment.end is not None and moment >= segment.end)):
             # Outside the piece as it now is - video that ran on past its
             # last chapter, switched to audio: from the piece's start.
             del carried["time-pos"]
@@ -589,7 +614,7 @@ class Session:
                 or replanned.audio_only != playing.audio_only):
             # What's playing isn't in the queue any more; it plays on alone.
             replanned = replace(playing, entries=playing.entries[:1],
-                                starts=playing.starts[:1])
+                                starts=playing.starts[:1], earlier=(), earlier_starts=())
         elif replanned.end != playing.end:
             self.player.set_end(replanned.end)
         # Keep where the playing piece started; entries before the playing

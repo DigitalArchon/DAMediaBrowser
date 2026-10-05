@@ -175,6 +175,10 @@ class NowPlayingBar(QWidget):
         self.cover.setPixmap(covers.for_video(video_id, cover_name, THUMB))
         self._set_enabled(True)
 
+    def set_title(self, title: str) -> None:
+        """What's playing has moved on within the same video."""
+        self.title.setText(title)
+
     def set_video_controls(self, in_app: bool, showing: bool, fullscreen: bool = False,
                            can_come_in: bool = False) -> None:
         """Show Video while video plays in the app out of sight; Fullscreen

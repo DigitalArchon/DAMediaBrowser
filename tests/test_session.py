@@ -61,6 +61,19 @@ class TestPieces:
         queue.repeat = playback.REPEAT_ALL
         assert playback.following(queue, 1) == 0
 
+    def test_a_piece_knows_the_chapters_before_it_a_seek_back_lands_in(self):
+        queue = queue_of(entry("a", 0), entry("a", 1), entry("a", 2), start=2)
+        piece = playback.plan_segment(queue, VIDEOS.get, 2)
+        assert piece.entries == (2,) and piece.start == 200.0
+        assert (piece.earlier, piece.earlier_starts) == ((0, 1), (0.0, 100.0))
+        assert [piece.entry_at(t) for t in (50.0, 99.8, 150.0, 250.0)] == [0, 1, 1, 2]
+
+    def test_only_the_chapters_leading_up_to_it_count_as_before_it(self):
+        queue = queue_of(entry("b", 0), entry("a", 0), entry("a", 2), start=2)
+        piece = playback.plan_segment(queue, VIDEOS.get, 2)
+        assert piece.earlier == ()
+        assert piece.entry_at(50.0) == 2, "nothing in the queue plays there"
+
     def test_a_video_that_has_gone_has_no_piece(self):
         queue = queue_of(entry("gone", 0))
         assert playback.plan_segment(queue, VIDEOS.get, 0) is None
@@ -187,6 +200,16 @@ class TestAskedElsewhere:
         tick = session.tick(dict(mpv.state, position=None))
         assert not tick.moved and queue.current_index() == 1
 
+    def test_a_seek_back_from_where_it_began_moves_the_queue_back(self):
+        session, mpv, queue = self.session(entry("a", 0), entry("a", 1), entry("a", 2))
+        queue.jump_to(2)
+        session.play()
+        tick = session.tick(dict(mpv.state, position=120.0))
+        assert tick.moved and queue.current_index() == 1
+        tick = session.tick(dict(mpv.state, position=230.0))
+        assert tick.moved and queue.current_index() == 2
+
+
 
 class TestQueueEdits:
     def test_several_can_be_removed_at_once(self):
@@ -242,7 +265,6 @@ class TestWhatMpvIsTold:
                      "--input-default-bindings=no"):
             assert flag in args
 
-
 class TestMovingToAnotherWindow:
     def test_a_new_mpv_carries_on_where_the_old_one_was(self):
         mpv = FakeMpv()
@@ -258,6 +280,15 @@ class TestMovingToAnotherWindow:
         assert mpv.calls[1] == ("resume", "a", (0, 1), {"time-pos": 142.0, "pause": True})
         assert mpv.calls[2][:2] == ("load", "b"), "what comes next is lined up again"
         assert session.current().start == 0.0, "the piece still starts where it did"
+
+    def test_a_seek_back_before_where_it_began_is_carried_too(self):
+        mpv = FakeMpv()
+        queue = queue_of(entry("a", 0, audio=False), entry("a", 1, audio=False), start=1)
+        session = playback.Session(mpv, queue, VIDEOS.get)
+        session.play(window_id=99)
+        mpv.state["position"] = 42.0  # sought back into chapter 1
+        session.move_to(None)
+        assert mpv.calls[-1][0] == "resume" and mpv.calls[-1][3]["time-pos"] == 42.0
 
     def test_nothing_playing_has_nothing_to_move(self):
         mpv = FakeMpv()

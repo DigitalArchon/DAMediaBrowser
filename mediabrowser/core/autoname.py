@@ -73,6 +73,12 @@ ONE_VIDEO_AI_BUDGET = 6
 # releases, a better search, and a choice between what that finds.
 AI_REQUESTS = {MENU: 1, AI_LOOK: 4, TRANSLATE: 1}
 
+# Each step as the report names it.
+STEP_NAMES = {
+    MUSICBRAINZ: "MusicBrainz", AUDIO: "The audio", MENU: "The disc's menu",
+    AI_LOOK: "The AI looks at the video", TRANSLATE: "Titles in English",
+}
+
 LAST_RESORT = "last_resort"
 ACCURATE_FIRST = "accurate_first"
 
@@ -129,6 +135,47 @@ class Options:
 
 
 @dataclass
+class Hints:
+    """What the person watching knows about one video, each part optional:
+    what it's known as, how many songs it has, and its setlist in order.
+
+    What it's known as is searched on MusicBrainz first. A release must
+    have that many songs, and most of the setlist's; a video in one piece
+    is split into that many chapters; the AI is told all of it; and a
+    setlist with one song per chapter names them when nothing else does.
+    """
+
+    known_as: str = ""
+    songs: int = 0
+    setlist: list[dict] = field(default_factory=list)  # [{"title", "length"}], in order
+
+    def __bool__(self) -> bool:
+        return bool(self.known_as.strip() or self.songs or self.setlist)
+
+    def song_count(self) -> int:
+        return self.songs or len(self.setlist)
+
+    def titles(self) -> list[str]:
+        return [track["title"] for track in self.setlist if track.get("title")]
+
+    def describe(self) -> str:
+        """What the person said, for the AI."""
+        said = []
+        if self.known_as.strip():
+            said.append(f"it is known as “{self.known_as.strip()}”")
+        if self.song_count():
+            said.append(f"it has {self.song_count()} songs (an opening, a video interlude, "
+                        "a solo or the broadcaster's own segments aren't songs, and may "
+                        "have chapters of their own)")
+        if self.setlist:
+            said.append("its songs in order are: " + "; ".join(self.titles()))
+        if not said:
+            return ""
+        return ("The person watching it says " + ", and ".join(said)
+                + ". Trust that over the file's name.")
+
+
+@dataclass
 class Budget:
     remaining: int
     used: int = 0
@@ -160,6 +207,12 @@ class Outcome:
     log: list[str]
     ai_used: int = 0
     error: str = ""
+    # The log at length: each step, what it looked at and why it decided
+    # as it did, for the person to read afterwards.
+    report: list[str] = field(default_factory=list)
+
+    def report_text(self) -> str:
+        return "\n".join(self.report or self.log)
 
 
 # --- the outside world ------------------------------------------------------------
@@ -305,10 +358,11 @@ def _plain(text: str | None) -> str:
     return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", text or "").casefold())
 
 
-def artist_matches(release: dict, video: dict, library_root=None) -> bool:
-    """Whether the release is by an artist the video's name or folders
-    mention. Without it, a length that happens to match lets in anyone's
-    album - an indie "Red Fox" for BABYMETAL's Red Fox Festival."""
+def artist_matches(release: dict, video: dict, library_root=None, extra: str = "") -> bool:
+    """Whether the release is by an artist the video's name or folders (or
+    `extra`, what the person said it's known as) mention. Without it, a
+    length that happens to match lets in anyone's album - an indie "Red
+    Fox" for BABYMETAL's Red Fox Festival."""
     path = PurePath(video["path"])
     parts = [video.get("display_name", "")] + list(path.parts[-4:])
     if library_root:
@@ -318,7 +372,7 @@ def artist_matches(release: dict, video: dict, library_root=None) -> bool:
             )
         except ValueError:
             pass
-    context = _plain(" ".join(parts))
+    context = _plain(" ".join([*parts, extra]))
     names = re.split(r"\s*(?:&|,|/| feat\.? | x | and )\s*", release.get("artist") or "",
                      flags=re.IGNORECASE)
     return any(len(_plain(name)) >= 2 and _plain(name) in context for name in names)
@@ -340,28 +394,64 @@ def _words(text: str | None) -> set[str]:
     }
 
 
-def title_matches(release: dict, video: dict, library_root=None) -> bool:
-    """Whether the release's title, less its artist's name, shares a word
-    with the video's name or folders. The artist's self-titled studio album
-    has the same songs as a concert and can have its length too, but the
-    songs in another order: "BABYMETAL" has nothing left to share with
-    "Apocrypha The Black Mass", where "LIVE AT WEMBLEY" shares "wembley"."""
-    title = _words(release.get("title")) - _words(release.get("artist"))
+def _context(video: dict, library_root=None, extra: str = "") -> str:
+    """The video's name and the folders it's in, below the library root,
+    and anything the person said it's known as."""
     path = PurePath(video["path"])
     try:
         parts = path.relative_to(PurePath(library_root)).parts if library_root else path.parts
     except ValueError:
         parts = path.parts[-4:]
-    context = _words(" ".join([video.get("display_name", ""), *parts]))
-    return bool(title & context)
+    return " ".join([video.get("display_name", ""), *parts, extra])
+
+
+def title_matches(release: dict, video: dict, library_root=None, extra: str = "") -> bool:
+    """Whether the release's title, less its artist's name, shares a word
+    with the video's name or folders (or `extra`, what the person said it's
+    known as). The artist's self-titled studio album has the same songs as
+    a concert and can have its length too, but the songs in another order:
+    "BABYMETAL" has nothing left to share with "Apocrypha The Black Mass",
+    where "LIVE AT WEMBLEY" shares "wembley"."""
+    title = _words(release.get("title")) - _words(release.get("artist"))
+    return bool(title & _words(_context(video, library_root, extra)))
+
+
+# A year, alone or the start of an eight-digit date ("20260419"). Not a
+# resolution: 1920x1080 has no year in it.
+_YEAR_RE = re.compile(
+    r"(?<!\d)((?:19[5-9]|20\d)\d)(?:(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))?(?!\d)"
+)
+
+
+def _years(text: str | None) -> list[int]:
+    return [int(y) for y in _YEAR_RE.findall(unicodedata.normalize("NFKC", text or ""))]
+
+
+def predates(release: dict, video: dict, library_root=None, extra: str = "") -> bool:
+    """Whether the release came out before every year the video's name and
+    folders mention, so can't be a recording of it. A show is named for
+    its tour's years or the day it was played or broadcast, and a release
+    of it comes after: BABYMETAL's LEGEND - MM (2024) isn't the broadcast
+    "20260419 ... WORLD TOUR 2025-2026 ... LEGEND - METAL FORTH", though the
+    lengths of its first two discs add up to it within 20 seconds and both
+    are LEGENDs. A file named for when its disc came out mentions that
+    year, so it never predates its own release."""
+    came_out = _years((release.get("date") or "")[:4]) or _years(release.get("title"))
+    mentioned = _years(_context(video, library_root, extra))
+    return bool(came_out and mentioned) and max(came_out) < min(mentioned)
 
 
 def agrees_with_names(tracks: list[dict], chapters: list[dict]) -> bool:
     """Whether a tracklist has the songs the video's chapters are already
     named - most of them - so it's the same show. A video with fewer than
     two real names has nothing to disagree with."""
-    known = [_plain(c["title"]) for c in chapters if naming.is_named(c)]
-    known = [k for k in known if k]
+    return agrees_with(tracks, [c["title"] for c in chapters if naming.is_named(c)])
+
+
+def agrees_with(tracks: list[dict], names: list[str]) -> bool:
+    """Whether a tracklist has most of these songs. Fewer than two have
+    nothing to disagree with."""
+    known = [k for k in (_plain(name) for name in names) if k]
     if len(known) < 2:
         return True
     titles = [_plain(t.get("title")) for t in tracks]
@@ -374,6 +464,49 @@ def agrees_with_names(tracks: list[dict], chapters: list[dict]) -> bool:
         )
 
     return sum(1 for name in known if listed(name)) >= AGREEMENT_FRACTION * len(known)
+
+
+# A track that isn't one of a show's songs, by its title.
+_NOT_A_SONG = re.compile(
+    r"^\W*(?:intro|outro|opening|overture|prologue|epilogue|interlude|ending|encore"
+    r"|mc|se|end ?roll|credits)\b",
+    re.IGNORECASE,
+)
+
+
+def has_songs(tracks: list[dict], count: int) -> bool:
+    """Whether a tracklist has `count` songs: that many tracks, or that many
+    once its openings, interludes and endings are left out."""
+    songs = [t for t in tracks if not _NOT_A_SONG.match(t.get("title") or "")]
+    return count in (len(tracks), len(songs))
+
+
+def _setlist_position(title: str | None, setlist: list[str]) -> int | None:
+    """Where on the setlist a chapter's title is, if it's one of its songs -
+    "Headbangeeeeerrrrr!!!!! (cont.)" being Headbangeeeeerrrrr!!!!! still."""
+    plain = _plain(title)
+    if not plain:
+        return None
+    for i, song in enumerate(setlist):
+        name = _plain(song)
+        if name and (plain == name or (len(name) > 3 and plain.startswith(name))):
+            return i
+    return None
+
+
+def out_of_order(chapters: list[dict], setlist: list[str]) -> list[int]:
+    """The chapters whose songs break the setlist's order, or repeat one:
+    all but the longest run that follows it. A setlist the person gave is
+    the order the songs were played in."""
+    placed = [(i, pos) for i, c in enumerate(chapters)
+              if (pos := _setlist_position(c.get("title"), setlist)) is not None]
+    # Longest strictly increasing run of setlist positions.
+    best: list[list[tuple[int, int]]] = []
+    for item in placed:
+        longest = max((run for run in best if run[-1][1] < item[1]), key=len, default=[])
+        best.append(longest + [item])
+    keep = {i for i, _pos in max(best, key=len, default=[])}
+    return [i for i, _pos in placed if i not in keep]
 
 
 def _has_foreign_script(title: str | None) -> bool:
@@ -390,15 +523,53 @@ class _Step:
 
     def __init__(self, work: _Work, options: Options, settings: dict, services: Services,
                  budget: Budget, library_root, cancel: threading.Event | None,
-                 log: Callable[[str], None]) -> None:
+                 log: Callable[[str], None], hints: Hints | None = None,
+                 note: Callable[[str], None] | None = None) -> None:
         self.work, self.options, self.settings = work, options, settings
         self.services, self.budget, self.root = services, budget, library_root
         self.cancel, self.log = cancel, log
+        # For the report only: the detail behind what's logged.
+        self.note = note or (lambda _line: None)
+        self.hints = hints or Hints()
         self.ai_used = 0
 
     @property
     def video(self):
         return self.work.video
+
+    def _ai_video(self) -> dict:
+        """The video as the AI is shown it: its chapters as they are now,
+        and what the person said about it."""
+        video = dict(self.video, chapters=self.work.chapters)
+        if self.hints:
+            video["hints"] = self.hints.describe()
+        return video
+
+    def _why_recognised(self, release: dict) -> str:
+        """Whether the names recognise the release, and on what, in words."""
+        video, said = self.video, self.hints.known_as
+        artist = artist_matches(release, video, self.root, said)
+        title = title_matches(release, video, self.root, said)
+        early = predates(release, video, self.root, said)
+        if artist and title and not early:
+            return "recognised (its artist and title are in the file's name or folders)"
+        why = []
+        if not artist:
+            why.append("its artist isn't in the file's name or folders")
+        if not title:
+            why.append("no word of its title is")
+        if early:
+            why.append("it came out before the years the file's name mentions")
+        return "not recognised - " + ", and ".join(why)
+
+    def _recognises(self, release: dict) -> bool:
+        """Whether the video's name and folders, and what the person said it's
+        known as, name the release's artist and title - and don't date the
+        video after the release came out."""
+        video, said = self.video, self.hints.known_as
+        return (artist_matches(release, video, self.root, said)
+                and title_matches(release, video, self.root, said)
+                and not predates(release, video, self.root, said))
 
     def _check(self):
         if self.cancel is not None and self.cancel.is_set():
@@ -412,7 +583,29 @@ class _Step:
             self.log("AI: this run's requests are used up")
             return False
         self.ai_used += 1
+        self.note(f"  (AI request {self.ai_used}; {self.budget.remaining} left for this run)")
         return True
+
+    def _note_ai_result(self, result) -> None:
+        """What the model said, chapter by chapter, for the report."""
+        if result.show:
+            self.note(f"  The AI says the video is: {result.show}")
+        if result.setlist:
+            self.note("  The setlist it worked from: " + "; ".join(result.setlist))
+        if result.frames_sent:
+            self.note(f"  Frames it was shown: {result.frames_sent} ({result.model})")
+        for row in result.rows:
+            line = (f"    {row.chapter:>2}. {utils.format_seconds(row.start):>8}  "
+                    f"{row.title or '(no name)'}  [{row.confidence}]")
+            if row.moved:
+                line += " (start moved)"
+            self.note(line)
+            if row.seen:
+                self.note(f"          seen: {row.seen}")
+            if row.note:
+                self.note(f"          note: {row.note}")
+        if result.notes:
+            self.note(f"  The AI's notes: {result.notes}")
 
     # --- free
 
@@ -474,21 +667,25 @@ class _Step:
         except musicbrainz.MusicBrainzError as exc:
             self.log(f"MusicBrainz: {exc}")
             return []
+        self.note(f"  Searched MusicBrainz for “{query}”: {len(releases)} release(s) looked at")
         judged = self._ai_helps_search()
         fits = []
         # The ones the names recognise first: when one of those fits, the
         # rest aren't worth a request each (two seconds, at MusicBrainz).
-        ranked = sorted(releases, key=lambda r: not (
-            artist_matches(r, video, self.root) and title_matches(r, video, self.root)
-        ))
+        ranked = sorted(releases, key=lambda r: not self._recognises(r))
+        count, setlist = self.hints.song_count(), self.hints.titles()
         for release in ranked:
             self._check()
             if release["id"] in seen:
                 continue
             seen[release["id"]] = release
-            recognised = (artist_matches(release, video, self.root)
-                          and title_matches(release, video, self.root))
+            recognised = self._recognises(release)
+            self.note(f"  · {ai_musicbrainz.describe_release(release)}: "
+                      + self._why_recognised(release))
             if not recognised and (not judged or any(f.recognised for f in fits)):
+                self.note("      not fetched: the file's name doesn't recognise it"
+                          + (", and one it does already fits" if judged else
+                             ", and there's no AI to judge it"))
                 continue
             try:
                 media = self.services.release_media(release["id"])
@@ -498,14 +695,32 @@ class _Step:
             tracks = [t for i in picked for t in media[i]["tracks"]]
             lengths = [t["length"] for t in tracks]
             if not tracks or not adds_up(lengths, duration):
+                total = sum(length or 0 for length in lengths)
+                self.note(f"      doesn't add up: its closest discs come to "
+                          f"{utils.format_seconds(total)} against the video's "
+                          f"{utils.format_seconds(duration)}"
+                          + (" (some tracks have no length)" if not all(lengths) else ""))
                 continue
+            self.note(f"      adds up: {len(tracks)} tracks on {len(picked)} of {len(media)} "
+                      f"disc(s) come to {utils.format_seconds(sum(lengths))}, "
+                      f"{abs(sum(lengths) - duration):.0f}s off the video")
             claimed = getattr(self.services, "claimed", {})
             owner = claimed.get((release["id"], tuple(picked)))
             if owner is not None and owner != video["display_name"]:
-                turned_down.append(f"{release['title']}” already named “{owner}")
+                turned_down.append(f"“{release['title']}” already named “{owner}”")
+                self.note(f"      turned down: {turned_down[-1]}")
                 continue
-            if not agrees_with_names(tracks, self.work.chapters):
-                turned_down.append(release["title"])
+            if count and not has_songs(tracks, count):
+                turned_down.append(f"“{release['title']}” adds up but has {len(tracks)} "
+                                   f"tracks, not the {count} songs this video has")
+                self.note(f"      turned down: {turned_down[-1]}")
+                continue
+            if not (agrees_with_names(tracks, self.work.chapters)
+                    and agrees_with(tracks, setlist)):
+                turned_down.append(f"“{release['title']}” adds up but its songs aren't "
+                                   "this video's")
+                self.note(f"      turned down: {turned_down[-1]} - its tracks: "
+                          + "; ".join(t.get("title") or "?" for t in tracks))
                 continue
             fits.append(_Fit(release, picked, tracks, len(media),
                              abs(sum(lengths) - duration), recognised))
@@ -520,7 +735,7 @@ class _Step:
                       for f in fits]
         try:
             choice = self.services.choose_release(
-                dict(self.video, chapters=self.work.chapters),
+                self._ai_video(),
                 ai_chapters.situation_context(self.video, self.root),
                 candidates, self.settings,
             )
@@ -528,6 +743,8 @@ class _Step:
             self.log(f"MusicBrainz: the AI couldn't choose ({exc})")
             return None
         names = ", ".join(f"“{f.release['title']}”" for f in fits)
+        self.note(f"  The AI was asked which of {names} is this video: "
+                  f"{choice.confidence} confidence")
         if choice.release_id is None:
             self.log(f"MusicBrainz: the AI says none of {names} is this video"
                      + (f" ({choice.reason})" if choice.reason else ""))
@@ -546,7 +763,7 @@ class _Step:
             return []
         try:
             what, queries = self.services.better_queries(
-                dict(self.video, chapters=self.work.chapters),
+                self._ai_video(),
                 ai_chapters.situation_context(self.video, self.root),
                 tried, list(seen.values()), self.settings,
             )
@@ -561,14 +778,25 @@ class _Step:
             self.log("MusicBrainz: the AI had no better search")
         return queries
 
+    def _queries(self) -> list[str]:
+        """The searches to start from: what the person said it's known as,
+        then the file's name and folders."""
+        said = utils.search_words(self.hints.known_as)
+        own = utils.suggest_search_query(self.video, self.root)
+        return [query for query in dict.fromkeys([said, own]) if query]
+
     def _release(self) -> tuple[_Fit | None, str, list[str]]:
         """The release that is this video, the searches made for it, and
-        any that added up but were turned down. With the AI, it puts the
+        why any that added up were turned down. With the AI, it puts the
         search right when the file's name finds nothing, and chooses which
         release is this show; a release must add up to the video either way."""
-        query = utils.suggest_search_query(self.video, self.root)
-        tried, seen, turned_down = [query], {}, []
-        fits = self._fits(query, seen, turned_down)
+        tried, seen, turned_down, fits = [], {}, [], []
+        for query in self._queries():
+            tried.append(query)
+            fits = self._fits(query, seen, turned_down)
+            if fits:
+                break
+        query = "”, “".join(tried)
         recognised = [f for f in fits if f.recognised]
         # Free and certain: the one release the rules recognise.
         if len(recognised) == 1 and len(fits) == 1:
@@ -597,10 +825,7 @@ class _Step:
         duration = video["duration"]
         best, query, turned_down = self._release()
         if best is None:
-            why = ""
-            if turned_down:
-                why = (f"; “{turned_down[0]}”" if "already named" in turned_down[0]
-                       else f"; “{turned_down[0]}” adds up but its songs aren't this video's")
+            why = f"; {turned_down[0]}" if turned_down else ""
             self.log("MusicBrainz: no release of this show whose tracks add up to this video"
                      f" (searched “{query}”){why}")
             return
@@ -649,14 +874,26 @@ class _Step:
         work.levels = work.levels or self._levels()
         if work.levels is None:
             return
+        # Every clear gap the audio finds: a concert has more pieces than
+        # songs (an opening film, interludes, a broadcaster's segments), so
+        # making it exactly that many chapters puts their starts in the wrong
+        # places. Only when it finds too few are the best that many taken.
+        count = self.hints.song_count()
         starts = chaptergen.estimate_starts(work.levels, self.video["duration"])
+        if count and len(starts) < count:
+            starts = chaptergen.estimate_starts(work.levels, self.video["duration"],
+                                                song_count=count)
         if len(starts) < 2:
             self.log("Audio: no gaps between songs found")
             return
         work.replace(chaptergen.chapters_from_starts(starts, self.video["duration"],
                                                      estimated=True),
                      library.ORIGIN_ESTIMATED)
-        self.log(f"Audio: split into {len(starts)} chapters where the music stops")
+        self.log(f"Audio: split into {len(starts)} chapters where the music stops"
+                 + (f", for the {count} songs it has" if count else ""))
+        found = chaptergen.boundary_candidates(work.levels, self.video["duration"])
+        self.note(f"  {len(found)} quiet moment(s) measured; chapters start at "
+                  + ", ".join(utils.format_seconds(start) for start in starts))
 
     # --- costs money
 
@@ -675,12 +912,13 @@ class _Step:
             return
         try:
             result = self.services.ask_menu(
-                dict(self.video, chapters=work.chapters), disc, self.settings,
+                self._ai_video(), disc, self.settings,
                 ai_chapters.situation_context(self.video, self.root), self.options.translate,
             )
         except ai.AIError as exc:
             self.log(f"Disc menu: the AI couldn't read it ({exc})")
             return
+        self._note_ai_result(result)
         confidence = {row.chapter - 1: row.confidence for row in result.rows}
         read = [entry for entry in result.mapping() if entry[3] == menu_chapters.SOURCE]
         judged = [
@@ -703,12 +941,13 @@ class _Step:
             work.levels = self._levels()
         if not self._ai():
             return
-        video = dict(self.video, chapters=work.chapters)
+        video = self._ai_video()
+        tracks = list(work.tracks) or [dict(t) for t in self.hints.setlist]
         situation = ai_chapters.Situation(
             video=video, chapters=[dict(c) for c in work.chapters],
             mode=ai_chapters.PLACE if estimated else ai_chapters.NAME,
-            tracks=list(work.tracks),
-            tracks_source="musicbrainz" if work.tracks else "",
+            tracks=tracks,
+            tracks_source=("musicbrainz" if work.tracks else "hint" if tracks else ""),
             candidates=(chaptergen.boundary_candidates(work.levels, video["duration"])
                         if estimated and work.levels is not None else []),
             context=ai_chapters.situation_context(video, self.root),
@@ -716,6 +955,12 @@ class _Step:
             frames_per_chapter=self.settings.get(ai.SETTING_FRAMES, ai.DEFAULT_FRAMES_PER_CHAPTER),
             online=True,
         )
+        task = "place and name" if situation.mode == ai_chapters.PLACE else "name"
+        self.note(f"  Asked to {task} {len(situation.chapters)} chapter(s)"
+                  + (f", with the tracklist from {'MusicBrainz' if work.tracks else 'the hints'}"
+                     f" ({len(tracks)} songs)" if tracks else ", with no tracklist")
+                  + (f" and {len(situation.candidates)} quiet moments to choose starts from"
+                     if situation.candidates else ""))
         try:
             result = self.services.look(situation, self.settings, self.cancel)
         except audio_levels.Cancelled:  # what the frame grabber raises
@@ -723,8 +968,14 @@ class _Step:
         except ai.AIError as exc:
             self.log(f"AI: {exc}")
             return
+        self._note_ai_result(result)
         sure = {row.chapter - 1 for row in result.rows
                 if not self.options.only_sure or row.confidence in SURE}
+        wrong = out_of_order(result.chapters, self.hints.titles()) if self.hints.setlist else []
+        if wrong:
+            sure -= set(wrong)
+            self.note("  Left unnamed, as out of the setlist's order or a repeat: "
+                      + ", ".join(f"{i + 1}. {result.chapters[i]['title']}" for i in wrong))
         if situation.mode == ai_chapters.PLACE:
             chapters = [dict(c) for c in result.chapters]
             for i, chapter in enumerate(chapters):
@@ -738,13 +989,23 @@ class _Step:
             # What it's certain of may put right this run's own names - an
             # opening film MusicBrainz's lengths took for the first song;
             # names the video had before are kept whatever it says.
-            certain = [entry for entry in result.mapping() if confidence.get(entry[0]) == "high"]
+            certain = [entry for entry in result.mapping()
+                       if confidence.get(entry[0]) == "high" and entry[0] not in wrong]
             names = [entry for entry in result.mapping()
                      if entry[0] in sure and confidence.get(entry[0]) != "high"]
             filled = work.fill(certain, authoritative=True) + work.fill(names)
             skipped = sum(1 for entry in result.mapping() if entry[0] not in sure)
             self.log(f"AI: named {filled} chapter(s)"
                      + (f", left {skipped} it was guessing at" if skipped else ""))
+
+    def setlist(self) -> None:
+        """Name the chapters from the person's setlist, in its order, when
+        nothing else named any and there's one chapter per song."""
+        work, titles = self.work, self.hints.titles()
+        if not titles or work.status().named or len(work.chapters) != len(titles):
+            return
+        filled = work.fill([(i, title, None, "manual") for i, title in enumerate(titles)])
+        self.log(f"Setlist: named {filled} chapter(s) in the order given")
 
     def translate(self) -> None:
         work = self.work
@@ -760,6 +1021,7 @@ class _Step:
         changed = 0
         for (index, current), (title, original) in zip(foreign, answers, strict=False):
             if title and title != current:
+                self.note(f"  {current} → {title}")
                 chapter = work.chapters[index]
                 utils.set_chapter_title(chapter, title, chapter.get("source") or "ai",
                                         original_title=original or current)
@@ -774,28 +1036,59 @@ def plan(options: Options) -> list[str]:
 
 def identify(video_id: str, video: dict, options: Options, settings: dict,
              services: Services, budget: Budget, library_root=None,
-             cancel: threading.Event | None = None, private: bool = False) -> Outcome:
+             cancel: threading.Event | None = None, private: bool = False,
+             hints: Hints | None = None) -> Outcome:
     """Try each chosen method in turn until the video is identified, and
     say what would change. Nothing is applied here. A `private` video gets
-    only the methods that send nothing out."""
+    only the methods that send nothing out. `hints` are what the person
+    watching knows about it."""
     before = naming.status(video)
     work = _Work(video, copy.deepcopy(video["chapters"]), video.get("chapter_origin"))
     lines: list[str] = []
-    step = _Step(work, options, settings, services, budget, library_root, cancel, lines.append)
+    report: list[str] = []
+
+    def log(line: str) -> None:
+        lines.append(line)
+        report.append(f"  ⇒ {line}")  # what the step concluded
+
+    step = _Step(work, options, settings, services, budget, library_root, cancel,
+                 log, hints, report.append)
     methods = plan(options)
+    report.append(f"{video['display_name']}")
+    report.append(f"{utils.format_seconds(video['duration'])} long, "
+                  f"{'a Blu-ray title' if video.get('type') == 'bluray' else 'a video file'}; "
+                  f"{before.describe()} ({len(video['chapters'])} chapter(s))")
+    if hints:
+        report.append(hints.describe())
     if private:
         methods = [m for m in methods if m in LOCAL_METHODS]
-        lines.append("Private: MusicBrainz and the AI aren't used for it.")
+        log("Private: MusicBrainz and the AI aren't used for it.")
+    report.append("Steps, in order: " + ", ".join(STEP_NAMES[m] for m in methods)
+                  + f". AI requests allowed: {budget.remaining}.")
     for method in methods:
         step._check()
+        report.append("")
+        report.append(f"— {STEP_NAMES[method]}")
         if method != TRANSLATE and work.status().state == naming.NAMED:
+            report.append("  Skipped: every chapter is named already.")
             continue
         if method == TRANSLATE and not options.translate:
+            report.append("  Skipped: not asked for.")
             continue
+        before_step = len(report)
         getattr(step, method)()
+        if len(report) == before_step:
+            report.append("  Nothing to do for this video.")
+    # Last: the person's own titles need no translating.
+    step.setlist()
     after = work.status()
     change = Change(work.chapters, work.origin, work.release_id) if work.changed else None
-    return Outcome(video_id, video["display_name"], before, after, change, lines, step.ai_used)
+    report.append("")
+    report.append(f"Result: {before.describe()} → {after.describe()}"
+                  + ("" if change else "; nothing changed")
+                  + f". AI requests made: {step.ai_used}.")
+    return Outcome(video_id, video["display_name"], before, after, change, lines,
+                   step.ai_used, report=report)
 
 
 # --- a library ---------------------------------------------------------------------

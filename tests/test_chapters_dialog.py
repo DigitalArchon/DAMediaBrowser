@@ -46,6 +46,12 @@ def no_tracklist(dialog):
     return dialog
 
 
+def detect(dialog):
+    """The Tracklist page with Detect from the audio chosen."""
+    no_tracklist(dialog)._pick_method(methods.DETECT)
+    return dialog
+
+
 def paste(dialog, text):
     from mediabrowser.gui.dialogs.chapters_dialog import TAB_TRACKLIST
 
@@ -87,15 +93,17 @@ class TestMusicBrainzWaitsToBeAsked:
 
 
 class TestChoosingTheMethod:
-    def test_with_nothing_yet_it_detects_and_a_tracklist_takes_over(
+    def test_with_nothing_yet_nothing_is_proposed_and_a_tracklist_picks(
         self, window, tmp_path, measured, no_searching
     ):
-        """One page, easiest first: a file in one piece is detected from the
-        audio as the dialog opens, and a tracklist pasted later replaces
-        that with the better way."""
+        """A file in one piece with no tracklist proposes nothing until it's
+        asked to - the audio is measured meanwhile, for when it is - and a
+        tracklist pasted picks the best way to use it."""
         levels, _, calls = measured
         dialog = dialog_for(window, file_video(tmp_path, levels.duration))
-        assert dialog._method == methods.DETECT and dialog.result()[0] == "replace"
+        assert dialog._method is None and dialog.result() is None
+        assert dialog.tree.topLevelItemCount() == 0
+        assert "Detect" in dialog.status.text()
         assert calls["levels"] == 1
         paste(dialog, "Intro 5:00\nSong 5:12\nOther 5:00\nLast 5:00")
         assert dialog._method == methods.LENGTHS
@@ -104,7 +112,7 @@ class TestChoosingTheMethod:
         self, window, tmp_path, measured, no_searching
     ):
         levels, starts, calls = measured
-        dialog = no_tracklist(dialog_for(window, file_video(tmp_path, levels.duration)))
+        dialog = detect(dialog_for(window, file_video(tmp_path, levels.duration)))
         assert dialog._method == methods.DETECT
         assert calls["levels"] == 1
         kind, (chapters, origin) = dialog.result()
@@ -212,19 +220,39 @@ class TestTheBoxSet:
         assert all(c["source"] == "musicbrainz" for c in video["chapters"])
 
 
+class TestClearing:
+    def test_clear_drops_whats_proposed_and_the_tracklist(
+        self, window, tmp_path, measured, no_searching
+    ):
+        levels, _, calls = measured
+        dialog = dialog_for(window, file_video(tmp_path, levels.duration))
+        assert not dialog.clear_button.isEnabled(), "nothing to clear yet"
+        paste(dialog, "Intro 5:00\nSong 5:12\nOther 5:00\nLast 5:00")
+        assert dialog.result() is not None and dialog.clear_button.isEnabled()
+        dialog.clear_proposal()
+        assert dialog.result() is None and dialog.tree.topLevelItemCount() == 0
+        assert dialog.paste.toPlainText() == "" and dialog.tracks() == []
+        assert not dialog.clear_button.isEnabled()
+        detect(dialog)
+        assert dialog.result()[0] == "replace"
+        dialog.clear_proposal()
+        assert dialog._method is None and dialog.result() is None
+        assert calls["levels"] == 1, "what was measured is kept"
+
+
 class TestTheLighting:
     def test_detection_checks_the_lighting_by_default(
         self, window, tmp_path, measured, no_searching
     ):
         levels, _, calls = measured
-        dialog = no_tracklist(dialog_for(window, file_video(tmp_path, levels.duration)))
+        dialog = detect(dialog_for(window, file_video(tmp_path, levels.duration)))
         assert dialog.light_check.isChecked() and calls["light"] == 1
 
     def test_unticking_estimates_from_the_sound_alone(
         self, window, tmp_path, measured, no_searching
     ):
         levels, _, calls = measured
-        dialog = no_tracklist(dialog_for(window, file_video(tmp_path, levels.duration)))
+        dialog = detect(dialog_for(window, file_video(tmp_path, levels.duration)))
         dialog.light_check.setChecked(False)
         assert dialog.status.text().startswith("4 chapter(s) estimated from the sound.")
         assert calls["light"] == 1
