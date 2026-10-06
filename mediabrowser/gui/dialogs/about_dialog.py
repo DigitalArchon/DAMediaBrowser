@@ -18,7 +18,7 @@ LICENSE_URL = "https://www.gnu.org/licenses/gpl-3.0.html"
 def about_text() -> str:
     return (
         f"<h3>DA Media Browser {config.VERSION}</h3>"
-        "<p>Browse, name and play the chapters of video files and Blu-ray discs.</p>"
+        "<p>Browse, name and play the chapters of video files, Blu-ray discs and DVDs.</p>"
         f'<p><a href="{config.PROJECT_URL}">{config.PROJECT_URL}</a></p>'
         f"<p>Copyright © {config.COPYRIGHT}</p>"
         "<p>This program is free software: you can redistribute it and/or modify it "
@@ -29,7 +29,8 @@ def about_text() -> str:
         "<b>without any warranty</b>; without even the implied warranty of "
         "merchantability or fitness for a particular purpose. See the "
         f'<a href="{LICENSE_URL}">GNU General Public License</a> for more details.</p>'
-        '<p>Tracklists from <a href="https://musicbrainz.org">MusicBrainz</a> and covers '
+        '<p>Tracklists from <a href="https://musicbrainz.org">MusicBrainz</a>, setlists '
+        'from <a href="https://www.setlist.fm">setlist.fm</a> and covers '
         'from the <a href="https://coverartarchive.org">Cover Art Archive</a>. Plays with '
         '<a href="https://mpv.io">mpv</a>; reads with '
         '<a href="https://ffmpeg.org">FFmpeg</a> and libbluray.</p>'

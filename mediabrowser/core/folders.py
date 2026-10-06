@@ -3,8 +3,8 @@
 """Where a video sits on disk, for showing it in a file manager and for
 hiding whole folders of it from the shelf.
 
-A video file lives in a folder. A Blu-ray title is different: its "file" is
-the disc folder itself, so that folder is the thing to hide (hiding the
+A video file lives in a folder. A Blu-ray or DVD title is different: its
+"file" is the disc folder itself, so that folder is the thing to hide (hiding the
 folder it sits in would take every other disc next to it along too), and
 it is what a file manager should highlight.
 
@@ -26,7 +26,7 @@ VIDEO_HIDDEN_KEY = "hidden"
 def own_folder(video) -> PurePath:
     """The folder that "hide this folder" means for this video."""
     path = PurePath(video["path"])
-    return path if video["type"] == "bluray" else path.parent
+    return path if video["type"] in ("bluray", "dvd") else path.parent
 
 
 def reveal_target(video) -> tuple[PurePath, PurePath]:

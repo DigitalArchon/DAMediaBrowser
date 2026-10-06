@@ -24,8 +24,10 @@ import pytest
 
 from mediabrowser.core import (
     artwork,
+    audio_export,
     audio_levels,
     catalog,
+    chapter_export,
     config,
     frames,
     library,
@@ -54,10 +56,13 @@ NOT_FILES = {"shown", "playlists", "sheet", "painter"}
 # checking that the new write can't reach a library.
 REVIEWED = {
     "core/artwork.py": 8,       # the cover cache, config.ARTWORK_DIR
+    "core/audio_export.py": 8,  # songs, into a folder refused inside any library; a temp file
     "core/audio_levels.py": 2,  # its own temporary folder
     "core/bdmenu.py": 2,        # a temporary file for ffmpeg
     "core/catalog.py": 2,       # an export, refused inside any library
+    "core/chapter_export.py": 4,  # an export, refused inside any library
     "core/config.py": 2,        # the data folders
+    "core/dvd.py": 1,           # a DVD's sectors into ffmpeg's input, a pipe
     "core/library.py": 1,       # cached covers renamed within ARTWORK_DIR
     "core/player.py": 2,        # mpv's socket, in the temporary folder
     "core/store.py": 17,        # settings, library files and backups - all through config.own
@@ -107,13 +112,17 @@ def test_every_write_in_the_source_has_been_reviewed():
     )
 
 
-def test_ffmpeg_is_only_ever_told_to_write_into_the_cover_cache():
-    """artwork's ffmpeg is the one that writes a file (the rest send their
-    output down a pipe); each of its calls ends with the cache target."""
+def test_ffmpeg_is_only_ever_told_to_write_into_the_cover_cache_or_an_export():
+    """artwork's ffmpeg writes the cover cache, and audio_export's a song
+    under its hidden name, never over anything (-n); the rest send their
+    output down a pipe."""
     text = (SOURCE / "core" / "artwork.py").read_text(encoding="utf-8")
     calls = text.count("_run_ffmpeg([")
     assert calls == 3 and text.count("        str(target),\n    ])") == 2
     assert '["-i", str(source), "-frames:v", "1", "-vf", _SCALE, str(target)]' in text
+    export = (SOURCE / "core" / "audio_export.py").read_text(encoding="utf-8")
+    assert export.count('"ffmpeg", "-nostdin"') == 1
+    assert 'return args + ["-n", str(partial)]' in export and '"-y"' not in export
     for name in ("audio_levels", "frames", "stage_light", "bdmenu"):
         module = (SOURCE / "core" / f"{name}.py").read_text(encoding="utf-8")
         assert '"-y"' not in module, f"{name} lets ffmpeg overwrite"
@@ -211,6 +220,19 @@ def test_nothing_in_a_library_changes_whatever_is_done_with_it(
             assert audio_levels.read_levels(video["path"], video["duration"]).full
             stage_light.brightness_at(video["path"], 1.0)
     catalog.export(data, tmp_path / "out.json")
+    roots = [str(root)]
+    for video_id, video in data["videos"].items():
+        for fmt in chapter_export.FORMATS:
+            target = tmp_path / f"{video_id}{chapter_export.SUFFIXES[fmt]}"
+            chapter_export.export(video, fmt, target, roots, video_id)
+        songs = audio_export.plan(video, range(len(video["chapters"])), tmp_path / "songs",
+                                  audio_export.FLAC)
+        assert len(audio_export.export_songs(
+            video, songs, audio_export.FLAC, audio_export.Tags("Album"),
+            cover=artwork.lookup(video_id))) == 2
+        with pytest.raises(chapter_export.ExportError):
+            chapter_export.export(video, chapter_export.CUE, root / "x.cue", roots)
+        assert audio_export.refused_folder(root / "Tokyo Dome", roots)
 
     assert _snapshot(root) == before
     written = {p.parent.name for p in data_dir.rglob("*") if p.is_file()}

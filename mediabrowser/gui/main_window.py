@@ -92,6 +92,13 @@ VIDEO_IN_APP_SETTING = "video_in_app"
 # (true, the default) or video. An app setting.
 AUDIO_BY_DEFAULT_SETTING = "play_audio_by_default"
 
+EXPORT_CHAPTERS_TIP = (
+    "Save the chapters as a file mkvmerge, ffmpeg or a CUE player reads, to put "
+    "them into the video with those tools - the app itself never writes to it"
+)
+
+EXPORT_AUDIO_TIP = "Save songs as FLAC or Opus files in a folder outside the library, for a phone"
+
 # Where the S key's screenshots go, in the Pictures folder.
 SCREENSHOT_FOLDER = "DA Media Browser"
 
@@ -289,6 +296,9 @@ class MainWindow(QMainWindow):
         self.detail.back_requested.connect(self.show_grid)
         self.detail.play_requested.connect(self._play_selected_chapter)
         self.detail.enqueue_requested.connect(self._enqueue_open_chapters)
+        self.detail.export_audio_requested.connect(
+            lambda indices: self.export_audio(indices=indices)
+        )
         # Hiding the video that is open would leave the page showing
         # something that is no longer on the shelf, so only the folder is
         # offered here.
@@ -778,6 +788,17 @@ class MainWindow(QMainWindow):
         translate_action.triggered.connect(self.translate_titles)
         chapters_menu.addAction(translate_action)
         chapters_menu.addAction(self.detail.reset_action)
+        chapters_menu.addSeparator()
+        export_chapters_action = QAction("Export Chapters…", self)
+        export_chapters_action.setToolTip(EXPORT_CHAPTERS_TIP)
+        export_chapters_action.triggered.connect(lambda: self.export_chapters())
+        chapters_menu.addAction(export_chapters_action)
+        export_audio_action = QAction("Export Songs as Audio…", self)
+        export_audio_action.setToolTip(
+            EXPORT_AUDIO_TIP + " - the selected chapters, or all of them"
+        )
+        export_audio_action.triggered.connect(lambda: self.export_audio())
+        chapters_menu.addAction(export_audio_action)
 
         help_menu = menu.addMenu("&Help")
         about_action = QAction("About DA Media Browser…", self)
@@ -2158,6 +2179,10 @@ class MainWindow(QMainWindow):
         else:
             chapters, origin = payload
             self.replace_chapters(chapters, origin)
+        credit = dialog.credit()
+        if credit:
+            # setlist.fm asks to be credited wherever its data is used.
+            self._set_status(credit)
 
     def open_settings(self, tab: int | None = None) -> None:
         from mediabrowser.gui.dialogs.settings_dialog import TAB_PRIVACY, SettingsDialog
@@ -2306,7 +2331,7 @@ class MainWindow(QMainWindow):
         # A disc's extras arrive as "Disc - Title 5"; this is where they get
         # a name worth reading.
         rename = QAction(
-            f"Rename {'Title' if video['type'] == 'bluray' else 'Video'}…", menu
+            f"Rename {'Title' if library.is_disc(video) else 'Video'}…", menu
         )
         rename.setEnabled(not locked)
         rename.triggered.connect(lambda: self.rename_video(video_id))
@@ -2332,6 +2357,15 @@ class MainWindow(QMainWindow):
         reveal = QAction("Open Containing Folder", menu)
         reveal.triggered.connect(lambda: self.reveal_video(video_id))
         menu.addAction(reveal)
+        export = QAction("Export Chapters…", menu)
+        export.setToolTip(EXPORT_CHAPTERS_TIP)
+        export.triggered.connect(lambda: self.export_chapters(video_id))
+        menu.addAction(export)
+        export_audio = QAction("Export Songs as Audio…", menu)
+        export_audio.setToolTip(EXPORT_AUDIO_TIP)
+        export_audio.setEnabled(video_id not in self._missing)
+        export_audio.triggered.connect(lambda: self.export_audio(video_id))
+        menu.addAction(export_audio)
         self._add_protection_actions(menu, video_id, video)
         if not allow_hiding:
             return
@@ -2342,7 +2376,7 @@ class MainWindow(QMainWindow):
 
         # A single video can be hidden without its folder: one Blu-ray title
         # among a disc's extras, where the folder is the whole disc.
-        noun = "Title" if video["type"] == "bluray" else "Video"
+        noun = "Title" if library.is_disc(video) else "Video"
         root = owner["settings"]["library_root"]
         covering = folders.hiding(video, folders.hidden_folders(owner))
         if video.get(folders.VIDEO_HIDDEN_KEY):
@@ -2475,9 +2509,11 @@ class MainWindow(QMainWindow):
             return  # another library is open now
         autoname.start_journal(self.data)
         self.apply_identified(outcome.video_id, outcome.change)
+        credit = (f" Song names from setlist.fm: {outcome.setlist_url}"
+                  if outcome.setlist_url and outcome.setlist_url not in said else "")
         self._set_status(
             f"{outcome.name}: {outcome.before.describe()} → {outcome.after.describe()}. "
-            f"{said} (File ▸ Undo Last Identification puts it back.)"
+            f"{said}{credit} (File ▸ Undo Last Identification puts it back.)"
         )
 
     def _on_video_identify_failed(self, video_id: str, message: str) -> None:
@@ -2559,6 +2595,48 @@ class MainWindow(QMainWindow):
         self._save()
         self.refresh_library()
         self._set_status(f"Removed {removed} missing video{'' if removed == 1 else 's'}.")
+
+    def export_chapters(self, video_id: str | None = None) -> None:
+        """Save a video's chapters as a file for mkvmerge, ffmpeg or a CUE
+        sheet - the open video's, unless one is given."""
+        from mediabrowser.gui import exports
+
+        if video_id is None:
+            current = self.current_video()
+            if current is None:
+                self._set_status("Open a video to export its chapters.")
+                return
+            video_id = current[0]
+        video = self.data["videos"].get(video_id)
+        if video is None:
+            return
+        said = exports.export_chapters(self, video_id, video)
+        if said:
+            self._set_status(said)
+
+    def export_audio(self, video_id: str | None = None, indices=None) -> None:
+        """Save songs as audio files: the given chapters of a video, else
+        those selected in the open one, else all of its chapters."""
+        from mediabrowser.gui.dialogs.audio_export_dialog import AudioExportDialog
+
+        if video_id is None:
+            current = self.current_video()
+            if current is None:
+                self._set_status("Open a video to export its songs.")
+                return
+            video_id = current[0]
+            indices = indices or self.detail.selected_chapters()
+        video = self.data["videos"].get(video_id)
+        if video is None:
+            return
+        if video_id in self._missing:
+            self._set_status("That video's file isn't there right now.", "warning")
+            return
+        indices = list(indices or range(len(video["chapters"])))
+        dialog = AudioExportDialog(self, video_id, video, indices, self._root_of(video_id))
+        if dialog.exec() and dialog.written:
+            folder = dialog.written[0].parent
+            self._set_status(f"{len(dialog.written)} song(s) exported to {folder}.")
 
     def reveal_video(self, video_id: str) -> None:
         from mediabrowser.gui import reveal
@@ -2773,7 +2851,7 @@ class MainWindow(QMainWindow):
             "Reset to Defaults",
             f"Reset “{video['display_name']}” to how it was first scanned?",
             f"This clears {cleared}; its chapters are read from the "
-            f"{'disc' if video['type'] == 'bluray' else 'file'} again. Whether it's locked "
+            f"{'disc' if library.is_disc(video) else 'file'} again. Whether it's locked "
             "or private is kept.\n\nFile ▸ Undo Reset puts it back.",
             "Reset",
         )

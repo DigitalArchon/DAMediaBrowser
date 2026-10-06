@@ -9,6 +9,11 @@ does when a person is there to check:
 - It only fills in what's missing. A chapter that already has a real name
   keeps it; chapters are only placed afresh for a video in one piece, or
   one whose chapters were only estimated and have no names yet.
+- A setlist from setlist.fm - what was played on the night - is only used
+  when the video's name gives the date and the artist, and the setlist's
+  artist is that one. It names chapters in order only when there is one
+  per song; otherwise it tells the audio how many songs to find and the AI
+  what they are, so the AI needn't search the web for them.
 - A MusicBrainz release is only used when its tracks add up to the video,
   so each is placed where it plays rather than matched by guesswork. When
   the AI is to look at the video too, it also puts right a search the
@@ -49,18 +54,20 @@ from . import (
     musicbrainz,
     naming,
     proposal,
+    setlistfm,
     utils,
 )
 
 MUSICBRAINZ = "musicbrainz"
+SETLISTFM = setlistfm.SOURCE
 AUDIO = "audio"
 MENU = "menu"
 AI_LOOK = "ai_look"
 TRANSLATE = "translate"
 
-METHODS = (MUSICBRAINZ, AUDIO, MENU, AI_LOOK, TRANSLATE)
+METHODS = (MUSICBRAINZ, SETLISTFM, AUDIO, MENU, AI_LOOK, TRANSLATE)
 AI_METHODS = (MENU, AI_LOOK, TRANSLATE)
-FREE_METHODS = (MUSICBRAINZ, AUDIO)
+FREE_METHODS = (MUSICBRAINZ, SETLISTFM, AUDIO)
 # What may run for a private video: nothing that sends anything out.
 LOCAL_METHODS = (AUDIO,)
 # How many AI requests identifying one video may make (Just Figure It Out,
@@ -75,7 +82,8 @@ AI_REQUESTS = {MENU: 1, AI_LOOK: 4, TRANSLATE: 1}
 
 # Each step as the report names it.
 STEP_NAMES = {
-    MUSICBRAINZ: "MusicBrainz", AUDIO: "The audio", MENU: "The disc's menu",
+    MUSICBRAINZ: "MusicBrainz", SETLISTFM: "setlist.fm", AUDIO: "The audio",
+    MENU: "The disc's menu",
     AI_LOOK: "The AI looks at the video", TRANSLATE: "Titles in English",
 }
 
@@ -83,8 +91,8 @@ LAST_RESORT = "last_resort"
 ACCURATE_FIRST = "accurate_first"
 
 ORDER = {
-    LAST_RESORT: (MUSICBRAINZ, AUDIO, MENU, AI_LOOK, TRANSLATE),
-    ACCURATE_FIRST: (MENU, MUSICBRAINZ, AUDIO, AI_LOOK, TRANSLATE),
+    LAST_RESORT: (MUSICBRAINZ, SETLISTFM, AUDIO, MENU, AI_LOOK, TRANSLATE),
+    ACCURATE_FIRST: (MENU, MUSICBRAINZ, SETLISTFM, AUDIO, AI_LOOK, TRANSLATE),
 }
 
 # MusicBrainz releases looked at per video: the search's best few. Each is
@@ -210,6 +218,8 @@ class Outcome:
     # The log at length: each step, what it looked at and why it decided
     # as it did, for the person to read afterwards.
     report: list[str] = field(default_factory=list)
+    # The setlist.fm page of the setlist it used, to credit it with.
+    setlist_url: str = ""
 
     def report_text(self) -> str:
         return "\n".join(self.report or self.log)
@@ -227,6 +237,7 @@ class Services:
         self._format = mb_format
         self._searches: dict[str, list] = {}
         self._media: dict[str, list] = {}
+        self._setlists: dict[tuple, list] = {}
         # (release, discs) -> the video it named this run: one show is one
         # video, so a second that fits the same discs only fits by chance.
         self.claimed: dict[tuple, str] = {}
@@ -238,6 +249,16 @@ class Services:
 
     def search_recordings(self, query: str) -> list[dict]:
         return musicbrainz.search_recordings(query, limit=10, fmt=self._format)
+
+    def setlistfm_ready(self) -> str:
+        """Why setlist.fm can't be asked; empty when it can."""
+        return setlistfm.not_ready()
+
+    def setlists(self, artist: str, date) -> list:
+        key = (artist.casefold(), date)
+        if key not in self._setlists:
+            self._setlists[key] = setlistfm.search(artist, date=date)
+        return self._setlists[key]
 
     def release_media(self, release_id: str) -> list[dict]:
         if release_id not in self._media:
@@ -281,6 +302,8 @@ class _Work:
     levels: object = None
     # The tracklist of the release this run named it from, for the AI.
     tracks: list = field(default_factory=list)
+    # The setlist.fm setlist found for it, if one was.
+    setlist: object = None
     changed: bool = False
     # Chapters this run has named, and from where: provisional, so the
     # disc's own menu, read later in the same run, may put them right.
@@ -878,7 +901,7 @@ class _Step:
         # songs (an opening film, interludes, a broadcaster's segments), so
         # making it exactly that many chapters puts their starts in the wrong
         # places. Only when it finds too few are the best that many taken.
-        count = self.hints.song_count()
+        count = self.hints.song_count() or len(self._setlist_titles())
         starts = chaptergen.estimate_starts(work.levels, self.video["duration"])
         if count and len(starts) < count:
             starts = chaptergen.estimate_starts(work.levels, self.video["duration"],
@@ -943,21 +966,27 @@ class _Step:
             return
         video = self._ai_video()
         tracks = list(work.tracks) or [dict(t) for t in self.hints.setlist]
+        source = "musicbrainz" if work.tracks else "hint" if tracks else ""
+        if not tracks and work.setlist is not None:
+            tracks, source = work.setlist.tracks(include_tape=True), setlistfm.SOURCE
         situation = ai_chapters.Situation(
             video=video, chapters=[dict(c) for c in work.chapters],
             mode=ai_chapters.PLACE if estimated else ai_chapters.NAME,
             tracks=tracks,
-            tracks_source=("musicbrainz" if work.tracks else "hint" if tracks else ""),
+            tracks_source=source,
             candidates=(chaptergen.boundary_candidates(work.levels, video["duration"])
                         if estimated and work.levels is not None else []),
             context=ai_chapters.situation_context(video, self.root),
             translate=self.options.translate,
             frames_per_chapter=self.settings.get(ai.SETTING_FRAMES, ai.DEFAULT_FRAMES_PER_CHAPTER),
-            online=True,
+            # setlist.fm's setlist is what a web search would have found.
+            online=source != setlistfm.SOURCE,
         )
         task = "place and name" if situation.mode == ai_chapters.PLACE else "name"
+        given = {"musicbrainz": "MusicBrainz", "hint": "the hints",
+                 setlistfm.SOURCE: "setlist.fm, so no web search"}.get(source, "")
         self.note(f"  Asked to {task} {len(situation.chapters)} chapter(s)"
-                  + (f", with the tracklist from {'MusicBrainz' if work.tracks else 'the hints'}"
+                  + (f", with the tracklist from {given}"
                      f" ({len(tracks)} songs)" if tracks else ", with no tracklist")
                   + (f" and {len(situation.candidates)} quiet moments to choose starts from"
                      if situation.candidates else ""))
@@ -998,14 +1027,83 @@ class _Step:
             self.log(f"AI: named {filled} chapter(s)"
                      + (f", left {skipped} it was guessing at" if skipped else ""))
 
+    def _setlist_titles(self, include_tape: bool = False) -> list[str]:
+        if self.work.setlist is None:
+            return []
+        return [t["title"] for t in self.work.setlist.tracks(include_tape)]
+
+    def setlistfm(self) -> None:
+        """Look the show up on setlist.fm by the artist and date its name
+        gives. Used only for the artist asked about, on that date."""
+        work = self.work
+        if work.tracks:
+            self.note("  Skipped: MusicBrainz gave the tracklist already.")
+            return
+        if self.hints.setlist:
+            self.note("  Skipped: the setlist given in the hints is this video's own.")
+            return
+        ready = getattr(self.services, "setlistfm_ready", None)
+        why = ready() if ready is not None else "setlist.fm isn't used here"
+        if why:
+            self.note(f"  Skipped: {why}")
+            return
+        texts = [self.hints.known_as, *setlistfm.video_texts(self.video, self.root)]
+        date, year = setlistfm.guess_date(*texts)
+        if date is None:
+            self.log("setlist.fm: the video's name doesn't say the date of the show"
+                     + (f" (only {year})" if year else ""))
+            return
+        artists = []
+        for text in (self.hints.known_as, None):
+            guess = (utils.guess_artist({"display_name": text, "path": ""}) if text
+                     else utils.guess_artist(self.video, self.root))
+            if guess and not any(setlistfm.same_artist(guess, a) for a in artists):
+                artists.append(guess)
+        if not artists:
+            self.log("setlist.fm: the video's name doesn't say who the artist is")
+            return
+        for artist in artists:
+            try:
+                found = self.services.setlists(artist, date)
+            except setlistfm.SetlistError as exc:
+                self.log(f"setlist.fm: {exc}")
+                return
+            mine = [s for s in found if setlistfm.same_artist(s.artist, artist)]
+            self.note(f"  Searched for {artist} on {date.isoformat()}: {len(found)} setlist(s)"
+                      + (f", {len(mine)} by that artist" if found else ""))
+            if mine:
+                break
+        else:
+            self.log(f"setlist.fm: no setlist of {' or '.join(artists)} on {date.isoformat()}")
+            return
+        chosen = max(mine, key=lambda s: len(s.songs))
+        work.setlist = chosen
+        titles = self._setlist_titles()
+        self.log(f"setlist.fm: {len(titles)} songs played at {chosen.where() or 'the show'}"
+                 f" on {date.isoformat()} - setlist from setlist.fm, {chosen.url}")
+        self.note("  " + "; ".join(titles))
+        if not work.can_resplit():
+            self._name_in_order(titles, setlistfm.SOURCE, "setlist.fm") or self._name_in_order(
+                self._setlist_titles(include_tape=True), setlistfm.SOURCE, "setlist.fm")
+
+    def _name_in_order(self, titles: list[str], source: str, said: str) -> bool:
+        """Name every chapter from `titles`, in order, when nothing else
+        named any and there's exactly one chapter for each."""
+        work = self.work
+        if not titles or work.status().named or len(work.chapters) != len(titles):
+            return False
+        filled = work.fill([(i, title, None, source) for i, title in enumerate(titles)])
+        self.log(f"{said}: named {filled} chapter(s) in the setlist's order")
+        return bool(filled)
+
     def setlist(self) -> None:
         """Name the chapters from the person's setlist, in its order, when
-        nothing else named any and there's one chapter per song."""
-        work, titles = self.work, self.hints.titles()
-        if not titles or work.status().named or len(work.chapters) != len(titles):
-            return
-        filled = work.fill([(i, title, None, "manual") for i, title in enumerate(titles)])
-        self.log(f"Setlist: named {filled} chapter(s) in the order given")
+        nothing else named any and there's one chapter per song - or from
+        setlist.fm's, failing that."""
+        if self.hints.titles():
+            self._name_in_order(self.hints.titles(), "manual", "Setlist")
+        elif self.work.setlist is not None:
+            self._name_in_order(self._setlist_titles(), setlistfm.SOURCE, "setlist.fm")
 
     def translate(self) -> None:
         work = self.work
@@ -1028,6 +1126,9 @@ class _Step:
                 changed += 1
         work.changed = work.changed or bool(changed)
         self.log(f"Romanise: {changed} title(s) given as they're known in English")
+
+
+_KIND_NAMES = {"bluray": "a Blu-ray title", "dvd": "a DVD title"}
 
 
 def plan(options: Options) -> list[str]:
@@ -1056,13 +1157,13 @@ def identify(video_id: str, video: dict, options: Options, settings: dict,
     methods = plan(options)
     report.append(f"{video['display_name']}")
     report.append(f"{utils.format_seconds(video['duration'])} long, "
-                  f"{'a Blu-ray title' if video.get('type') == 'bluray' else 'a video file'}; "
+                  f"{_KIND_NAMES.get(video.get('type'), 'a video file')}; "
                   f"{before.describe()} ({len(video['chapters'])} chapter(s))")
     if hints:
         report.append(hints.describe())
     if private:
         methods = [m for m in methods if m in LOCAL_METHODS]
-        log("Private: MusicBrainz and the AI aren't used for it.")
+        log("Private: MusicBrainz, setlist.fm and the AI aren't used for it.")
     report.append("Steps, in order: " + ", ".join(STEP_NAMES[m] for m in methods)
                   + f". AI requests allowed: {budget.remaining}.")
     for method in methods:
@@ -1087,8 +1188,11 @@ def identify(video_id: str, video: dict, options: Options, settings: dict,
     report.append(f"Result: {before.describe()} → {after.describe()}"
                   + ("" if change else "; nothing changed")
                   + f". AI requests made: {step.ai_used}.")
+    url = work.setlist.url if work.setlist is not None and change else ""
+    if url:
+        report.append(f"{setlistfm.CREDIT}: {url}")
     return Outcome(video_id, video["display_name"], before, after, change, lines,
-                   step.ai_used, report=report)
+                   step.ai_used, report=report, setlist_url=url)
 
 
 # --- a library ---------------------------------------------------------------------

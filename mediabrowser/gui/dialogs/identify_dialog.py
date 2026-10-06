@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mediabrowser.core import ai, autoname, naming, privacy, store
+from mediabrowser.core import ai, autoname, naming, privacy, setlistfm, store
 from mediabrowser.gui import identified
 
 SETTINGS_KEY = "identify_options"
@@ -46,6 +46,12 @@ METHOD_TEXT = {
         "MusicBrainz tracklists",
         "Free. Used only when a release's tracks add up to the video, so each song "
         "lands where it plays. Slow: MusicBrainz allows a request every second or two.",
+    ),
+    autoname.SETLISTFM: (
+        "setlist.fm setlists",
+        "Free, with your own setlist.fm key. For a show whose name gives the artist and "
+        "the date - a bootleg or a broadcast MusicBrainz doesn't have. Names chapters in "
+        "order when there's one per song, and spares the AI a web search.",
     ),
     autoname.AUDIO: (
         "Split videos in one piece where the music stops",
@@ -93,6 +99,8 @@ def saved_options(ai_configured: bool) -> autoname.Options:
         methods -= set(autoname.AI_METHODS)
     if not privacy.allowed(privacy.MUSICBRAINZ, app_settings):
         methods.discard(autoname.MUSICBRAINZ)
+    if setlistfm.not_ready(app_settings):
+        methods.discard(autoname.SETLISTFM)
     return autoname.Options(
         methods=methods,
         ai_policy=saved.get("ai_policy", autoname.LAST_RESORT),
@@ -314,6 +322,7 @@ class IdentifyDialog(QDialog):
         chosen = set(saved.get("methods", autoname.FREE_METHODS))
         not_ready = ai.not_ready(self._ai_settings)
         musicbrainz = privacy.allowed(privacy.MUSICBRAINZ)
+        setlist_off = setlistfm.not_ready()
         for method, check in self.method_checks.items():
             check.setChecked(method in chosen)
             if method in autoname.AI_METHODS and not_ready:
@@ -322,6 +331,9 @@ class IdentifyDialog(QDialog):
             elif method == autoname.MUSICBRAINZ and not musicbrainz:
                 check.setEnabled(False)
                 check.setToolTip(privacy.OFF[privacy.MUSICBRAINZ])
+            elif method == autoname.SETLISTFM and setlist_off:
+                check.setEnabled(False)
+                check.setToolTip(setlist_off)
         (self.accurate_first if saved.get("ai_policy") == autoname.ACCURATE_FIRST
          else self.last_resort).setChecked(True)
         self.budget.setValue(int(saved.get("ai_budget", 40)))
@@ -451,7 +463,10 @@ class IdentifyDialog(QDialog):
             "same": f"· {outcome.name} — unchanged",
             "error": f"✕ {outcome.name} — {outcome.error}",
         }[kind]
-        item = QListWidgetItem("\n".join([head, *[f"    {line}" for line in outcome.log]]))
+        lines = list(outcome.log)
+        if outcome.setlist_url and not any(outcome.setlist_url in line for line in lines):
+            lines.append(f"Song names from setlist.fm: {outcome.setlist_url}")
+        item = QListWidgetItem("\n".join([head, *[f"    {line}" for line in lines]]))
         item.setForeground(QColor(OUTCOME_COLOURS[kind]))
         self.log.addItem(item)
         self.log.scrollToBottom()

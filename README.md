@@ -131,6 +131,8 @@ each is off until you tick it:
   video's folder, the file itself (for a Blu-ray, the artwork the disc
   carries for players' menus), or a frame of it; tick it later and the
   matched videos get their sleeves then.
+- **Look up setlists on setlist.fm** — an artist's name and a date, year
+  or place, usually from the video's name, with your own free API key.
 - **Send videos to the AI** — chapter times, file and folder names,
   tracklists and frames, to the AI service on the *AI* tab.
 - **Let the AI search the web** — the AI service searches for the show
@@ -141,8 +143,18 @@ reading a disc's own chapters, Manual Edit — works with none of them. A
 video or library marked **Private** (below) is never sent anywhere,
 whatever is ticked.
 
-**Add a folder** scans it for videos and Blu-ray disc folders. Everything it
-finds appears on the shelf; click a cover to see that video's chapters.
+**Add a folder** scans it for videos, Blu-ray disc folders and DVD folders
+(a folder with a `VIDEO_TS` folder in it, as a rip copies the disc).
+Everything it finds appears on the shelf; click a cover to see that video's
+chapters.
+
+**DVDs** need nothing installed: the app reads a DVD's titles and chapters
+straight from its IFO files, and mpv plays it. A title is one video, like a
+Blu-ray's, and gets everything a video does — its frames for the AI, a
+cover, songs exported. A concert DVD often has a title for each song as
+well as one that plays them all; only that one is listed, since the songs
+are its chapters already. A DVD copied as it is, still encrypted, can't be
+read — a rip has had that removed — and its menus aren't read yet.
 
 **Several libraries at once.** Tick libraries in the *Libraries* panel
 to have them on the shelf together — searched, sorted, queued and
@@ -243,7 +255,7 @@ Folder** on the same menu shows the video in your file manager.
 
 **What each video is.** The list's *Type* column says what a video is
 underneath, whatever chapters it has been given since: a **Blu-ray** title,
-a **File with chapters** of its own, or a **File, no chapters** — which
+a **DVD** title, a **File with chapters** of its own, or a **File, no chapters** — which
 it stays even after you add some. (A library from before this was
 recorded shows plain *File* for a video whose chapters the app made, until
 the next rescan reads the file once to find out.)
@@ -344,21 +356,31 @@ button plays (the story films between songs, an encore break, the
 credits) are named by the AI's judgement and marked as such. It
 needs a Nano-GPT key for the reading, costs a cent or two with
 Sonnet, and takes about half a minute. Discs whose menus are written
-in Java (BD-J) can't be read this way yet, DVDs aren't read at all, and
-a rip to a single file has left its menus behind — for anything but a
-Blu-ray the tab is switched off and says so.
+in Java (BD-J) can't be read this way yet, nor can a DVD's menus (its
+chapters are read), and a rip to a single file has left its menus
+behind — for anything but a Blu-ray the tab is switched off and says so.
 
 **Tracklist** — three steps:
 
-1. **Get a tracklist**, any one of three ways: look the show up on
-   MusicBrainz; or **Paste a Tracklist** from anywhere (a sleeve,
-   setlist.fm; durations optional); or go without — a video file in one
+1. **Get a tracklist**, any one of four ways: look the show up on
+   MusicBrainz; or on **setlist.fm**, by the artist and the date (or the
+   year and the venue or city) — what was played on the night, so a
+   bootleg, a broadcast or a festival set MusicBrainz doesn't have; or
+   **Paste a Tracklist** from anywhere (a sleeve, a web page; durations
+   optional); or go without — a video file in one
    piece then has its chapters found from the audio as soon as the dialog
    opens, and a tracklist given later takes over. The search opens
    pre-filled from the file and folder names and only runs when you press
    Search, since MusicBrainz rate-limits hard. For a box set, only the discs
    whose lengths add up to the video are ticked, so songs aren't taken from
-   another night's show.
+   another night's show. setlist.fm's search opens with the artist and date
+   read from the names — `20260419 Glass Harbor - Copperfield Hall.ts` is
+   Glass Harbor on 19 April 2026 — and costs nothing: it needs a free API
+   key of your own, from setlist.fm's API page, pasted under **Settings →
+   setlist.fm**. A setlist has no lengths, so it names chapters in order
+   rather than placing them; what was played from tape (an intro the band
+   walks on to) is left out unless you tick it in. Choosing one also unticks
+   step 3's web search, which would only have looked for the same setlist.
 2. **Make the chapters from it.** It picks the best way, and says which —
    you can switch:
    - **Name the existing chapters**, when the video came with its own (a
@@ -479,6 +501,7 @@ choose which methods it may use:
 | | |
 |---|---|
 | MusicBrainz tracklists | free; only used when a release's tracks add up to the video |
+| setlist.fm setlists | free, with your setlist.fm key; only when the video's name gives the artist and the date. Names the chapters in order when there's one per song, tells the audio how many songs to find, and gives the AI the setlist so it needn't search the web |
 | Split videos in one piece where the music stops | free; the chapters still need names |
 | Read Blu-ray menus | AI; the disc's own names, a cent or two a disc |
 | AI looks at the video and searches the web | AI; a few cents a video. It also corrects a MusicBrainz search the file's name got wrong, and picks which release is the show |
@@ -507,8 +530,8 @@ one, or between two, the names in between close up. Names can be dragged out
 to "unused" and back in.
 
 The dot beside each chapter says where its name came from: green for one you
-typed, teal from the disc's own menu, blue from MusicBrainz, purple from the
-AI, grey embedded in the file, and dim for one that is still just a number. A rescan keeps the names you
+typed, teal from the disc's own menu, blue from MusicBrainz, orange from
+setlist.fm, purple from the AI, grey embedded in the file, and dim for one that is still just a number. A rescan keeps the names you
 gave and re-reads the embedded ones.
 
 To fix a boundary, play the video, pause where the song really starts, and
@@ -594,6 +617,34 @@ they go with its catalog to another device, and an entry whose video's
 chapters have since been split or merged still finds its song by where it
 starts.
 
+**Chapters for other tools.** The app never writes to a video, so the
+chapters it finds live in its own library. To have them inside your
+files, right-click a video (or use the Chapters menu) and **Export
+Chapters…**, and pick the kind of file by what you'll use:
+
+- **Matroska chapters for mkvmerge** (`.xml`) —
+  `mkvpropedit concert.mkv --chapters chapters.xml` puts them into an MKV
+  in place, or `mkvmerge -o out.mkv --chapters chapters.xml concert.mkv`
+  into a copy.
+- **FFmpeg metadata** (`.txt`) —
+  `ffmpeg -i concert.mp4 -i chapters.txt -map 0 -map_chapters 1 -c copy out.mp4`.
+- **CUE sheet** (`.cue`) — for audio players and splitters.
+
+An unnamed chapter goes out as its number. A disc title's chapters count
+from the title's start, which is where a rip of it starts too.
+
+**Songs for your phone.** **Export as Audio…** on a chapter's right-click
+menu (Ctrl- or Shift-click several first), or **Export Songs as Audio…**
+on a video's, saves songs as audio files in a folder you choose: **FLAC**
+to keep them lossless, or **Opus** to keep them small (160 kbit/s unless
+you pick otherwise). Each is cut exactly where its chapter starts and
+ends, named `03 Northbound.opus`, and tagged with its title, the video's
+name as the album, its track number and the artist you give, with the
+video's cover inside. Surround sound is mixed down to stereo, and a video
+with a stereo track as well (a DVD's LPCM, say) gives that one. By default
+each video's songs go in a folder named after it. Songs already there are
+asked about: replaced, or kept and skipped.
+
 | | |
 |---|---|
 | `Space` | play / pause, while something plays - wherever you aren't typing (`Ctrl+Space` too) |
@@ -646,7 +697,8 @@ artwork/<id>.jpg        cached cover art
 settings.json           app preferences
 ```
 
-The Nano-GPT key is in the system keyring, under `da-media-browser`.
+The Nano-GPT and setlist.fm keys are in the system keyring, under
+`da-media-browser`.
 
 Nothing is ever written into a library. Every file the app writes,
 renames or deletes — library records, backups, covers, settings — is
@@ -655,12 +707,14 @@ refused, so even a bug can't reach a video. Forgetting, restoring,
 moving or deleting a library's data only ever changes those records. The app opens media files only to
 read them (ffprobe, ffmpeg, libbluray and mpv all only read), never renames,
 moves or deletes one, and puts no file of its own beside them: a library on
-a read-only share works exactly like any other. **Export Catalog** refuses
-to save into a library folder, and screenshots — `S` in the app or in
+a read-only share works exactly like any other. **Export Catalog**,
+**Export Chapters** and **Export Songs as Audio** refuse to save into a
+library folder, and screenshots — `S` in the app or in
 mpv's own window — go to *Pictures/DA Media Browser*. `tests/test_read_only.py`
 holds this in place: it lists every place in the code that can write a
-file, and runs a scan, cover and frame grabs, audio analysis and an export
-over a write-protected library, checking every byte and timestamp after.
+file, and runs a scan, cover and frame grabs, audio analysis and the
+exports over a write-protected library, checking every byte and timestamp
+after; `tests/test_dvd.py` does the same with a write-protected DVD.
 
 A rescan only re-reads files whose size or modification time changed, so
 rescanning a large library is quick.
@@ -684,6 +738,13 @@ MetaBrainz Foundation. Requests are spaced two seconds apart - MusicBrainz
 asks for no more than one a second - and say which app and version they
 come from.
 
+Setlists come from [setlist.fm](https://www.setlist.fm), through its API,
+which is free for non-commercial use with a key of your own. Wherever a
+setlist is used it's credited, with a link to its page: under the search
+in Detect Chapters, in the status bar when its names are applied, and in
+the reports of Just Figure It Out and Identify Library. Nothing from it is
+kept but the names you apply.
+
 ## Licence
 
 DA Media Browser is free software: you can redistribute it and/or modify
@@ -699,7 +760,7 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 666 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 924 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
 

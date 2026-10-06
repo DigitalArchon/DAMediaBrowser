@@ -88,13 +88,13 @@ def find(video_id: str, video: dict, release_id: str | None = None) -> Path | No
     target = config.own(cached_path(video_id))
     config.own(_miss_path(video_id))
     source = Path(video["path"])
-    is_disc = video.get("type") == "bluray"
+    is_disc = video.get("type") in ("bluray", "dvd")
     folder = source if is_disc else source.parent
 
     for attempt in (
         lambda: _from_sibling_file(folder, target),
-        lambda: _from_disc_artwork(source, target) if is_disc
-        else _from_embedded_art(source, target),
+        lambda: (_from_disc_artwork(source, target) if video.get("type") == "bluray"
+                 else False if is_disc else _from_embedded_art(source, target)),
         lambda: _from_cover_art_archive(release_id, target),
         # A frame grab is last: it always produces something, so anything
         # better than it must be tried first.
@@ -147,8 +147,8 @@ def _from_disc_artwork(disc: Path, target: Path) -> bool:
 
 
 def _from_disc_frame(video: dict, target: Path) -> bool:
-    """A frame from the middle of a disc title, read through libbluray -
-    the same way the AI is shown a disc's frames."""
+    """A frame from the middle of a disc title, read through libbluray or
+    from a DVD's VOBs - the same way the AI is shown a disc's frames."""
     from . import frames
 
     midpoint = max(1.0, (video.get("duration") or 60.0) / 2)

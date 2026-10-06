@@ -41,6 +41,7 @@ SOURCE_COLOURS = {
     "manual": "#9ece6a",
     "menu": "#73daca",
     "musicbrainz": "#7aa2f7",
+    "setlistfm": "#ff9e64",
     "ai": "#bb9af7",
     "filename": "#a08a60",
     "embedded": "#8a91a0",

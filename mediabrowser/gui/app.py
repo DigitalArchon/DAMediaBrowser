@@ -15,12 +15,15 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from mediabrowser.core import depcheck, store
 
 APP_ID = "mediabrowser"
 STYLESHEET = Path(__file__).with_name("style.qss")
+# The style sheet's accent (see its palette), for links.
+LINK_COLOUR = "#7aa2f7"
 
 # Preference order; the first family actually installed wins. Nothing is
 # vendored, so this falls back to whatever the system provides.
@@ -77,6 +80,12 @@ def build_app(argv: Sequence[str]) -> QApplication:
 
     app = QApplication(list(argv))
     app.setStyleSheet(load_stylesheet())
+    # Links in rich text take their colour from the palette, not the style
+    # sheet: Qt's own dark blue is all but unreadable on the dark theme.
+    palette = app.palette()
+    for role in (QPalette.Link, QPalette.LinkVisited):
+        palette.setColor(role, QColor(LINK_COLOUR))
+    app.setPalette(palette)
     pick_font(app)
     return app
 

@@ -349,7 +349,7 @@ class Segment:
     queue entries in a row."""
 
     video_id: str
-    kind: str  # "file" or "bluray"
+    kind: str  # "file", "bluray" or "dvd"
     path: str
     title_idx: int | None
     audio_only: bool

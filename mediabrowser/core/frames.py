@@ -9,8 +9,9 @@ wide keeps a caption legible and costs a model a couple of hundred tokens,
 so a whole concert's chapter starts go in one request.
 
 Files are read directly; a Blu-ray folder goes through ffmpeg's bluray:
-protocol with the title's playlist. Like stage_light, each grab is one
-ffmpeg seek, and several run at once because each is mostly waiting.
+protocol with the title's playlist, and a DVD title is read from its VOBs
+(core.dvd) into ffmpeg's input. Like stage_light, each grab is one ffmpeg
+seek, and several run at once because each is mostly waiting.
 """
 
 from __future__ import annotations
@@ -52,8 +53,18 @@ def ffmpeg_input(video: dict, seconds: float, position=None) -> list[str]:
 
 
 def positions_for(video: dict, times) -> dict:
-    """Blu-ray byte positions for `times`, or {} for a file (which needs
-    none) or a disc that couldn't be opened."""
+    """Disc positions for `times` - a Blu-ray's bytes, a DVD's sectors - or
+    {} for a file (which needs none) or a disc that couldn't be opened."""
+    if video.get("type") == "dvd":
+        from . import dvd
+
+        found = {}
+        for t in times:
+            try:
+                found[t] = dvd.position(video, t)
+            except Exception:
+                continue
+        return found
     if video.get("type") != "bluray":
         return {}
     from . import bluray
@@ -68,27 +79,76 @@ def grab(video: dict, seconds: float, width: int = FRAME_WIDTH, position=None) -
     """The frame at `seconds`, as JPEG bytes, or None if there is no
     picture there. `position` is the Blu-ray byte position (see
     ffmpeg_input); looked up here if not given."""
-    if video.get("type") == "bluray" and position is None:
+    if video.get("type") in ("bluray", "dvd") and position is None:
         position = positions_for(video, [seconds]).get(seconds)
         if position is None:
             return None
+    feed = None
+    if video.get("type") == "dvd":
+        from . import dvd
+
+        source, feed = dvd.ffmpeg_source(video, seconds, position)
+    else:
+        source = ffmpeg_input(video, seconds, position)
+    returncode, stdout = run_ffmpeg(
+        [
+            "ffmpeg", "-v", "error", "-nostdin",
+            *source,
+            "-frames:v", "1", "-an", "-sn",
+            "-vf", f"scale={width}:-2",
+            "-q:v", str(JPEG_QUALITY),
+            "-f", "image2pipe", "-c:v", "mjpeg", "-",
+        ],
+        feed,
+    )
+    if returncode != 0 or not stdout.startswith(b"\xff\xd8"):
+        return None
+    return stdout
+
+
+def run_ffmpeg(args, feed=None, timeout: float = TIMEOUT_SECONDS) -> tuple[int | None, bytes]:
+    """Run ffmpeg for what it writes to its output, and (returncode,
+    output); None for a returncode when it couldn't run or took too long.
+    `feed`, given, writes its input - a DVD's sectors - on a thread of its
+    own, and stops when ffmpeg has had all it wants."""
     try:
-        proc = subprocess.run(
-            [
-                "ffmpeg", "-v", "error", "-nostdin",
-                *ffmpeg_input(video, seconds, position),
-                "-frames:v", "1", "-an", "-sn",
-                "-vf", f"scale={width}:-2",
-                "-q:v", str(JPEG_QUALITY),
-                "-f", "image2pipe", "-c:v", "mjpeg", "-",
-            ],
-            capture_output=True, timeout=TIMEOUT_SECONDS,
+        proc = subprocess.Popen(
+            args, stdin=subprocess.PIPE if feed else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0 or not proc.stdout.startswith(b"\xff\xd8"):
-        return None
-    return proc.stdout
+    except OSError:
+        return None, b""
+    stop = threading.Event()
+    killed = threading.Event()
+    timer = threading.Timer(timeout, lambda: (killed.set(), stop.set(), proc.kill()))
+    timer.daemon = True
+    timer.start()
+
+    def write():
+        try:
+            feed(proc.stdin, stop)
+        except (OSError, ValueError):
+            pass  # ffmpeg has stopped reading: it has its frame
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+    writer = threading.Thread(target=write, daemon=True) if feed else None
+    if writer is not None:
+        writer.start()
+    try:
+        stdout = proc.stdout.read()
+        proc.wait()
+    finally:
+        stop.set()
+        timer.cancel()
+        if writer is not None:
+            writer.join(timeout=5)
+    if killed.is_set():
+        return None, b""
+    return proc.returncode, stdout
 
 
 def grab_many(video: dict, times, progress_cb=None, cancel: threading.Event | None = None,
@@ -101,7 +161,7 @@ def grab_many(video: dict, times, progress_cb=None, cancel: threading.Event | No
         return result
     # One trip through libbluray for every position, not one per frame.
     positions = positions_for(video, times)
-    if video.get("type") == "bluray":
+    if video.get("type") in ("bluray", "dvd"):
         times = [t for t in times if t in positions]
         if not times:
             return result
@@ -140,7 +200,8 @@ def clear_cache() -> None:
 
 
 def _key(video: dict, seconds: float, width: int):
-    return (video["path"], video.get("playlist"), round(seconds, 2), width)
+    title = video.get("playlist") if video.get("type") == "bluray" else video.get("title_idx")
+    return (video["path"], title, round(seconds, 2), width)
 
 
 def cached_grab_many(video: dict, times, progress_cb=None, cancel=None,

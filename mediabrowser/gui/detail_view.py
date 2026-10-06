@@ -43,6 +43,7 @@ COVER = 96
 SOURCE_LABELS = {
     "manual": "Named by hand",
     "musicbrainz": "From MusicBrainz",
+    "setlistfm": "From setlist.fm",
     "menu": "From the disc's own menu",
     "ai": "Named by the AI",
     "filename": "Named after the file - not checked yet",
@@ -67,6 +68,7 @@ class DetailView(QWidget):
     play_requested = Signal(int, bool)  # chapter_index, audio_only
     play_video_at = Signal(int, bool)  # chapter_index, in_app
     enqueue_requested = Signal(list)  # chapter indices, in order
+    export_audio_requested = Signal(list)  # chapter indices, as audio files
     rename_requested = Signal(int)
     checked_requested = Signal(int)  # chapter_index: its name is right as it is
     chapters_requested = Signal()  # Detect Chapters
@@ -257,7 +259,7 @@ class DetailView(QWidget):
         self.title.setText(name)
         self.cover.setPixmap(covers.for_video(self._video_id, name, COVER))
         count = len(video["chapters"])
-        kind = "Blu-ray title" if video["type"] == "bluray" else "File"
+        kind = {"bluray": "Blu-ray title", "dvd": "DVD title"}.get(video["type"], "File")
         chapters_text = f"{count} chapter{'' if count == 1 else 's'}"
         origin = ORIGIN_LABELS.get(video.get("chapter_origin"))
         if origin:
@@ -394,6 +396,14 @@ class DetailView(QWidget):
         )
         queue_action.triggered.connect(lambda: self.enqueue_requested.emit(to_queue))
         menu.addAction(queue_action)
+        export_action = QAction(
+            "Export as Audio…" if len(to_queue) == 1
+            else f"Export {len(to_queue)} Songs as Audio…",
+            menu,
+        )
+        export_action.setToolTip("Save as FLAC or Opus files in a folder outside the library")
+        export_action.triggered.connect(lambda: self.export_audio_requested.emit(to_queue))
+        menu.addAction(export_action)
         menu.addSeparator()
         rename_action = QAction("Rename…", menu)
         rename_action.setEnabled(not self._locked)
@@ -515,6 +525,7 @@ def _source_brush(source: str):
     return QColor({
         "manual": "#9ece6a",
         "musicbrainz": "#7aa2f7",
+        "setlistfm": "#ff9e64",
         "menu": "#73daca",
         "ai": "#bb9af7",
         "filename": "#a08a60",

@@ -77,6 +77,26 @@ def suggest_search_query(video, library_root=None, max_folders: int = 2) -> str:
     return search_words(" ".join(p for p in parts if p))
 
 
+def guess_artist(video, library_root=None) -> str:
+    """Who a video is probably by, for a person to check: what its name
+    has before " - " ("Glass Harbor - Live at Copperfield Hall"), else the
+    first folder below the library's own (Concerts/Glass Harbor/...)."""
+    name = _TITLE_SUFFIX_RE.sub("", video.get("display_name") or "")
+    name = _RECORDED_AT_RE.sub("", _LEADING_NUMBER_RE.sub("", name))
+    head, dash, _rest = name.partition(" - ")
+    head = guess_search_query(head)
+    if dash and head and not re.fullmatch(r"[\d\s.\-]+", head):
+        return head
+    path = PurePath(video["path"])
+    root = PurePath(library_root) if library_root else None
+    if root is not None and path.is_relative_to(root):
+        parts = path.relative_to(root).parts
+        # A file's own name, or a disc's own folder, isn't a folder above it.
+        if len(parts) > 1:
+            return _clean_folder_name(parts[0])
+    return ""
+
+
 _DURATION_RE = re.compile(r"(?<!\d)(\d{1,2}:\d{2}(?::\d{2})?)(?!\d)")
 _LEADING_TRACK_NUMBER_RE = re.compile(r"^\s*\d{1,3}[.\-):]\s*")
 

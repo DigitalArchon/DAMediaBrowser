@@ -247,6 +247,7 @@ def _describe_tracks(situation: Situation) -> str:
         return ""
     where = {
         "musicbrainz": "from MusicBrainz",
+        "setlistfm": "from setlist.fm - what was played that night, with no lengths",
         "manual": "pasted by the person",
         "pasted": "pasted by the person",
         "hint": "given by the person watching",

@@ -228,6 +228,8 @@ class Player:
             extra.append("--pause")
         if video.get("type") == "bluray":
             target = [f"--bluray-device={video['path']}", f"bd://{video.get('title_idx', 0)}"]
+        elif video.get("type") == "dvd":
+            target = [f"--dvd-device={video['path']}", f"dvd://{video.get('title_idx', 0)}"]
         else:
             target = [str(video["path"])]
         self._launch(target, start if start > 0 else None, None, False, extra, env)
@@ -405,10 +407,13 @@ class Player:
 
 def mpv_target(segment) -> tuple[str, dict]:
     """What to hand mpv's loadfile for a playback.Segment: the URL, and
-    options for that entry alone. A Blu-ray title carries its disc in the
-    URL - bluray-device can't be given per entry."""
+    options for that entry alone. A Blu-ray or DVD title carries its disc in
+    the URL - bluray-device and dvd-device can't be given per entry. Both
+    count titles from 0, as the app stores them."""
     if segment.kind == "bluray":
         url = f"bd://{segment.title_idx or 0}/{segment.path}"
+    elif segment.kind == "dvd":
+        url = f"dvd://{segment.title_idx or 0}/{segment.path}"
     else:
         url = str(segment.path)
     options = {

@@ -17,8 +17,8 @@ from mediabrowser.gui.worker import run_job
 
 
 def can_analyse(video) -> bool:
-    """Only files: ffmpeg reads them directly, where a Blu-ray folder would
-    need its own protocol support - and discs have chapter marks anyway.
+    """Only files: ffmpeg reads them directly, where a Blu-ray or DVD folder
+    would need reading through the disc - and discs have chapters anyway.
     """
     return video.get("type") == "file"
 

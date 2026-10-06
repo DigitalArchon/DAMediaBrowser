@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mediabrowser.core import ai, creds, privacy, store
+from mediabrowser.core import ai, creds, privacy, setlistfm, store
 from mediabrowser.gui.worker import run_job
 
 OTHER_ENDPOINTS = (
@@ -63,8 +63,18 @@ KEY_NOTE = (
 )
 
 
+SETLISTFM_ABOUT = (
+    "setlist.fm lists what was played at a show - bootlegs, broadcasts and festival "
+    "sets that were never released, so MusicBrainz doesn't have them. Its API is "
+    "free for non-commercial use: sign in at setlist.fm and apply for a key at "
+    f'<a href="{setlistfm.KEY_PAGE}">{setlistfm.KEY_PAGE}</a>, then paste it here. '
+    "Looking a show up costs nothing, and the AI isn't involved."
+)
+SETLISTFM_OFF_HERE = privacy.OFF[privacy.SETLISTFM]
+
 TAB_PRIVACY = 0
 TAB_AI = 1
+TAB_SETLISTFM = 2
 
 
 class SettingsDialog(QDialog):
@@ -79,10 +89,12 @@ class SettingsDialog(QDialog):
         self._app_settings = store.load_app_settings()
         settings = ai.settings_from(self._app_settings)
         self._stored_key = ai.stored_key()
+        self._stored_setlist_key = setlistfm.stored_key()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_privacy_tab(), "Privacy")
         self.tabs.addTab(self._build_ai_tab(settings), "AI")
+        self.tabs.addTab(self._build_setlist_tab(), "setlist.fm")
         self.tabs.setCurrentIndex(tab)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
@@ -255,6 +267,86 @@ class SettingsDialog(QDialog):
         tab.setLayout(layout)
         return tab
 
+    def _build_setlist_tab(self) -> QWidget:
+        about = QLabel(SETLISTFM_ABOUT)
+        about.setObjectName("hintLabel")
+        about.setWordWrap(True)
+        about.setOpenExternalLinks(True)
+        self.setlist_key = QLineEdit(self._stored_setlist_key)
+        self.setlist_key.setEchoMode(QLineEdit.Password)
+        self.setlist_key.setPlaceholderText("Paste your setlist.fm API key…")
+        show = QCheckBox("Show")
+        show.toggled.connect(
+            lambda on: self.setlist_key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password)
+        )
+        key_row = QHBoxLayout()
+        key_row.setContentsMargins(0, 0, 0, 0)
+        key_row.addWidget(self.setlist_key, 1)
+        key_row.addWidget(show)
+        keyring_error = creds.backend_error()
+        note = QLabel(
+            "The key is kept in the system keyring, not in a file. Setting "
+            f"{setlistfm.API_KEY_ENV} in the environment overrides it."
+            if keyring_error is None
+            else f"{keyring_error} Until then, set {setlistfm.API_KEY_ENV} in the environment."
+        )
+        note.setObjectName("hintLabel")
+        note.setWordWrap(True)
+        self.setlist_test_button = QPushButton("Test")
+        self.setlist_test_button.setToolTip("Asks setlist.fm one small question with this key")
+        self.setlist_test_button.clicked.connect(self.test_setlist_key)
+        self.setlist_status = QLabel("")
+        self.setlist_status.setObjectName("hintLabel")
+        self.setlist_status.setTextFormat(Qt.PlainText)
+        self.setlist_status.setWordWrap(True)
+        test_row = QHBoxLayout()
+        test_row.setContentsMargins(0, 0, 0, 0)
+        test_row.addWidget(self.setlist_test_button)
+        test_row.addWidget(self.setlist_status, 1)
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        form.addRow("API key:", key_row)
+        form.addRow("", note)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(about)
+        layout.addLayout(form)
+        layout.addLayout(test_row)
+        layout.addStretch(1)
+        tab = QWidget()
+        tab.setLayout(layout)
+        return tab
+
+    def test_setlist_key(self) -> None:
+        if not self.allowed(privacy.SETLISTFM):
+            self.setlist_status.setText(SETLISTFM_OFF_HERE)
+            return
+        key = self.setlist_key.text().strip() or setlistfm.api_key()
+        if not key:
+            self.setlist_status.setText("Paste an API key first.")
+            return
+        allowed = {choice: self.allowed(choice) for choice in privacy.CHOICES}
+        self.setlist_test_button.setEnabled(False)
+        self.setlist_status.setText("Asking setlist.fm…")
+
+        def work():
+            # The form's choice, not settings.json's: it may not be saved yet.
+            if not privacy.allowed(privacy.SETLISTFM, allowed):
+                raise setlistfm.SetlistError(SETLISTFM_OFF_HERE)
+            return setlistfm.check_key(key, allowed)
+
+        self._jobs.append(run_job(
+            self, work,
+            on_done=lambda _found: self._setlist_tested("setlist.fm accepted the key."),
+            on_failed=lambda message: self._setlist_tested(f"That didn't work: {message}"),
+        ))
+
+    def _setlist_tested(self, text: str) -> None:
+        self.setlist_test_button.setEnabled(True)
+        self.setlist_status.setText(text)
+
     # --- what's on the form ----------------------------------------------
 
     def allowed(self, choice: str) -> bool:
@@ -279,6 +371,14 @@ class SettingsDialog(QDialog):
                 ai.store_key(key)
             except Exception as e:  # noqa: BLE001 - keyring locked or unavailable
                 self.status.setText(f"Couldn't keep the key in the keyring: {e}")
+                return
+        setlist_key = self.setlist_key.text().strip()
+        if setlist_key != self._stored_setlist_key:
+            try:
+                setlistfm.store_key(setlist_key)
+            except Exception as e:  # noqa: BLE001 - keyring locked or unavailable
+                self.tabs.setCurrentIndex(TAB_SETLISTFM)
+                self.setlist_status.setText(f"Couldn't keep the key in the keyring: {e}")
                 return
         settings = self._app_settings
         # Not in the file: a key from before the keyring is dropped here.

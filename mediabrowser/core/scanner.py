@@ -4,7 +4,7 @@
 import os
 from pathlib import Path
 
-from . import config
+from . import config, dvd
 
 
 def is_bluray_root(path: Path) -> bool:
@@ -21,9 +21,11 @@ class ScanCancelled(Exception):
 
 
 def find_media_units(root: Path, cancel=None, on_folder=None):
-    """Walk root recursively. Yields ("bluray", disc_root_path) or ("file", file_path).
+    """Walk root recursively. Yields ("bluray", disc_root_path), ("dvd",
+    disc_root_path) or ("file", file_path).
 
-    Blu-ray disc folders are not descended into further once detected.
+    Disc folders are not descended into further once detected: a DVD's VOBs
+    are its titles' pieces, not videos of their own.
 
     `cancel` (a threading.Event) is checked in every folder, not just between
     videos: a tree the size of a whole drive can hold thousands of folders
@@ -44,6 +46,10 @@ def find_media_units(root: Path, cancel=None, on_folder=None):
 
         if is_bluray_root(dirpath):
             yield ("bluray", dirpath)
+            dirnames[:] = []
+            continue
+        if dvd.is_dvd_root(dirpath):
+            yield ("dvd", dirpath)
             dirnames[:] = []
             continue
 

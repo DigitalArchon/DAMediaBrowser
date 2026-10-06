@@ -75,6 +75,7 @@ from mediabrowser.core import (
     naming,
     privacy,
     proposal,
+    setlistfm,
     store,
     utils,
 )
@@ -117,6 +118,13 @@ PASTE_INSTRUCTIONS = (
     "Megitsune 5:16\". Durations let the lengths place the chapters; without them "
     "the titles still name them, and tell detection how many songs to find."
 )
+SETLIST_HINT = (
+    "What was played on the night - for a bootleg, a broadcast or a festival set "
+    "MusicBrainz doesn't have. Give the artist and the date (or just the year, and "
+    "the venue or city). A setlist has no lengths: it names chapters, and tells the "
+    "audio how many songs to find. Free, and no AI."
+)
+SETLIST_PRIVATE_NOTE = "This video is private: nothing about it goes to setlist.fm."
 LOOK_UP_HINT = (
     "Most concerts are on MusicBrainz. Check the search - add the artist or the "
     "album if it's missing - then press Search. It limits how often it can be asked."
@@ -161,6 +169,7 @@ HINTS_NOTE = (
 FIGURE_SOURCES = {
     "menu": "disc menu",
     "musicbrainz": "MusicBrainz",
+    "setlistfm": "setlist.fm",
     "ai": "AI",
     "embedded": "the file",
     "manual": "by hand",
@@ -176,6 +185,11 @@ MENU_HINT = (
 )
 MENU_NOT_A_DISC = (
     "Only a Blu-ray folder keeps its menus; a rip to a single file leaves them behind."
+)
+MENU_TAB_DVD = "Extract Blu-ray Menu (not for DVDs yet)"
+MENU_DVD = (
+    "A DVD's menus aren't read yet. Its own chapters are here already: name them from "
+    "a tracklist, setlist.fm or the AI on the Tracklist tab."
 )
 MENU_PICTURE_HEIGHT = 220
 
@@ -251,6 +265,11 @@ class ChaptersDialog(QDialog):
         self._mb_tracks: list[dict] | None = None
         self._release_id: str | None = None
         self._paste_tracks: list[dict] = []
+        self._setlists: list[setlistfm.Setlist] = []
+        self._setlist: setlistfm.Setlist | None = None
+        # Which lookup the tracklist was last taken from: "musicbrainz" or
+        # setlistfm.SOURCE. A pasted one wins over either.
+        self._looked_up: str | None = None
 
         # Measurements, once taken.
         self._levels = audio_analysis.cached(video) if self._can_analyse else None
@@ -330,9 +349,10 @@ class ChaptersDialog(QDialog):
         is_disc = self.video.get("type") == "bluray"
         if not is_disc:
             # Switched off, and saying so: a greyed tab alone reads as a bug.
+            dvd = self.video.get("type") == "dvd"
             self.tabs.setTabEnabled(TAB_MENU, False)
-            self.tabs.setTabText(TAB_MENU, MENU_TAB_OFF)
-            self.tabs.setTabToolTip(TAB_MENU, MENU_NOT_A_DISC)
+            self.tabs.setTabText(TAB_MENU, MENU_TAB_DVD if dvd else MENU_TAB_OFF)
+            self.tabs.setTabToolTip(TAB_MENU, MENU_DVD if dvd else MENU_NOT_A_DISC)
         elif self._private:
             self.menu_button.setEnabled(False)
             self.menu_status.setText(
@@ -383,7 +403,7 @@ class ChaptersDialog(QDialog):
                 check.toggled.connect(lambda _on: self.refresh())
             else:
                 check.setEnabled(False)
-                check.setToolTip("Only for video files, not Blu-ray folders.")
+                check.setToolTip("Only for video files, not disc folders.")
         self.snap_check.setChecked(False)
         self._count_timer = QTimer(self)
         self._count_timer.setSingleShot(True)
@@ -433,7 +453,7 @@ class ChaptersDialog(QDialog):
         self.ask_ai_button.clicked.connect(self.ask_ai)
         self.ai_settings_button = QPushButton("Settings…")
         self.ai_settings_button.setToolTip("The AI's key and model, and what may be sent")
-        self.ai_settings_button.clicked.connect(self._open_settings)
+        self.ai_settings_button.clicked.connect(lambda: self._open_settings())
         for check in (self.ai_frames_check, self.ai_translate_check, self.ai_online_check):
             check.toggled.connect(lambda _on: self._update_ai_controls())
         ai_row = QHBoxLayout()
@@ -681,6 +701,8 @@ class ChaptersDialog(QDialog):
         self.mb_status.setWordWrap(True)
         self._update_mb_controls()
 
+        self._build_setlist_section()
+
         paste_caption = QLabel("Or paste one")
         paste_caption.setObjectName("sectionCaption")
         self.paste_toggle = QPushButton("Paste a Tracklist…")
@@ -748,6 +770,7 @@ class ChaptersDialog(QDialog):
         layout.addWidget(self.results)
         layout.addWidget(self.media_caption)
         layout.addWidget(self.media_list)
+        layout.addWidget(self.setlist_section)
         layout.addLayout(paste_row)
         layout.addWidget(self.paste_area, 1)
         layout.addWidget(none_caption)
@@ -756,6 +779,187 @@ class ChaptersDialog(QDialog):
         self.query.setFocus()
         self.query.selectAll()
         return tab
+
+    def _build_setlist_section(self) -> None:
+        caption = QLabel("Or look the show up on setlist.fm")
+        caption.setObjectName("sectionCaption")
+        date, year = setlistfm.guess_date(
+            *setlistfm.video_texts(self.video, self._library_root)
+        )
+        self.setlist_artist = QLineEdit(utils.guess_artist(self.video, self._library_root))
+        self.setlist_artist.setPlaceholderText("Artist")
+        self.setlist_when = QLineEdit(
+            date.isoformat() if date else (str(year) if year else "")
+        )
+        self.setlist_when.setPlaceholderText("2026-04-19, or a year")
+        self.setlist_when.setMaximumWidth(150)
+        self.setlist_place = QLineEdit()
+        self.setlist_place.setPlaceholderText("Venue or city (optional)")
+        self.setlist_button = QPushButton("Search setlist.fm")
+        self.setlist_button.clicked.connect(self.search_setlists)
+        for edit in (self.setlist_artist, self.setlist_when, self.setlist_place):
+            edit.returnPressed.connect(self.search_setlists)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(self.setlist_artist, 2)
+        row.addWidget(self.setlist_when, 1)
+        row.addWidget(self.setlist_place, 2)
+        row.addWidget(self.setlist_button)
+        self.setlist_settings_button = QPushButton("Settings…")
+        self.setlist_settings_button.setToolTip("The setlist.fm key, and what may be sent")
+        self.setlist_settings_button.clicked.connect(self._open_setlist_settings)
+        self.setlist_status = QLabel(SETLIST_HINT)
+        self.setlist_status.setObjectName("hintLabel")
+        self.setlist_status.setTextFormat(Qt.PlainText)
+        self.setlist_status.setWordWrap(True)
+        self.setlist_status.setMinimumWidth(1)
+        self.setlist_results = QListWidget()
+        self.setlist_results.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setlist_results.setMinimumHeight(110)
+        self.setlist_results.setMaximumHeight(200)
+        self.setlist_results.itemSelectionChanged.connect(self._on_setlist_selected)
+        self.setlist_results.hide()
+        self.setlist_tape = QCheckBox("Include what was played from tape")
+        self.setlist_tape.setToolTip(
+            "An intro or an outro the band walked on to, listed on setlist.fm as played "
+            "from tape. A concert video often gives it a chapter of its own."
+        )
+        self.setlist_tape.toggled.connect(lambda _on: self._on_setlist_tape())
+        # setlist.fm asks to be credited, with a link, wherever its data shows.
+        self.setlist_credit = QLabel()
+        self.setlist_credit.setObjectName("hintLabel")
+        self.setlist_credit.setOpenExternalLinks(True)
+        self.setlist_credit.setTextFormat(Qt.RichText)
+        extras = QHBoxLayout()
+        extras.setContentsMargins(0, 0, 0, 0)
+        extras.addWidget(self.setlist_tape)
+        extras.addStretch(1)
+        extras.addWidget(self.setlist_credit)
+        self.setlist_extras = QWidget()
+        self.setlist_extras.setLayout(extras)
+        self.setlist_extras.hide()
+
+        self.setlist_section = QWidget()
+        layout = QVBoxLayout(self.setlist_section)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(caption)
+        layout.addLayout(row)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.addWidget(self.setlist_status, 1)
+        status_row.addWidget(self.setlist_settings_button, 0, Qt.AlignTop)
+        layout.addLayout(status_row)
+        layout.addWidget(self.setlist_results)
+        layout.addWidget(self.setlist_extras)
+        self._update_setlist_controls()
+
+    def _setlist_off(self) -> str:
+        if self._private:
+            return SETLIST_PRIVATE_NOTE
+        return setlistfm.not_ready()
+
+    def _update_setlist_controls(self) -> None:
+        off = self._setlist_off()
+        for widget in (self.setlist_artist, self.setlist_when, self.setlist_place,
+                       self.setlist_button):
+            widget.setEnabled(not off)
+        self.setlist_settings_button.setVisible(bool(off) and not self._private)
+        if off:
+            self.setlist_status.setText(off)
+        elif self.setlist_status.text() in (privacy.OFF[privacy.SETLISTFM],
+                                            setlistfm.not_ready(key="")):
+            self.setlist_status.setText(SETLIST_HINT)
+
+    def _open_setlist_settings(self) -> None:
+        from mediabrowser.gui.dialogs.settings_dialog import TAB_PRIVACY, TAB_SETLISTFM
+
+        allowed = privacy.allowed(privacy.SETLISTFM)
+        self._open_settings(TAB_SETLISTFM if allowed else TAB_PRIVACY)
+
+    def search_setlists(self) -> None:
+        if self._setlist_off():
+            self._update_setlist_controls()
+            return
+        artist = self.setlist_artist.text().strip()
+        if not artist:
+            self.setlist_status.setText("Give the artist to look the show up by.")
+            return
+        try:
+            date, year = setlistfm.parse_when(self.setlist_when.text())
+        except ValueError as exc:
+            self.setlist_status.setText(str(exc))
+            return
+        place = self.setlist_place.text().strip()
+        if not date and not year and not place:
+            self.setlist_status.setText(
+                "Give the date, or the year and the venue or city: an artist alone has "
+                "too many shows to choose from."
+            )
+            return
+        self.setlist_status.setText("Searching setlist.fm…")
+        self.setlist_button.setEnabled(False)
+        self.setlist_results.clear()
+        self._jobs.append(run_job(
+            self,
+            lambda: setlistfm.search(artist, date=date, year=year, place=place),
+            on_done=self._show_setlists,
+            on_failed=lambda message: self._setlists_failed(f"Search failed: {message}"),
+        ))
+
+    def _setlists_failed(self, message: str) -> None:
+        self.setlist_button.setEnabled(True)
+        self.setlist_status.setText(message)
+
+    def _show_setlists(self, found) -> None:
+        self.setlist_button.setEnabled(True)
+        self._setlists = list(found)
+        self.setlist_results.blockSignals(True)
+        self.setlist_results.clear()
+        for number, setlist in enumerate(self._setlists):
+            item = QListWidgetItem(setlist.describe())
+            item.setData(Qt.UserRole, number)
+            self.setlist_results.addItem(item)
+        self.setlist_results.blockSignals(False)
+        self.setlist_results.setVisible(bool(found))
+        self.setlist_status.setText(
+            f"{len(found)} setlist(s) found. Pick one." if found else
+            "No setlist found. Check the artist's spelling and the date - or try the "
+            "year with the venue or city."
+        )
+        if len(found) == 1:
+            self.setlist_results.setCurrentRow(0)
+        QTimer.singleShot(0, self._fit_steps)
+
+    def _on_setlist_selected(self) -> None:
+        item = self.setlist_results.currentItem()
+        if item is None:
+            return
+        self._figured = None
+        self._setlist = self._setlists[item.data(Qt.UserRole)]
+        self._looked_up = setlistfm.SOURCE
+        tape = sum(1 for song in self._setlist.songs if song.tape)
+        self.setlist_tape.setVisible(bool(tape))
+        self.setlist_credit.setText(
+            f'<a href="{self._setlist.url}">{setlistfm.CREDIT}</a>'
+        )
+        self.setlist_extras.show()
+        played = len(self._setlist.songs) - tape
+        self.setlist_status.setText(
+            f"{played} songs played" + (f", and {tape} from tape" if tape else "")
+            + ". No lengths, so they name chapters in order."
+        )
+        if self.ai_online_check.isChecked():
+            # The setlist is what the AI's web search would have looked for.
+            self.ai_online_check.setChecked(False)
+        QTimer.singleShot(0, self._fit_steps)
+        self.refresh()
+
+    def _on_setlist_tape(self) -> None:
+        if self._looked_up == setlistfm.SOURCE:
+            self._figured = None
+            self.refresh()
 
     def _show_paste(self, shown: bool) -> None:
         self.paste_area.setVisible(shown)
@@ -774,12 +978,32 @@ class ChaptersDialog(QDialog):
         return self._result
 
     def _tracks_from_musicbrainz(self) -> bool:
-        return not self._paste_tracks and bool(self._mb_tracks)
+        return (not self._paste_tracks and self._looked_up == "musicbrainz"
+                and bool(self._mb_tracks))
+
+    def _tracks_from_setlist(self) -> bool:
+        return (not self._paste_tracks and self._looked_up == setlistfm.SOURCE
+                and self._setlist is not None)
 
     def title_source(self) -> str:
         if self._ai_result is not None:
             return ai_chapters.SOURCE
+        if self._tracks_from_setlist():
+            return setlistfm.SOURCE
         return "musicbrainz" if self._tracks_from_musicbrainz() else "manual"
+
+    def tracks_source(self) -> str:
+        """Where the tracklist came from, for the AI."""
+        if self._tracks_from_setlist():
+            return setlistfm.SOURCE
+        return "musicbrainz" if self._tracks_from_musicbrainz() else "pasted"
+
+    def credit(self) -> str:
+        """Who to thank for what's applied, when it isn't free to use
+        uncredited: setlist.fm, for a setlist - its terms ask for it."""
+        used = (self._figured.setlist_url if self._figured is not None
+                else self._setlist.url if self._tracks_from_setlist() else "")
+        return f"Song names from setlist.fm: {used}" if used else ""
 
     def release_id(self) -> str | None:
         """The MusicBrainz release the names came from, if they did."""
@@ -799,6 +1023,8 @@ class ChaptersDialog(QDialog):
         chosen discs, else none."""
         if self._paste_tracks:
             return self._paste_tracks
+        if self._tracks_from_setlist():
+            return self._setlist.tracks(include_tape=self.setlist_tape.isChecked())
         return self._chosen_disc_tracks()
 
     def _format(self) -> str:
@@ -877,6 +1103,7 @@ class ChaptersDialog(QDialog):
         self._figured = None
         self._mb_media = media
         self._mb_tracks = musicbrainz.flatten(media)
+        self._looked_up = "musicbrainz"
         # With no lengths to go on there's no telling which discs are this
         # video, so all of them start ticked.
         picked = set(chaptergen.pick_media(media, self.video["duration"])) or set(
@@ -921,6 +1148,7 @@ class ChaptersDialog(QDialog):
 
     def _on_discs_changed(self) -> None:
         self._figured = None
+        self._looked_up = "musicbrainz"
         self.refresh()
 
     def clear_proposal(self) -> None:
@@ -938,6 +1166,14 @@ class ChaptersDialog(QDialog):
         self.paste.blockSignals(False)
         self._paste_tracks = []
         self._mb_media, self._mb_tracks, self._release_id = [], None, None
+        self._setlist, self._looked_up = None, None
+        self.setlist_results.blockSignals(True)
+        self.setlist_results.clearSelection()
+        self.setlist_results.setCurrentItem(None)
+        self.setlist_results.blockSignals(False)
+        self.setlist_extras.hide()
+        if not self._setlist_off():
+            self.setlist_status.setText(SETLIST_HINT)
         self.results.blockSignals(True)
         self.results.clearSelection()
         self.results.setCurrentItem(None)
@@ -1191,7 +1427,7 @@ class ChaptersDialog(QDialog):
             chapters=self._proposed_chapters(),
             mode=mode,
             tracks=self.tracks(),
-            tracks_source="musicbrainz" if self._tracks_from_musicbrainz() else "pasted",
+            tracks_source=self.tracks_source(),
             candidates=self._ai_candidates() if mode == ai_chapters.PLACE else [],
             context=ai_chapters.situation_context(self.video, self._library_root),
             translate=self.ai_translate_check.isChecked(),
@@ -1453,7 +1689,7 @@ class ChaptersDialog(QDialog):
         self.status.setText(" ".join(parts))
         self.apply_button.setEnabled(self._result is not None)
 
-    def _open_settings(self) -> None:
+    def _open_settings(self, tab: int | None = None) -> None:
         from mediabrowser.gui.dialogs.settings_dialog import (
             TAB_AI,
             TAB_PRIVACY,
@@ -1461,10 +1697,12 @@ class ChaptersDialog(QDialog):
         )
 
         # Straight to the key and model, unless the AI isn't allowed at all.
-        tab = TAB_AI if ai.allowed(self._ai_settings) else TAB_PRIVACY
+        if tab is None:
+            tab = TAB_AI if ai.allowed(self._ai_settings) else TAB_PRIVACY
         if SettingsDialog(self, tab).exec():
             self._ai_settings = ai.load_settings()
             self._update_mb_controls()
+            self._update_setlist_controls()
             self._update_online_check()
             self._update_ai_controls()
             self._update_figure_controls()

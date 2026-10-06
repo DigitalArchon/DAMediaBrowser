@@ -6,7 +6,17 @@ import os
 import time
 from pathlib import Path
 
-from . import artwork, bluray, config, ffprobe_chapters, playlists, protection, scanner, store
+from . import (
+    artwork,
+    bluray,
+    config,
+    dvd,
+    ffprobe_chapters,
+    playlists,
+    protection,
+    scanner,
+    store,
+)
 from .scanner import ScanCancelled
 
 # How often, at most, a scan reports which folder it has reached. A walk
@@ -22,7 +32,7 @@ NETWORK_URI_SETTING = "network_uri"
 
 # Title sources the app gave, which a rescan must carry over: the file has
 # nothing to read them back from. "embedded" is re-read instead.
-KEPT_SOURCES = ("manual", "musicbrainz", "ai", "menu")
+KEPT_SOURCES = ("manual", "musicbrainz", "setlistfm", "ai", "menu")
 
 
 def _merge_chapters(new_chapters, old_chapters):
@@ -67,15 +77,18 @@ CARRIED_OVER_KEYS = (
 # may be the app's rather than the file's.
 MEDIA_TYPE = "media_type"
 MEDIA_BLURAY = "bluray"
+MEDIA_DVD = "dvd"
 MEDIA_CHAPTERED = "chaptered"
 MEDIA_PLAIN = "plain"
 MEDIA_LABELS = {
     MEDIA_BLURAY: "Blu-ray",
+    MEDIA_DVD: "DVD",
     MEDIA_CHAPTERED: "File with chapters",
     MEDIA_PLAIN: "File, no chapters",
 }
 MEDIA_TIPS = {
     MEDIA_BLURAY: "A title of a Blu-ray disc folder, with the disc's own chapter marks.",
+    MEDIA_DVD: "A title of a DVD folder (VIDEO_TS), with the disc's own chapters.",
     MEDIA_CHAPTERED: "A video file that came with chapters of its own.",
     MEDIA_PLAIN: "A video file that came without chapters - any it has were added here.",
 }
@@ -96,6 +109,8 @@ def media_type(video) -> str | None:
         return stored
     if video.get("type") == "bluray":
         return MEDIA_BLURAY
+    if video.get("type") == "dvd":
+        return MEDIA_DVD
     if not video.get("chapter_origin"):
         return media_type_of_file(video.get("chapters") or [])
     return None
@@ -364,6 +379,42 @@ def rescan(root_path, progress_cb=None, force=False, cancel=None, network_uri=No
                     new_videos[video_id]["chapter_origin"] = old_video["chapter_origin"]
                 _carry_over(new_videos[video_id], old_video)
 
+        elif kind == "dvd":
+            try:
+                titles = dvd.probe_dvd_disc(path, min_bluray_seconds)
+            except Exception:
+                for video_id, old_video in stored.items():
+                    if old_video["type"] == "dvd" and old_video["path"] == str(path):
+                        new_videos[video_id] = old_video
+                continue
+
+            disc_name = disc_name_of(path)
+            multiple = len(titles) > 1
+            for title in titles:
+                video_id = store.make_video_id("dvd", path, title["title_idx"])
+                old_video = old_videos.get(video_id)
+                if locked(old_video):
+                    new_videos[video_id] = old_video
+                    continue
+                kept = _keep_own_chapters(old_video, title["duration"])
+                chapters = kept or _merge_chapters(
+                    title["chapters"], (old_video or {}).get("chapters")
+                )
+                new_videos[video_id] = {
+                    "type": "dvd",
+                    "path": str(path),
+                    "title_idx": title["title_idx"],
+                    "vts": title["vts"],
+                    "display_name": (f"{disc_name} - Title {title['title_idx'] + 1}"
+                                     if multiple else disc_name),
+                    "duration": title["duration"],
+                    "chapters": chapters,
+                    MEDIA_TYPE: MEDIA_DVD,
+                }
+                if kept:
+                    new_videos[video_id]["chapter_origin"] = old_video["chapter_origin"]
+                _carry_over(new_videos[video_id], old_video)
+
     walked = set(new_videos)
     # Videos that weren't found because their files aren't there are kept,
     # names and all, and show as missing: a share that is only partly
@@ -400,6 +451,21 @@ def rescan(root_path, progress_cb=None, force=False, cancel=None, network_uri=No
 # On a library as rescanned, never stored: how many videos it found moved
 # or renamed within it and kept the names of.
 MOVED_KEY = "_moved"
+
+
+def disc_name_of(path) -> str:
+    """A disc folder's name: a DVD copied as just its VIDEO_TS folder is
+    called after the folder it's in."""
+    path = Path(path)
+    return path.parent.name if path.name.upper() == dvd.FOLDER and path.parent.name else path.name
+
+
+DISC_TYPES = ("bluray", "dvd")
+
+
+def is_disc(video) -> bool:
+    """A title of a disc folder, Blu-ray or DVD, rather than a file."""
+    return video.get("type") in DISC_TYPES
 
 
 def _unique_pairs(gone: dict, found: dict, key) -> dict:
@@ -441,13 +507,13 @@ def _moved_within(gone: dict, found: dict) -> dict:
     def discs(videos):
         by_path: dict = {}
         for video_id, video in videos.items():
-            if video.get("type") == "bluray":
+            if is_disc(video):
                 by_path.setdefault(video["path"], {})[video_id] = video
         return by_path
 
     def disc_key(titles):
-        return frozenset((v.get("title_idx"), v.get("playlist"), round(v.get("duration") or 0))
-                         for v in titles.values())
+        return frozenset((v.get("type"), v.get("title_idx"), v.get("playlist"),
+                          round(v.get("duration") or 0)) for v in titles.values())
 
     old_discs, new_discs = discs(gone), discs(found)
     disc_pairs = _unique_pairs({p: {"titles": t} for p, t in old_discs.items()},
@@ -530,7 +596,8 @@ def original_chapters(video, min_bluray_seconds):
     if video["type"] == "file":
         chapters = ffprobe_chapters.read_regular_file_info(video["path"])["chapters"]
     else:
-        titles = bluray.probe_bluray_disc(video["path"], min_bluray_seconds)
+        probe = dvd.probe_dvd_disc if video["type"] == "dvd" else bluray.probe_bluray_disc
+        titles = probe(video["path"], min_bluray_seconds)
         matching = [t for t in titles if t["title_idx"] == video.get("title_idx")]
         if not matching:
             raise LookupError("that title is no longer on the disc")

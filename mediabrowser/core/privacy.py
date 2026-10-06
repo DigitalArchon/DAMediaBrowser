@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """What the app may send out, and to whom.
 
-Everything that leaves this computer goes to one of four places, and each
+Everything that leaves this computer goes to one of five places, and each
 is the person's to allow in Settings → Privacy:
 
 - MusicBrainz, searched for tracklists: the search is usually the video's
   file or folder name.
 - The Cover Art Archive, asked for the sleeve of a release a video was
   matched to - which tells it which release.
+- setlist.fm, searched for what was played at a show: an artist's name
+  and a date, a year or a place - usually from the video's name.
 - The AI service: chapter times, file and folder names, tracklists and
   frames from the video.
 - A web search the AI service runs for the model, about the show.
@@ -25,9 +27,10 @@ from . import store
 
 MUSICBRAINZ = "allow_musicbrainz"
 COVER_ART = "allow_cover_art"
+SETLISTFM = "allow_setlistfm"
 AI = "allow_ai"
 WEB_SEARCH = "allow_ai_web_search"
-CHOICES = (MUSICBRAINZ, COVER_ART, AI, WEB_SEARCH)
+CHOICES = (MUSICBRAINZ, COVER_ART, SETLISTFM, AI, WEB_SEARCH)
 
 # Nothing goes out until it's allowed.
 DEFAULTS = dict.fromkeys(CHOICES, False)
@@ -44,6 +47,12 @@ TEXT = {
         "Asks coverartarchive.org for the cover of the release a video was matched "
         "to on MusicBrainz, which tells it which release. Without it, covers come "
         "from the video's folder, the file itself, or a frame of it.",
+    ),
+    SETLISTFM: (
+        "Look up setlists on setlist.fm",
+        "Sends an artist's name and a date, year or place - usually from the video's "
+        "name - to setlist.fm with your own API key (Settings → setlist.fm), to "
+        "name the songs of a show MusicBrainz doesn't have.",
     ),
     AI: (
         "Send videos to the AI",
@@ -62,6 +71,7 @@ TEXT = {
 OFF = {
     MUSICBRAINZ: "Looking things up on MusicBrainz is switched off in Settings → Privacy.",
     COVER_ART: "Fetching cover art is switched off in Settings → Privacy.",
+    SETLISTFM: "Looking setlists up on setlist.fm is switched off in Settings → Privacy.",
     AI: "Sending anything to the AI is switched off in Settings → Privacy.",
     WEB_SEARCH: "The AI's web search is switched off in Settings → Privacy.",
 }

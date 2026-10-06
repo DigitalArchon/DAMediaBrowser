@@ -259,6 +259,7 @@ QHeaderView::section {
 
 #sourceDot[source="manual"] { color: #9ece6a; }
 #sourceDot[source="musicbrainz"] { color: #7aa2f7; }
+#sourceDot[source="setlistfm"] { color: #ff9e64; }
 #sourceDot[source="ai"] { color: #bb9af7; }
 #sourceDot[source="menu"] { color: #73daca; }
 #sourceDot[source="filename"] { color: #a08a60; }
