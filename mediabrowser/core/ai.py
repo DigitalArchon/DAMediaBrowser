@@ -22,6 +22,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 from . import creds, privacy, store
 
@@ -176,9 +177,70 @@ def image_part(jpeg: bytes) -> dict:
 # --- requests ------------------------------------------------------------------
 
 
+# Services on this machine may be plain http: a local model server, say.
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def endpoint_problem(url: str) -> str:
+    """Why the key mustn't be sent to `url`, or empty when it may: the
+    endpoint has to be https, so the key crosses the network encrypted -
+    unless the service is on this machine."""
+    parts = urlparse(str(url or ""))
+    host = (parts.hostname or "").lower()
+    if parts.scheme == "https" and host:
+        return ""
+    if parts.scheme == "http" and host in LOCAL_HOSTS:
+        return ""
+    return (f"the endpoint {url} isn't https, so the key would be sent in the clear "
+            "(only a service on this machine may be plain http)")
+
+
+def _origin(url: str) -> tuple:
+    parts = urlparse(url)
+    return (parts.scheme.lower(), (parts.hostname or "").lower(), parts.port)
+
+
+class _KeysStayHome(urllib.request.HTTPRedirectHandler):
+    """urllib follows a redirect with every header it was given, the key
+    included - so a server answering with a redirect to another host would
+    be handed it. A redirect to another origin is followed without the
+    Authorization and API-key headers."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _origin(newurl) != _origin(req.full_url):
+            for name in ("Authorization", "X-api-key"):
+                new.remove_header(name)
+        return new
+
+
+urllib.request.install_opener(urllib.request.build_opener(_KeysStayHome))
+
+
+def _without_frames(messages) -> list[dict]:
+    """The messages with their pictures taken out: asking again about an
+    answer already given needs no second look at the video, nor a second
+    payment for the frames."""
+    stripped = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            content = [
+                text_part("(a frame of the video, shown before)")
+                if isinstance(part, dict) and part.get("type") == "image_url" else part
+                for part in content
+            ]
+            message = {**message, "content": content}
+        stripped.append(message)
+    return stripped
+
+
 def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TIMEOUT_SECONDS):
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if api_key:
+        problem = endpoint_problem(url)
+        if problem:
+            raise AIError(problem)
         headers["Authorization"] = f"Bearer {api_key}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
@@ -228,8 +290,6 @@ def searches_the_web(settings: dict) -> bool:
     """Whether the endpoint can search the web for the model. The
     ":online" suffix is Nano-GPT's own; any other OpenAI-compatible service
     would take it for part of a model's name and refuse every request."""
-    from urllib.parse import urlparse
-
     host = urlparse(str(settings.get(SETTING_BASE_URL) or "")).hostname or ""
     return host == NANO_GPT_HOST or host.endswith("." + NANO_GPT_HOST)
 
@@ -324,7 +384,7 @@ def chat_json(messages, settings: dict, **kwargs) -> dict:
     try:
         return parse_json_reply(text)
     except AIError as exc:
-        retry = [*messages, {"role": "assistant", "content": text},
+        retry = [*_without_frames(messages), {"role": "assistant", "content": text},
                  {"role": "user", "content": (
                      f"That isn't valid JSON ({exc}). Send the same answer again as one "
                      "valid JSON object, escaping any double quotes inside strings, and "

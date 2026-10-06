@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from mediabrowser.core import network
+from mediabrowser.gui.plain import tooltip
 from mediabrowser.gui.worker import run_job
 
 INSTRUCTIONS = (
@@ -116,7 +117,7 @@ class NetworkFolderDialog(QDialog):
             state = "connected" if location.connected else "bookmark"
             item = QListWidgetItem(f"{location.name}\n{location.uri}  ·  {state}")
             item.setData(Qt.UserRole, location.uri)
-            item.setToolTip(location.uri)
+            item.setToolTip(tooltip(location.uri))
             self.locations.addItem(item)
         if not self.locations.count():
             self._set_status(
@@ -140,8 +141,15 @@ class NetworkFolderDialog(QDialog):
                 error=True,
             )
             return
-        uri = network.normalise(uri)
-        self._set_status(f"Connecting to {network.display_name(uri)}…")
+        typed, uri = uri, network.normalise(uri)
+        note = ""
+        if network.without_password(typed) != typed:
+            # Not kept, nor sent on by the app: the desktop asks for it once
+            # and keeps it in the keyring.
+            self.address.setText(uri)
+            note = (" The password isn't kept: if the share asks for one, connect to it "
+                    "in your file manager and choose to remember it.")
+        self._set_status(f"Connecting to {network.display_name(uri)}…{note}")
         self.connect_button.setEnabled(False)
         self._jobs.append(run_job(
             self,

@@ -131,9 +131,7 @@ class TestResetting:
         answers = {"accept": True, "check": False}
         monkeypatch.setattr(MainWindow, "_confirm",
                             lambda self, *a, **k: (answers["accept"], answers["check"]))
-        from PySide6.QtWidgets import QMessageBox
-
-        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+        monkeypatch.setattr(MainWindow, "_ask", lambda self, *a, **k: True)
         return answers
 
     def test_a_title_is_reset_and_undone(self, two, agree, monkeypatch, app):
@@ -193,3 +191,50 @@ class TestResetting:
         assert window.data["videos"][vid]["chapters"][0]["title"] is None
         window.undo_reset()
         assert window.data["videos"][vid]["chapters"][0]["title"] == "Concerts 1"
+
+
+class TestWhileAJobRuns:
+    def test_covers_are_found_for_videos_that_arrive_while_a_job_runs(self, two, app,
+                                                                       monkeypatch):
+        import threading
+
+        from mediabrowser.core import artwork
+        from tests.test_chapters_dialog import pump
+
+        window, roots = two
+        resolved, asked = set(), []
+        gate = threading.Event()
+        monkeypatch.setattr(artwork, "is_resolved", lambda video_id: video_id in resolved)
+
+        def find(video_id, video, release_id=None):
+            gate.wait(5)
+            asked.append(video_id)
+            resolved.add(video_id)
+            return None
+
+        monkeypatch.setattr(artwork, "find", find)
+        window.refresh_library()  # Concerts' cover: a job, held at the gate
+        assert window._artwork_job is not None
+        window.show_libraries(roots)  # Festivals arrives while it runs
+        gate.set()
+        assert pump(app, lambda: window._artwork_job is None and len(asked) == 2)
+        assert set(asked) == ids(window)
+
+    def test_a_name_given_while_a_scan_runs_is_kept(self, two, app, monkeypatch):
+        from tests.test_chapters_dialog import pump
+
+        window, roots = two
+        vid = next(iter(ids(window)))
+
+        def rescan(root, **kwargs):
+            stale = store.load_library_for_root(root)  # as the scan loaded it
+            # Meanwhile the person renames a chapter, and the window saves it.
+            edited = store.load_library_for_root(root)
+            edited["videos"][vid]["chapters"][0]["title"] = "Named meanwhile"
+            store.save_library(edited)
+            return stale
+
+        monkeypatch.setattr(library, "rescan", rescan)
+        window.rescan()
+        assert pump(app, lambda: not window._scanning)
+        assert window.data["videos"][vid]["chapters"][0]["title"] == "Named meanwhile"

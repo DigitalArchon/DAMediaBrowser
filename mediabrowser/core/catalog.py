@@ -125,8 +125,14 @@ def export(data: dict, path, library_roots=()) -> None:
     refused = refused_destination(path, [root for root in roots if root])
     if refused:
         raise CatalogError(f"Not saved there: {refused}.")
-    # A reset's undo belongs to this device's catalog, not a copy of it.
-    settings = {key: value for key, value in data["settings"].items() if key != "reset_undo"}
+    # A reset's undo and the last Identify run's journal belong to this
+    # device's catalog, not a copy of it; a share's password to nobody's.
+    settings = {key: value for key, value in data["settings"].items()
+                if key not in ("reset_undo", "identify_run")}
+    if settings.get(library.NETWORK_URI_SETTING):
+        settings[library.NETWORK_URI_SETTING] = network.without_password(
+            str(settings[library.NETWORK_URI_SETTING])
+        )
     out = dict(data, settings=settings, **{FORMAT_KEY: FORMAT})
     tmp = Path(path).with_suffix(Path(path).suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -144,8 +150,16 @@ def read(path) -> dict:
         raise CatalogError(f"That file couldn't be read as a catalog ({exc}).") from exc
     if (not isinstance(data, dict) or not isinstance(data.get("videos"), dict)
             or not isinstance(data.get("settings"), dict)
-            or not data["settings"].get("library_root")):
+            or not isinstance(data["settings"].get("library_root"), str)
+            or not data["settings"]["library_root"]):
         raise CatalogError("That file isn't a DA Media Browser catalog.")
+    for video_id, video in data["videos"].items():
+        if (not isinstance(video_id, str) or not isinstance(video, dict)
+                or not isinstance(video.get("path"), str)
+                or not isinstance(video.get("chapters", []), list)):
+            raise CatalogError(
+                "That file isn't a DA Media Browser catalog: one of its videos isn't one."
+            )
     data.pop(FORMAT_KEY, None)
     return data
 

@@ -4,6 +4,18 @@
 import re
 from pathlib import PurePath
 
+# The app's text is English wherever it runs; strftime("%b") would name
+# the month in the machine's own language ("ápr" under a Hungarian LC_TIME).
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def format_date(year: int, month: int, day: int, pad_day: bool = False) -> str:
+    """"19 Apr 2026", whatever the locale."""
+    return f"{day:02d}" + f" {MONTHS[month - 1]} {year}" if pad_day else (
+        f"{day} {MONTHS[month - 1]} {year}"
+    )
+
 
 def format_seconds(seconds: float) -> str:
     seconds = max(0, int(round(seconds)))

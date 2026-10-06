@@ -22,6 +22,7 @@ expensive steps are not retried on every launch.
 """
 
 import os
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -36,6 +37,17 @@ FETCH_TIMEOUT_SECONDS = 15
 # so the next launch shows the placeholder immediately rather than running
 # ffmpeg over the whole library again.
 MISS_SUFFIX = ".none"
+
+
+# What an id may look like to name a file in the cache. The app's own are
+# hexadecimal; a library file or catalog edited by hand could say anything,
+# and nothing it says may reach outside the cache (config.own refuses that
+# too, but one bad id mustn't stop every cover after it).
+_SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _safe(video_id) -> bool:
+    return isinstance(video_id, str) and _SAFE_ID.fullmatch(video_id) is not None
 
 
 def cached_path(video_id: str) -> Path:
@@ -53,18 +65,25 @@ def lookup(video_id: str) -> Path | None:
     video on the shelf each time it's filled, so it asks the disk with a
     plain string rather than building a Path first.
     """
+    if not _safe(video_id):
+        return None
     path = os.path.join(config.ARTWORK_DIR, f"{video_id}.jpg")
     return Path(path) if os.path.exists(path) else None
 
 
 def is_resolved(video_id: str) -> bool:
-    """Whether this video has been looked at before, found or not."""
+    """Whether this video has been looked at before, found or not. An id
+    that can't name a cache file counts as looked at: there's nothing to do."""
+    if not _safe(video_id):
+        return True
     folder = str(config.ARTWORK_DIR)
     return (os.path.exists(os.path.join(folder, f"{video_id}.jpg"))
             or os.path.exists(os.path.join(folder, f"{video_id}{MISS_SUFFIX}")))
 
 
 def forget(video_id: str) -> None:
+    if not _safe(video_id):
+        return
     config.own(cached_path(video_id)).unlink(missing_ok=True)
     config.own(_miss_path(video_id)).unlink(missing_ok=True)
 
@@ -79,6 +98,8 @@ def forget_all() -> None:
 
 def find(video_id: str, video: dict, release_id: str | None = None) -> Path | None:
     """Find and cache a cover for this video. Slow; worker thread only."""
+    if not _safe(video_id):
+        return None
     config.ensure_artwork_dir()
     existing = lookup(video_id)
     if existing is not None:

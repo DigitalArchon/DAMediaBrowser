@@ -147,3 +147,30 @@ class TestCarryingOn:
         calls = self._calls(monkeypatch, p)
         p.screenshot(tmp_path / "Ca$h 1-00.png")
         assert calls == [["screenshot-to-file", str(tmp_path / "Ca$h 1-00.png"), "subtitles"]]
+
+
+class TestTheProcess:
+    def test_the_socket_lives_where_only_this_user_can_reach(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        assert player_module.Player()._socket_path.parent == tmp_path
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "gone"))
+        assert player_module.Player()._socket_path.parent != tmp_path / "gone"
+        monkeypatch.delenv("XDG_RUNTIME_DIR")
+        assert player_module.Player()._socket_path.parent.is_dir()
+
+    def test_mpv_gets_no_terminal(self, monkeypatch):
+        import subprocess
+
+        seen = {}
+
+        class Proc:
+            def __init__(self, args, **kwargs):
+                seen["args"], seen["kwargs"] = args, kwargs
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(player_module.subprocess, "Popen", Proc)
+        player_module.Player().start_session()
+        assert "--terminal=no" in seen["args"]
+        assert seen["kwargs"]["stdin"] is subprocess.DEVNULL

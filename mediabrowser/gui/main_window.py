@@ -150,6 +150,8 @@ class MainWindow(QMainWindow):
         self.queue = playback.Queue()
         self._jobs: list = []
         self._artwork_job = None
+        # The videos the running cover job was given.
+        self._artwork_pending: set[str] = set()
         self._scanning = False
         self._scan_cancel: threading.Event | None = None
         self._sort = SORT_MODES[0]
@@ -936,6 +938,7 @@ class MainWindow(QMainWindow):
         ]
         if not pending or self._artwork_job is not None:
             return
+        self._artwork_pending = {video_id for video_id, _video, _release in pending}
 
         def work(progress_cb):
             for video_id, video, release_id in pending:
@@ -958,9 +961,16 @@ class MainWindow(QMainWindow):
 
     def _artwork_finished(self) -> None:
         self._artwork_job = None
+        given, self._artwork_pending = self._artwork_pending, set()
         current = self.current_video()
         if current is not None:
             self.detail.show_video(current[0], current[1], keep_selection=True)
+        # Videos that arrived while the job ran - another library ticked -
+        # are still waiting for covers. One the job was given and couldn't
+        # settle isn't asked about again until something else changes.
+        if any(video_id not in given and not artwork.is_resolved(video_id)
+               for video_id in self.data["videos"]):
+            self._resolve_artwork()
 
     def load_root(self, root: str) -> None:
         """Show this library alone."""
@@ -1076,6 +1086,7 @@ class MainWindow(QMainWindow):
         """The plainest warning the app gives: what is deleted, counted, and
         that it is for good - with a box to tick before the button works."""
         box = QMessageBox(QMessageBox.Critical, title, text, QMessageBox.Cancel, self)
+        box.setTextFormat(Qt.PlainText)
         box.setInformativeText(detail)
         check = QCheckBox("I understand: every title and chapter is deleted for good, "
                           "with no backup to restore")
@@ -1229,6 +1240,16 @@ class MainWindow(QMainWindow):
 
     def _on_scan_done(self, result) -> None:
         explicit, scanned = result
+        # Each library as it's stored now, not as the scan had it: a name
+        # given or a chapter edited while the scan ran was saved meanwhile,
+        # and the scan's own copy is from before it.
+        fresh = []
+        for data in scanned:
+            root = data["settings"].get("library_root")
+            current = self._prepared(store.load_library_for_root(root)) if root else data
+            current[library.MOVED_KEY] = data.get(library.MOVED_KEY, 0)
+            fresh.append(current)
+        scanned = fresh
         if explicit:
             self.shown = Shelf(scanned)
         else:
@@ -1257,7 +1278,7 @@ class MainWindow(QMainWindow):
             self._set_status("Scan cancelled - nothing was changed.")
             return
         self._set_status("Not rescanned - nothing was changed.", "error")
-        QMessageBox.warning(self, "Couldn't rescan", message)
+        self._warn("Couldn't rescan", message)
 
     def _end_scan(self) -> None:
         self._scanning = False
@@ -1503,8 +1524,7 @@ class MainWindow(QMainWindow):
             self.stop_playback()
             return
         if video_id in self._missing:
-            QMessageBox.warning(
-                self,
+            self._warn(
                 "File missing",
                 f"This file is no longer where it was scanned from:\n\n{video['path']}\n\n"
                 "Its chapter names are still stored - rescan the folder once the "
@@ -1874,11 +1894,10 @@ class MainWindow(QMainWindow):
         data, playlist = self._find_playlist(name, root)
         if playlist is None:
             return
-        answer = QMessageBox.question(
-            self, "Delete Playlist",
+        if self._ask(
+            "Delete Playlist",
             f"Delete the playlist “{name}”? The chapters in it aren't touched.",
-        )
-        if answer == QMessageBox.Yes and playlists.delete(data, name):
+        ) and playlists.delete(data, name):
             self._save()
             self._set_status(f"Deleted the playlist “{name}”.")
 
@@ -2557,15 +2576,13 @@ class MainWindow(QMainWindow):
         video = self.data["videos"].get(video_id)
         if video is None or self._refuse_locked(video_id):
             return
-        answer = QMessageBox.question(
-            self,
+        if not self._ask(
             "Remove from Library",
             f"Forget {video['display_name']} and its chapter names?\n\n{video['path']}\n\n"
             "Only do this if it's gone for good - while its file is just away "
             "(a network share that's disconnected, say), keeping it costs nothing, "
             "and it comes back named when the file does.",
-        )
-        if answer != QMessageBox.Yes:
+        ):
             return
         library.remove_videos(self.data, [video_id])
         self._save()
@@ -2582,14 +2599,12 @@ class MainWindow(QMainWindow):
         listed = "\n".join(f"  {name}" for name in names[:12])
         if len(names) > 12:
             listed += f"\n  …and {len(names) - 12} more"
-        answer = QMessageBox.question(
-            self,
+        if not self._ask(
             "Remove Missing Videos",
             f"Forget these {len(names)} video(s), and their chapter names?\n\n{listed}\n\n"
             "If they're on a network share or drive that's only disconnected, "
             "reconnect it instead - they'll come back named.",
-        )
-        if answer != QMessageBox.Yes:
+        ):
             return
         removed = library.remove_videos(self.data, missing)
         self._save()
@@ -2747,13 +2762,11 @@ class MainWindow(QMainWindow):
         current = self.current_video()
         if current is None or not current[1].get("chapter_origin") or self._refuse_locked():
             return
-        answer = QMessageBox.question(
-            self,
+        if not self._ask(
             "Reset Chapters",
             "Go back to the chapters in the file itself? The chapters made or "
             "edited here, and their names, will be lost.",
-        )
-        if answer != QMessageBox.Yes:
+        ):
             return
         try:
             chapters = library.original_chapters(
@@ -2823,11 +2836,28 @@ class MainWindow(QMainWindow):
 
     # --- resetting to defaults ----------------------------------------------------
 
+    def _ask(self, title: str, text: str) -> bool:
+        """Yes or No (No the default), the text shown as it is: a file's
+        name is never markup, whatever it looks like."""
+        box = QMessageBox(QMessageBox.Question, title, text,
+                          QMessageBox.Yes | QMessageBox.No, self)
+        box.setTextFormat(Qt.PlainText)
+        box.setDefaultButton(QMessageBox.No)
+        box.exec()
+        return box.standardButton(box.clickedButton()) == QMessageBox.Yes
+
+    def _warn(self, title: str, text: str) -> None:
+        """A warning, its text shown as it is (it names files)."""
+        box = QMessageBox(QMessageBox.Warning, title, text, QMessageBox.Ok, self)
+        box.setTextFormat(Qt.PlainText)
+        box.exec()
+
     def _confirm(self, title: str, text: str, detail: str, action: str,
                  checkbox: str | None = None) -> tuple[bool, bool]:
         """A warning to accept or cancel (Cancel the default); and the
         checkbox's state, if there is one."""
         box = QMessageBox(QMessageBox.Warning, title, text, QMessageBox.Cancel, self)
+        box.setTextFormat(Qt.PlainText)
         box.setInformativeText(detail)
         go = box.addButton(action, QMessageBox.DestructiveRole)
         box.setDefaultButton(QMessageBox.Cancel)
@@ -2959,10 +2989,9 @@ class MainWindow(QMainWindow):
             self._set_status("There's no reset to undo.")
             return
         data, undo = found
-        answer = QMessageBox.question(
-            self, "Undo Reset", f"Undo {reset.describe(undo)}, putting back what it cleared?"
-        )
-        if answer != QMessageBox.Yes:
+        if not self._ask(
+            "Undo Reset", f"Undo {reset.describe(undo)}, putting back what it cleared?"
+        ):
             return
         what = reset.undo(data)
         store.save_library(data)
@@ -3126,12 +3155,11 @@ class MainWindow(QMainWindow):
         journal = autoname.last_run(self.data)
         if journal is None:
             return
-        answer = QMessageBox.question(
-            self, "Undo Last Identification",
+        if self._ask(
+            "Undo Last Identification",
             f"Put back the {len(journal['before'])} video(s) the run started "
             f"{journal['started']} changed, as they were before it?",
-        )
-        if answer == QMessageBox.Yes:
+        ):
             count = self.undo_identify()
             self._set_status(f"Undone: {count} video(s) put back as they were.")
 

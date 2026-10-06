@@ -169,6 +169,62 @@ class TestChat:
         assert len(sent) == 2 and "isn't valid JSON" in sent[1][-1]["content"]
         assert sent[1][-2] == {"role": "assistant", "content": '{"title": "Say "Hi""}'}
 
+    def test_asking_again_sends_no_frames(self, monkeypatch):
+        replies = iter(["not json", '{"ok": true}'])
+        sent = []
+
+        def chat(messages, settings, **kwargs):
+            sent.append(messages)
+            return next(replies)
+
+        monkeypatch.setattr(ai, "chat", chat)
+        messages = [{"role": "user", "content": [
+            ai.text_part("look"), ai.image_part(b"\xff\xd8jpeg"), ai.text_part("name it"),
+        ]}]
+        assert ai.chat_json(messages, settings()) == {"ok": True}
+        first, again = sent
+        assert any(p["type"] == "image_url" for p in first[0]["content"])
+        assert not any(p["type"] == "image_url" for p in again[0]["content"])
+        assert again[0]["content"][0] == ai.text_part("look"), "the words stay"
+        assert messages[0]["content"][1]["type"] == "image_url", "the original is untouched"
+
+    def test_the_key_goes_only_over_https(self, http):
+        assert ai.endpoint_problem("https://nano-gpt.com/api/v1") == ""
+        assert ai.endpoint_problem("http://localhost:1234/v1") == ""
+        assert ai.endpoint_problem("http://127.0.0.1:8080/v1") == ""
+        assert "https" in ai.endpoint_problem("http://models.example/v1")
+        assert ai.endpoint_problem("ftp://nano-gpt.com/api/v1")
+        with pytest.raises(ai.AIError, match="in the clear"):
+            ai.chat([], settings(**{ai.SETTING_BASE_URL: "http://models.example/v1"}))
+        assert http["calls"] == [], "nothing was sent"
+        # Without a key there's nothing to protect: a model list may be asked for.
+        http["reply"] = {"data": []}
+        ai.list_models(settings(**{ai.SETTING_BASE_URL: "http://models.example/v1",
+                                   ai.SETTING_KEY: ""}))
+        assert len(http["calls"]) == 1
+
+    def test_a_redirect_elsewhere_is_followed_without_the_key(self):
+        import urllib.request
+
+        def request():
+            return urllib.request.Request(
+                "https://nano-gpt.com/api/v1/chat/completions", data=b"{}",
+                headers={"Authorization": "Bearer k", "X-api-key": "s",
+                         "Content-Type": "application/json"},
+            )
+
+        handler = ai._KeysStayHome()
+        elsewhere = handler.redirect_request(
+            request(), None, 302, "Found", {}, "https://elsewhere.example/collect")
+        assert elsewhere.get_header("Authorization") is None
+        assert elsewhere.get_header("X-api-key") is None
+        downgraded = handler.redirect_request(
+            request(), None, 302, "Found", {}, "http://nano-gpt.com/api/v1/x")
+        assert downgraded.get_header("Authorization") is None
+        same = handler.redirect_request(
+            request(), None, 302, "Found", {}, "https://nano-gpt.com/api/v2/chat")
+        assert same.get_header("Authorization") == "Bearer k"
+
     def test_content_parts_are_joined(self, http):
         http["reply"] = {"choices": [{"message": {"content": [
             {"type": "text", "text": "a"}, {"type": "text", "text": "b"},

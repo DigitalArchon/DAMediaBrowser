@@ -454,6 +454,34 @@ class TestRestoring:
             "what it was restored into is backed up first"
         )
 
+    def test_restoring_leaves_a_locked_video_as_it_is(self, share):
+        library.rescan(share)
+        named(share, "Saitama")
+        store.delete_library(share)
+        backup = store.list_backups()[0]
+        data = library.rescan(share)  # unnamed again, and then locked
+        video = next(v for v in data["videos"].values() if v["path"].endswith("Saitama.mkv"))
+        protection.set_flag(video, protection.LOCKED, True)
+        store.save_library(data)
+
+        store.restore_backup(backup["path"])
+
+        assert titles(share, "Saitama") == [None, None], "locked: nothing changes it"
+        assert titles(share, "Budokan") == [None, None]
+
+    def test_restoring_leaves_a_locked_librarys_videos_as_they_are(self, share):
+        library.rescan(share)
+        named(share, "Wembley")
+        store.delete_library(share)
+        backup = store.list_backups()[0]
+        data = library.rescan(share)
+        protection.set_library_flag(data, protection.LOCKED, True)
+        store.save_library(data)
+
+        store.restore_backup(backup["path"])
+
+        assert titles(share, "Wembley") == [None, None]
+
     def test_a_library_here_already_keeps_its_settings(self, share):
         library.rescan(share)
         store.delete_library(share)

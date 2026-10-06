@@ -64,7 +64,7 @@ REVIEWED = {
     "core/config.py": 2,        # the data folders
     "core/dvd.py": 1,           # a DVD's sectors into ffmpeg's input, a pipe
     "core/library.py": 1,       # cached covers renamed within ARTWORK_DIR
-    "core/player.py": 2,        # mpv's socket, in the temporary folder
+    "core/player.py": 2,        # mpv's socket, in the session's runtime folder
     "core/store.py": 17,        # settings, library files and backups - all through config.own
     "gui/main_window.py": 1,    # the screenshot folder, in Pictures
 }

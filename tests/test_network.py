@@ -74,6 +74,16 @@ class TestAddresses:
     def test_a_trailing_slash_is_one_spelling(self):
         assert network.normalise("smb://nas/media/") == "smb://nas/media"
 
+    def test_a_password_in_the_address_is_not_kept(self):
+        # It would go into the library's file, every backup and every export.
+        assert network.without_password("smb://jo:s3cret@nas/media") == "smb://jo@nas/media"
+        assert network.normalise("smb://jo:s3cret@nas.local:445/media/") == (
+            "smb://jo@nas.local:445/media"
+        )
+        assert network.normalise("smb://:s3cret@nas/media") == "smb://nas/media"
+        assert network.without_password("smb://jo@nas/media") == "smb://jo@nas/media"
+        assert network.display_name("smb://jo:s3cret@nas/media") == "media on nas"
+
     def test_display_names_read_naturally(self):
         name = network.display_name("smb://nas.local/media/Live%20Shows")
         assert name == "Live Shows on nas.local"

@@ -44,6 +44,14 @@ SEG_END = 0x80
 # How much of a clip to read looking for its menu. A menu clip is a few MB;
 # a pop-up menu multiplexed into the main feature starts at its beginning.
 MAX_SCAN_BYTES = 48 * 1024 * 1024
+# No Blu-ray graphic is bigger than the screen (1920x1080). A size field
+# saying otherwise is a damaged stream, and buffers sized from its 16-bit
+# fields could run to gigabytes; such a bitmap or composition is dropped.
+MAX_DIMENSION = 4096
+
+
+def _plausible(width: int, height: int) -> bool:
+    return 0 < width <= MAX_DIMENSION and 0 < height <= MAX_DIMENSION
 
 
 # --- the transport stream ------------------------------------------------------
@@ -352,6 +360,8 @@ def decode_composition(data: bytes) -> tuple[int, int, bool, list[Page]]:
     popup, pages)."""
     b = _Bits(data)
     width, height = b.u16(), b.u16()
+    if not _plausible(width, height):
+        raise ValueError(f"a {width}x{height} menu isn't one")
     b.u8()  # frame rate
     b.skip(24)  # composition number and state
     b.u8()  # sequence flags
@@ -382,7 +392,9 @@ def decode_menu(segments: list[tuple[int, bytes]]) -> Menu | None:
             if flags & 0x80 and len(data) >= 11:
                 width = (data[7] << 8) | data[8]
                 height = (data[9] << 8) | data[10]
-                pending[object_id] = (width, height, bytearray(data[11:]))
+                pending.pop(object_id, None)
+                if _plausible(width, height):
+                    pending[object_id] = (width, height, bytearray(data[11:]))
             elif object_id in pending:
                 pending[object_id][2].extend(data[4:])
             if flags & 0x40 and object_id in pending:
@@ -397,7 +409,7 @@ def decode_menu(segments: list[tuple[int, bytes]]) -> Menu | None:
             if data[8] & 0x40:  # last
                 try:
                     width, height, popup, pages = decode_composition(bytes(composition))
-                except IndexError:
+                except (IndexError, ValueError):
                     continue
                 menu = Menu(width, height, popup, pages, palettes, bitmaps)
     if menu is not None:
@@ -447,6 +459,8 @@ def render(menu: Menu, page: Page, selected: Button | None = None) -> bytes:
     """A page as RGBA, `menu.width` x `menu.height`, as a player shows it:
     its background, one button of each group in its normal state, and
     `selected` (if given) highlighted instead."""
+    if not _plausible(menu.width, menu.height):
+        return b""
     palette = menu.palettes.get(page.palette_id) or next(iter(menu.palettes.values()), None)
     colours = palette.colours if palette else {}
     opaque = bytes(1 if colours.get(i, (0, 0, 0, 0))[3] else 0 for i in range(256))

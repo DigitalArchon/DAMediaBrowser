@@ -180,3 +180,31 @@ class TestFindingTheMenus:
         stream = disc / "BDMV" / "STREAM"
         assert bdmenu.background_clip(disc, stream / "00006.m2ts") == stream / "00004.m2ts"
         assert bdmenu.background_clip(disc, stream / "00004.m2ts") == stream / "00004.m2ts"
+
+
+class TestDamagedSizes:
+    """A 16-bit size field saying 60000 would have buffers of gigabytes
+    sized from it; nothing on a disc is bigger than the screen."""
+
+    def _ods(self, width, height):
+        return (b"\x00\x09" + b"\x00\xc0" + (5).to_bytes(3, "big")
+                + width.to_bytes(2, "big") + height.to_bytes(2, "big") + b"\x01")
+
+    def test_an_absurd_bitmap_is_dropped(self):
+        pages = [bd.page(0, [[bd.B(1, 0, 0, normal=9, selected=9, commands=[])]])]
+        segments = [
+            (bdmenu.SEG_ODS, self._ods(60000, 60000)),
+            (bdmenu.SEG_ICS, bd.composition(pages, width=64, height=48)[3:]),
+        ]
+        menu = bdmenu.decode_menu(segments)
+        assert menu is not None and menu.bitmaps == {}
+
+    def test_an_absurd_composition_is_no_menu(self):
+        pages = [bd.page(0, [[bd.B(1, 0, 0, normal=0, selected=0, commands=[])]])]
+        segments = [(bdmenu.SEG_ICS, bd.composition(pages, width=60000, height=60000)[3:])]
+        assert bdmenu.decode_menu(segments) is None
+
+    def test_rendering_refuses_one_too(self):
+        page = bdmenu.Page(0, 0, 0, [], [])
+        menu = bdmenu.Menu(60000, 60000, False, [page], {}, {})
+        assert bdmenu.render(menu, page) == b""

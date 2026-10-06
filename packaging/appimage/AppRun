@@ -20,8 +20,8 @@ unset PYTHONHOME PYTHONPATH
 # The bundled Python's OpenSSL was built on a different distribution, so the
 # CA paths compiled into it (/etc/pki/tls/...) do not exist on most systems.
 # Left alone it loads zero certificates and every HTTPS request fails with
-# "unable to get local issuer certificate" - which is MusicBrainz search and
-# cover art, the app's only two network calls.
+# "unable to get local issuer certificate" - which is every lookup the app
+# makes: MusicBrainz, setlist.fm, cover art and the AI.
 #
 # It is pointed at the host's own trust store rather than carrying a CA
 # bundle in here: the host's is kept current by its package manager, and it

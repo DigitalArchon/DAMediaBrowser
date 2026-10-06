@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import library, naming, utils
 from mediabrowser.gui import covers, identified
+from mediabrowser.gui.plain import tooltip
 
 THUMB = 28
 
@@ -159,7 +160,7 @@ class ListView(QTreeWidget):
                 for column in (COL_NAME, COL_CHAPTERS, COL_LENGTH):
                     row.setForeground(column, QColor("#565c69"))
                 tip = f"{tip}\n\nIn a hidden folder."
-            row.setToolTip(0, tip)
+            row.setToolTip(0, tooltip(tip))
 
             self.addTopLevelItem(row)
 

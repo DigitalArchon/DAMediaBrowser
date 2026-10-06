@@ -199,11 +199,11 @@ class TestQueueingChapters:
 
 class TestMissingVideos:
     def test_a_missing_video_can_be_removed_from_its_menu(self, window, monkeypatch):
-        from PySide6.QtWidgets import QMessageBox
-
-        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
         from pathlib import Path
 
+        from mediabrowser.gui.main_window import MainWindow
+
+        monkeypatch.setattr(MainWindow, "_ask", lambda self, *a, **k: True)
         Path(window.data["videos"]["trailer"]["path"]).unlink()
         window.refresh_library()
         _trigger(
@@ -219,9 +219,9 @@ class TestMissingVideos:
     def test_remove_missing_forgets_only_the_missing(self, window, monkeypatch):
         from pathlib import Path
 
-        from PySide6.QtWidgets import QMessageBox
+        from mediabrowser.gui.main_window import MainWindow
 
-        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+        monkeypatch.setattr(MainWindow, "_ask", lambda self, *a, **k: True)
         Path(window.data["videos"]["trailer"]["path"]).unlink()
         window.refresh_library()
         window.remove_missing_videos()
@@ -230,9 +230,9 @@ class TestMissingVideos:
     def test_declining_removes_nothing(self, window, monkeypatch):
         from pathlib import Path
 
-        from PySide6.QtWidgets import QMessageBox
+        from mediabrowser.gui.main_window import MainWindow
 
-        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
+        monkeypatch.setattr(MainWindow, "_ask", lambda self, *a, **k: False)
         Path(window.data["videos"]["trailer"]["path"]).unlink()
         window.refresh_library()
         window.remove_missing_videos()

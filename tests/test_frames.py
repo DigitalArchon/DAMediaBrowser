@@ -79,3 +79,19 @@ class TestGrabbing:
         assert sorted(first) == [1.0]
         monkeypatch.setattr(frames, "grab_many", lambda *a, **k: pytest.fail("regrabbed"))
         assert frames.cached_grab_many(clip, [1.0, 60.0], width=160) == first
+
+
+class TestTheCacheCeiling:
+    def test_the_oldest_frames_go_once_it_is_full(self, monkeypatch):
+        frames.clear_cache()
+        monkeypatch.setattr(frames, "MAX_CACHE_BYTES", 25)
+        monkeypatch.setattr(frames, "grab_many",
+                            lambda video, times, **k: {t: b"x" * 10 for t in times})
+        video = {"type": "file", "path": "/v.mkv"}
+        frames.cached_grab_many(video, [1.0, 2.0])
+        assert len(frames._cache) == 2 and frames._cache_bytes == 20
+        frames.cached_grab_many(video, [3.0])
+        assert frames._cache_bytes <= 25
+        assert [k[2] for k in frames._cache] == [2.0, 3.0], "the oldest went"
+        frames.clear_cache()
+        assert frames._cache_bytes == 0 and not frames._cache

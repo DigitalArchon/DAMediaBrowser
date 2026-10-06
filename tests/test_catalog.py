@@ -93,6 +93,34 @@ class TestAddingTheFolderOnTheOtherDevice:
         assert video["path"] == str(b / FILES[0])
 
 
+class TestWhatACatalogCarries:
+    def test_an_export_leaves_out_what_is_this_devices_or_nobodys(self, tmp_path):
+        root = folder_with_files(tmp_path / "Concerts")
+        data = catalog_at(root)
+        data["settings"]["identify_run"] = {"started": "now", "before": {"a": {}}}
+        data["settings"]["reset_undo"] = {"kind": "library"}
+        data["settings"]["network_uri"] = "smb://jo:s3cret@nas/Concerts"
+        path = tmp_path / "out.json"
+        catalog.export(data, path)
+        settings = catalog.read(path)["settings"]
+        assert "identify_run" not in settings and "reset_undo" not in settings
+        assert settings["network_uri"] == "smb://jo@nas/Concerts"
+
+    def test_a_catalog_whose_shape_is_wrong_is_refused(self, tmp_path):
+        import json
+
+        for broken in (
+            {"settings": {"library_root": ["/x"]}, "videos": {}},
+            {"settings": {"library_root": "/x"}, "videos": {"a": "not a video"}},
+            {"settings": {"library_root": "/x"}, "videos": {"a": {"path": 7}}},
+            {"settings": {"library_root": "/x"}, "videos": {"a": {"path": "/x/a", "chapters": 3}}},
+        ):
+            bad = tmp_path / "bad.json"
+            bad.write_text(json.dumps(broken), encoding="utf-8")
+            with pytest.raises(catalog.CatalogError):
+                catalog.read(bad)
+
+
 class TestExportAndImport:
     def test_a_catalog_round_trips_through_a_file(self, two_devices, tmp_path):
         a, b = two_devices

@@ -120,6 +120,34 @@ class TestIdentify:
         dialog._save_options()
         assert "musicbrainz" in store.load_app_settings()[SETTINGS_KEY]["methods"]
 
+    def test_the_dialog_goes_by_privacy_as_it_is_when_shown(self, window, shipped_privacy,
+                                                            keyed):
+        """The window keeps one Identify dialog for its whole life. The AI
+        switched off in Settings after the dialog was first built must be
+        off in it too - the next run goes by that, not by a copy of the
+        settings from before."""
+        allow(privacy.AI, privacy.WEB_SEARCH)
+        window.identify_library()
+        dialog = window._identify_dialog
+        assert dialog.method_checks[autoname.AI_LOOK].isEnabled()
+        dialog.close()
+
+        settings = store.load_app_settings()
+        for choice in (privacy.AI, privacy.WEB_SEARCH):
+            privacy.set_allowed(settings, choice, False)
+        store.save_app_settings(settings)
+
+        window.identify_library()
+        assert window._identify_dialog is dialog
+        assert not dialog.method_checks[autoname.AI_LOOK].isEnabled()
+        assert not ai.is_configured(dialog._ai_settings)
+        assert not ai.may_search(dialog._ai_settings)
+        # And switched back on, it's offered again without a restart.
+        allow(privacy.AI)
+        dialog.close()
+        window.identify_library()
+        assert dialog.method_checks[autoname.AI_LOOK].isEnabled()
+
 
 class TestTheWindows:
     def test_settings_saves_the_ticks(self, window, shipped_privacy):

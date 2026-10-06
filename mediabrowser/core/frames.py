@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 from .audio_levels import Cancelled
@@ -189,14 +190,32 @@ def grab_many(video: dict, times, progress_cb=None, cancel: threading.Event | No
 
 # Frames already grabbed this session, so asking the model again about the
 # same video (with a different tracklist, say) doesn't decode them again.
-_cache: dict[tuple, bytes | None] = {}
+# Oldest first, and no bigger than MAX_CACHE_BYTES: an Identify run over a
+# big library grabs tens of thousands of frames, which mustn't all stay.
+_cache: OrderedDict[tuple, bytes | None] = OrderedDict()
+_cache_bytes = 0
 _cache_lock = threading.Lock()
+MAX_CACHE_BYTES = 256 * 1024 * 1024
 
 
 def clear_cache() -> None:
     """Forget everything measured: all library data is being deleted."""
+    global _cache_bytes
     with _cache_lock:
         _cache.clear()
+        _cache_bytes = 0
+
+
+def _remember(key: tuple, data: bytes | None) -> None:
+    """Under the lock: keep a frame, letting the oldest go once the cache
+    is past its ceiling."""
+    global _cache_bytes
+    _cache_bytes -= len(_cache.pop(key, None) or b"")
+    _cache[key] = data
+    _cache_bytes += len(data or b"")
+    while _cache_bytes > MAX_CACHE_BYTES and len(_cache) > 1:
+        _key_gone, gone = _cache.popitem(last=False)
+        _cache_bytes -= len(gone or b"")
 
 
 def _key(video: dict, seconds: float, width: int):
@@ -216,7 +235,7 @@ def cached_grab_many(video: dict, times, progress_cb=None, cancel=None,
     )
     with _cache_lock:
         for t in wanted:
-            _cache[_key(video, t, width)] = fresh.get(t)
+            _remember(_key(video, t, width), fresh.get(t))
         return {
             t: _cache[_key(video, t, width)]
             for t in times if _cache.get(_key(video, t, width)) is not None

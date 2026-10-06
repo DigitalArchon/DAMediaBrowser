@@ -95,3 +95,9 @@ class TestPressing:
         assert hdmv.press(button(1, commands), None, playlist=0) == hdmv.Target(0, mark=2)
         commands = [bd.move(1, 5), *commands]
         assert hdmv.press(button(1, commands), None, playlist=0) == hdmv.Target(0, mark=9)
+
+    def test_objects_that_jump_to_one_another_are_given_up_on(self):
+        # Each jump nests a level: a ring of two would otherwise recurse
+        # until Python gave up, long before MAX_STEPS.
+        nav = navigation([], [[bd.jump_object(1)], [bd.jump_object(0)]])
+        assert hdmv.press(button(1, [bd.jump_object(0)]), nav) is None

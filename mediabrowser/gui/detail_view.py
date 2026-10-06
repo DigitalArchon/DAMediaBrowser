@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import chapter_edit, chaptergen, library, utils
 from mediabrowser.gui import covers
+from mediabrowser.gui.plain import tooltip
 
 COVER = 96
 
@@ -295,7 +296,7 @@ class DetailView(QWidget):
             item.setToolTip(0, SOURCE_LABELS.get(source, source))
             item.setForeground(0, _source_brush(source))
             if chapter.get("original_title"):
-                item.setToolTip(2, f"Original title: {chapter['original_title']}")
+                item.setToolTip(2, tooltip(f"Original title: {chapter['original_title']}"))
             if not chapter["title"]:
                 item.setForeground(2, _source_brush("auto-numbered"))
             item.setSizeHint(0, QSize(0, 26))

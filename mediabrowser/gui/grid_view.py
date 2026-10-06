@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import naming, utils
 from mediabrowser.gui import covers, identified
+from mediabrowser.gui.plain import tooltip
 
 THUMB = 132
 # Wider than the cover so titles have somewhere to go before wrapping.
@@ -213,7 +214,7 @@ class GridView(QListWidget):
             elif video_id in hidden:
                 item.setForeground(QColor("#565c69"))
                 tip = f"{tip}\n\nIn a hidden folder."
-            item.setToolTip(tip)
+            item.setToolTip(tooltip(tip))
             self.addItem(item)
 
         if keep_position:

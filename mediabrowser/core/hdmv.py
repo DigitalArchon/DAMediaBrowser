@@ -32,6 +32,10 @@ SET_REG, SET_SYSTEM = 0, 1
 
 # A button whose commands run longer than this is looping: give up.
 MAX_STEPS = 5000
+# Every jump or call to another object nests a level; objects that jump
+# to one another in a ring would otherwise recurse until Python gave up,
+# long before MAX_STEPS. No real disc's menu is nested this deep.
+MAX_DEPTH = 64
 
 # What a player's status registers hold before anything has run, as
 # libbluray initialises them. Menus test some of these (player profile,
@@ -149,6 +153,7 @@ class Machine:
             # A pop-up menu runs over a playing playlist; LinkMK means that one.
             self.psr[6] = playlist
         self.steps = 0
+        self.depth = 0
         self.target: Target | None = None
 
     # --- registers
@@ -242,6 +247,15 @@ class Machine:
 
     def _run(self, commands: list[Command]) -> int | None:
         """Run a command list; returns a button it selected, if any."""
+        self.depth += 1
+        if self.depth > MAX_DEPTH:
+            raise _Stop()
+        try:
+            return self._run_commands(commands)
+        finally:
+            self.depth -= 1
+
+    def _run_commands(self, commands: list[Command]) -> int | None:
         selected = None
         pc = 0
         while 0 <= pc < len(commands):
@@ -352,7 +366,10 @@ def press(button: Button, navigation: Navigation | None, menu: Menu | None = Non
     menu is showing, or None if it plays nothing (opens another page, sets
     a language, loops)."""
     machine = Machine(navigation, menu, page, playlist)
-    machine.warm_up()
-    if playlist is not None:
-        machine.psr[6] = playlist
-    return machine.press(button)
+    try:
+        machine.warm_up()
+        if playlist is not None:
+            machine.psr[6] = playlist
+        return machine.press(button)
+    except RecursionError:
+        return None  # a ring the depth limit somehow didn't catch

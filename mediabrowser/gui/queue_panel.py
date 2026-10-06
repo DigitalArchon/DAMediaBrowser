@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import utils
 from mediabrowser.core.playback import REPEAT_ALL, REPEAT_OFF, REPEAT_ONE
+from mediabrowser.gui.plain import tooltip
 
 # Cycled by the one Repeat button, in this order.
 REPEAT_CYCLE = (REPEAT_OFF, REPEAT_ALL, REPEAT_ONE)
@@ -158,7 +159,7 @@ class QueuePanel(QWidget):
                 f"{entry.title}\n{entry.video_name} · {utils.format_seconds(entry.duration)}"
             )
             item.setData(Qt.UserRole, i)
-            item.setToolTip(f"{entry.title}\n{entry.video_name}")
+            item.setToolTip(tooltip(f"{entry.title}\n{entry.video_name}"))
             if i == current_index:
                 from PySide6.QtGui import QColor, QFont
 

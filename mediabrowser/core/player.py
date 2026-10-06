@@ -45,6 +45,17 @@ def x11_environment(environ=None) -> dict:
     return env
 
 
+def socket_folder() -> Path:
+    """Where mpv's control socket goes: the session's own runtime folder
+    (XDG_RUNTIME_DIR, which only this user can enter), else the shared
+    temporary folder. Anyone who can connect to the socket can have mpv run
+    commands, so it's kept where no other user can reach it."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    if runtime and os.path.isdir(runtime) and os.access(runtime, os.W_OK):
+        return Path(runtime)
+    return Path(tempfile.gettempdir())
+
+
 class Player:
     def __init__(self):
         self._proc = None
@@ -55,7 +66,7 @@ class Player:
         # mpv. PID plus a random suffix cannot collide, and stop() unlinks
         # it rather than leaving it behind in /tmp.
         self._socket_path = (
-            Path(tempfile.gettempdir())
+            socket_folder()
             / f"media-chapter-browser-mpv-{os.getpid()}-{uuid.uuid4().hex[:8]}.sock"
         )
         # Where mpv's own S key puts a screenshot, in its own window. None:
@@ -102,9 +113,12 @@ class Player:
     def _launch(self, target_args, start, end, audio_only, extra=(), env=None):
         self.stop()
 
+        # No terminal: started from one, mpv would otherwise take its
+        # keyboard and leave it in raw mode when stopped.
         args = [
             config.MPV_BINARY, *target_args,
             f"--input-ipc-server={self._socket_path}",
+            "--terminal=no",
             *extra,
         ]
         if self.screenshot_dir is not None:
@@ -121,6 +135,7 @@ class Player:
         # which could be a library's.
         self._proc = subprocess.Popen(
             args,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,

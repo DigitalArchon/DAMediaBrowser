@@ -226,7 +226,9 @@ the address ever changing.
 **Network folders.** **Add Network Folder** lists the shares your file
 manager is connected to or has bookmarked (or takes an address like
 `smb://nas/media/Concerts`), connects if needed, and lets you pick the folder
-to use. The app needs the share presented as an ordinary folder, which is
+to use. A password typed into the address isn't kept: if the share asks
+for one, connect to it in your file manager and choose to remember it.
+The app needs the share presented as an ordinary folder, which is
 your desktop's job: **gvfs-fuse** on Cinnamon, GNOME, MATE and Xfce, or
 **kio-fuse** on KDE — if neither is installed, it says which to install.
 The address is kept with the library, so rescanning after the share has
@@ -442,9 +444,11 @@ on, so the app falls back to it, and says so, when the other is refused.
 pictures, which everything here needs, with `anthropic/claude-sonnet-5`
 (the default, and the one this app was tested with) and
 `anthropic/claude-opus-5.5` first. Any other OpenAI-compatible service
-and vision model can be used — set the endpoint and model — but web
-search is Nano-GPT's own and is switched off elsewhere, and another
-model may not read menus and video frames as well.
+and vision model can be used — set the endpoint (https, unless it runs
+on this machine: the key is never sent in the clear, nor handed on by a
+redirect to another site) and model — but web search is Nano-GPT's own
+and is switched off elsewhere, and another model may not read menus and
+video frames as well.
 
 **Romanised titles.** The name a Japanese song goes by outside Japan is
 rarely a translation of it: いいね! is released as "Iine!", not "So Good",

@@ -320,20 +320,9 @@ class IdentifyDialog(QDialog):
     def _load_options(self) -> None:
         saved = store.load_app_settings().get(SETTINGS_KEY) or {}
         chosen = set(saved.get("methods", autoname.FREE_METHODS))
-        not_ready = ai.not_ready(self._ai_settings)
-        musicbrainz = privacy.allowed(privacy.MUSICBRAINZ)
-        setlist_off = setlistfm.not_ready()
         for method, check in self.method_checks.items():
             check.setChecked(method in chosen)
-            if method in autoname.AI_METHODS and not_ready:
-                check.setEnabled(False)
-                check.setToolTip(not_ready)
-            elif method == autoname.MUSICBRAINZ and not musicbrainz:
-                check.setEnabled(False)
-                check.setToolTip(privacy.OFF[privacy.MUSICBRAINZ])
-            elif method == autoname.SETLISTFM and setlist_off:
-                check.setEnabled(False)
-                check.setToolTip(setlist_off)
+        self._refresh_availability()
         (self.accurate_first if saved.get("ai_policy") == autoname.ACCURATE_FIRST
          else self.last_resort).setChecked(True)
         self.budget.setValue(int(saved.get("ai_budget", 40)))
@@ -341,6 +330,35 @@ class IdentifyDialog(QDialog):
         self.include_partly.setChecked(bool(saved.get("include_partly", True)))
         self.include_unverified.setChecked(bool(saved.get("include_unverified", True)))
         self.include_hidden.setChecked(bool(saved.get("include_hidden", False)))
+
+    def _refresh_availability(self) -> None:
+        """Which methods may run now: Settings → Privacy, the keys and the
+        endpoint as they are at this moment. The dialog lives as long as
+        the window does, so what was true when it was first opened isn't
+        what a run may go by - the AI switched off in Settings since then
+        stays off here, and switched on, it's offered."""
+        self._ai_settings = ai.load_settings()
+        not_ready = ai.not_ready(self._ai_settings)
+        musicbrainz = privacy.allowed(privacy.MUSICBRAINZ)
+        setlist_off = setlistfm.not_ready()
+        for method, check in self.method_checks.items():
+            if method in autoname.AI_METHODS:
+                off = not_ready
+            elif method == autoname.MUSICBRAINZ:
+                off = "" if musicbrainz else privacy.OFF[privacy.MUSICBRAINZ]
+            elif method == autoname.SETLISTFM:
+                off = setlist_off
+            else:
+                off = ""
+            check.setEnabled(not off)
+            check.setToolTip(off or METHOD_TEXT[method][1])
+
+    def showEvent(self, event) -> None:
+        # Shown again after Settings changed: what may run has too.
+        if not self.running():
+            self._refresh_availability()
+            self._update_estimate()
+        super().showEvent(event)
 
     def _save_options(self) -> None:
         options = self.options()
@@ -400,6 +418,8 @@ class IdentifyDialog(QDialog):
             # After a run: back to the choices, for another.
             self._show_options(True)
             return
+        # Settings → Privacy and the keys as they are the moment it starts.
+        self._refresh_availability()
         videos = self.videos()
         options = self.options()
         if not videos or not options.methods:

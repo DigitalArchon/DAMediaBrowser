@@ -36,7 +36,8 @@ from mediabrowser.gui.worker import run_job
 
 OTHER_ENDPOINTS = (
     "Any OpenAI-compatible service and any model that can look at pictures can be "
-    "used instead - set the endpoint and the model. But web search is Nano-GPT's "
+    "used instead - set the endpoint (https, unless it runs on this machine) and the "
+    "model. But web search is Nano-GPT's "
     "own, so elsewhere it's switched off (or works differently, and may fail), and "
     "another model may not read menus and video frames as well as Claude Sonnet 5, "
     "which is what this app was tested with."
@@ -365,6 +366,11 @@ class SettingsDialog(QDialog):
         })
 
     def accept(self) -> None:
+        problem = ai.endpoint_problem(self.base_url.text().strip() or ai.DEFAULT_BASE_URL)
+        if problem:
+            self.tabs.setCurrentIndex(TAB_AI)
+            self.status.setText(f"Not saved: {problem}.")
+            return
         key = self.key.text().strip()
         if key != self._stored_key:
             try:

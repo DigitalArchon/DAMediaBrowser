@@ -120,3 +120,17 @@ def test_a_downloaded_cover_is_scaled_into_the_cache(tmp_path, monkeypatch):
     red, green, blue = centre_colour(target)
     assert red > 200 and green > 200 and blue < 80
     assert [p.name for p in config.ARTWORK_DIR.iterdir()] == ["sleeve.jpg"], "nothing left over"
+
+
+def test_an_id_that_cant_name_a_cache_file_is_left_alone(tmp_path, monkeypatch):
+    """A library file or catalog edited by hand could carry any id; one
+    that would reach outside the cache does nothing - and doesn't stop
+    the covers of every video after it (config.own would have raised)."""
+    monkeypatch.setattr(frames, "grab", lambda *a, **k: pytest.fail("grabbed a frame"))
+    video = {"type": "file", "path": str(tmp_path / "x.mkv"), "duration": 10.0}
+    for bad in ("../../etc/passwd", "a/b", "", "x" * 65, None):
+        assert artwork.find(bad, video) is None
+        assert artwork.is_resolved(bad), "nothing to do for it"
+        assert artwork.lookup(bad) is None
+        artwork.forget(bad)
+    assert not (tmp_path / "etc").exists() and not config.ARTWORK_DIR.exists()

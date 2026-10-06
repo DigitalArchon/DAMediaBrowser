@@ -110,6 +110,7 @@ class RestoreDialog(QDialog):
         box = QMessageBox(QMessageBox.Warning, "Delete Backup",
                           f"Delete the backup “{sharing.backup_title(backup)}”?",
                           QMessageBox.Cancel, self)
+        box.setTextFormat(Qt.PlainText)
         box.setInformativeText("It's deleted for good: it can't be restored afterwards.")
         go = box.addButton("Delete Backup", QMessageBox.DestructiveRole)
         box.setDefaultButton(QMessageBox.Cancel)

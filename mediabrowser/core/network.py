@@ -27,7 +27,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 NETWORK_SCHEMES = {
     "smb", "sftp", "ftp", "ftps", "dav", "davs", "webdav", "webdavs",
@@ -79,9 +79,25 @@ def is_network_uri(text: str) -> bool:
     return urlsplit(text.strip()).scheme.lower() in NETWORK_SCHEMES
 
 
+def without_password(uri: str) -> str:
+    """`uri` with no password in it. One typed into an address
+    (smb://user:secret@nas/...) would otherwise be kept with the library -
+    in its file, every backup and every export of it - and shown wherever
+    the address is. Share passwords belong to the desktop's keyring:
+    connect once in the file manager and have it remembered."""
+    parts = urlsplit(uri)
+    if parts.password is None:
+        return uri
+    userinfo, _, hostport = parts.netloc.rpartition("@")
+    user = userinfo.split(":", 1)[0]
+    netloc = f"{user}@{hostport}" if user else hostport
+    return urlunsplit(parts._replace(netloc=netloc))
+
+
 def normalise(uri: str) -> str:
-    """One spelling per location: no trailing slash (except a bare host)."""
-    uri = uri.strip()
+    """One spelling per location: no trailing slash (except a bare host),
+    and no password."""
+    uri = without_password(uri.strip())
     parts = urlsplit(uri)
     if parts.path not in ("", "/"):
         uri = uri.rstrip("/")

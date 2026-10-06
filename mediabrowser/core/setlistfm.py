@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
-from . import config, creds, privacy
+from . import config, creds, privacy, utils
 
 BASE_URL = "https://api.setlist.fm/rest/1.0"
 SITE_URL = "https://www.setlist.fm"
@@ -130,7 +130,7 @@ class Setlist:
     def describe(self) -> str:
         """"19 Apr 2026 · Copperfield Hall, Leeds, UK · Glass Harbor · 18 songs"."""
         played = sum(1 for song in self.songs if not song.tape)
-        parts = [self.date.strftime("%d %b %Y") if self.date else "no date",
+        parts = [english_date(self.date) if self.date else "no date",
                  self.where() or "somewhere", self.artist]
         if self.tour:
             parts.append(self.tour)
@@ -141,6 +141,11 @@ class Setlist:
         """As a tracklist: titles in order, no lengths."""
         return [{"title": song.title, "length": None} for song in self.songs
                 if include_tape or not song.tape]
+
+
+def english_date(date: datetime.date) -> str:
+    """"19 Apr 2026", whatever the locale."""
+    return utils.format_date(date.year, date.month, date.day, pad_day=True)
 
 
 def _parse_date(text: str | None) -> datetime.date | None:

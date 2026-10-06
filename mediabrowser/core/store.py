@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import config, naming
+from . import config, naming, protection
 
 DEFAULT_APP_SETTINGS = {
     "musicbrainz_format": "xml",
@@ -33,6 +33,9 @@ def load_app_settings() -> dict:
         return dict(DEFAULT_APP_SETTINGS)
     merged = dict(DEFAULT_APP_SETTINGS)
     merged.update(settings)
+    # The AI's key lives in the keyring (core.ai); one written here before
+    # that was so is never read back, and goes the next time this is saved.
+    merged.pop("ai_api_key", None)
     return merged
 
 
@@ -456,9 +459,22 @@ def _remove(tree: dict) -> None:
     _generation += 1
 
 
+def _locked_here(tree: dict, video: dict) -> bool:
+    """Whether a video is locked where it is in `tree`: by its own flag, or
+    by a library set locked as a whole that holds it."""
+    if video.get(protection.LOCKED):
+        return True
+    path = video.get("path")
+    return any(
+        (meta.get("settings") or {}).get(protection.LOCKED) and _under(path, root)
+        for root, meta in tree["libraries"].items()
+    )
+
+
 def _absorb(into: dict, trees, prefer_incoming: bool = False, backup: bool = True) -> None:
     """Fold trees into `into`, which holds their folders. A video both
-    have keeps the copy further along."""
+    have keeps the copy further along - unless `into`'s is locked, which
+    nothing changes, a backup or a moved copy included."""
     for tree in trees:
         if backup:
             _backup(tree, "merged")
@@ -466,6 +482,8 @@ def _absorb(into: dict, trees, prefer_incoming: bool = False, backup: bool = Tru
             into["libraries"].setdefault(root, meta)
         for video_id, video in tree["videos"].items():
             mine = into["videos"].get(video_id)
+            if mine is not None and _locked_here(into, mine):
+                continue
             if mine is None or further_along(video, mine) or (
                 prefer_incoming and not further_along(mine, video)
             ):

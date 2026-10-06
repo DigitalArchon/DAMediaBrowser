@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import library, playlists, protection, store
+from . import library, playlists, protection, store, utils
 
 
 def name(root: str) -> str:
@@ -171,8 +171,9 @@ def backup_title(backup: dict) -> str:
     text = name(backup["root"])
     if nested:
         text += f" (with {', '.join(name(r) for r in nested)})"
-    when = time.strftime("%-d %b %Y, %H:%M", time.localtime(backup["when"]))
-    return f"{text} - {when}"
+    at = time.localtime(backup["when"])
+    when = utils.format_date(at.tm_year, at.tm_mon, at.tm_mday)
+    return f"{text} - {when}, {at.tm_hour:02d}:{at.tm_min:02d}"
 
 
 def backup_detail(backup: dict) -> str:

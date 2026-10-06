@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from mediabrowser.core import network, protection, sharing, store
+from mediabrowser.gui.plain import tooltip
 
 LIBRARY_FLAG_TEXT = {
     protection.LOCKED: (
@@ -150,7 +151,7 @@ class LibraryPanel(QWidget):
             item = QListWidgetItem(name)
             # Folder names alone are ambiguous - two libraries can both be
             # called "Videos" - so the full path is always one hover away.
-            tip = f"{uri}\n{root}" if uri else root
+            tip = f"{network.without_password(uri)}\n{root}" if uri else root
             item.setData(Qt.UserRole, root)
             item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             count = lib["video_count"]
@@ -168,7 +169,7 @@ class LibraryPanel(QWidget):
                 text += " · Private"
                 tip += f"\n\n{protection.PRIVATE_TIP}"
             item.setText(text)
-            item.setToolTip(tip)
+            item.setToolTip(tooltip(tip))
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if root in self._current else Qt.Unchecked)
             self.list.addItem(item)
@@ -284,6 +285,7 @@ class LibraryPanel(QWidget):
         box = QMessageBox(QMessageBox.Warning, "Forget Library",
                           f"Forget the library “{sharing.name(root)}”?\n\n{root}",
                           QMessageBox.Cancel, self)
+        box.setTextFormat(Qt.PlainText)
         box.setInformativeText(sharing.forgetting(root))
         forget = box.addButton("Forget", QMessageBox.DestructiveRole)
         box.setDefaultButton(QMessageBox.Cancel)
