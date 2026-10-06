@@ -78,7 +78,7 @@ byte for byte, whoever builds it and wherever. Each release's `.sha256`
 can be checked against your own build of its tag:
 
 ```
-bash packaging/appimage/verify-reproducible.sh v0.18.0   # builds it twice, compares
+bash packaging/appimage/verify-reproducible.sh v0.19.0   # builds it twice, compares
 ```
 
 It carries its own Python and Qt, and runs on Ubuntu 22.04 / Debian 12 /
@@ -764,7 +764,7 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 924 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 943 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
 
