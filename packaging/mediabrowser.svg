@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- DA Media Browser. Drawn in the app's own palette (style.qss):
-     #16181d ground, #2b3040 frame, #3b4356 timeline, #7aa2f7 accent.
-     A play mark over a timeline split into chapters - which is what the
-     app is for: finding the chapter, not the file. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- DA Media Browser. Drawn in the app's own palette (style.qss):
+       #16181d ground, #2b3040 frame, #3b4356 timeline, #7aa2f7 accent.
+       A play mark over a timeline split into chapters - which is what the
+       app is for: finding the chapter, not the file.
+       Nothing goes above the <svg> tag: see build.sh. -->
   <rect width="256" height="256" rx="56" fill="#16181d"/>
   <rect x="26" y="26" width="204" height="204" rx="44" fill="none" stroke="#2b3040" stroke-width="6"/>
 

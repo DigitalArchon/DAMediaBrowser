@@ -248,6 +248,15 @@ done
 rm -rf "$CACHE/debs/x"
 
 log "Launcher, desktop entry, icon"
+# GTK 3 (Cinnamon's menu and icon chooser, among others) loads an icon from
+# its bytes alone, and the MIME database calls it SVG only if "<svg" is in
+# the first 256. The icon once opened with a long comment, and Cinnamon
+# showed no icon at all while Gear Lever, which goes by the name, showed it.
+if ! head -c 256 "$REPO/packaging/mediabrowser.svg" | grep -qF '<svg'; then
+    echo "packaging/mediabrowser.svg: the <svg> tag must start in the first 256 bytes" >&2
+    echo "or desktops that sniff the icon's type won't show it; move comments inside it" >&2
+    exit 1
+fi
 install -m 755 "$HERE/AppRun" "$APPDIR/AppRun"
 cp "$REPO/packaging/mediabrowser.svg" "$APPDIR/mediabrowser.svg"
 mkdir -p "$APPDIR/usr/share/doc/mediabrowser"
