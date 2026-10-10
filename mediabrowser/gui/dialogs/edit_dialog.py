@@ -234,6 +234,9 @@ class EditTracklistDialog(QDialog):
     def _refresh(self) -> None:
         # Repopulating fires itemChanged for every row; suppressed so the
         # rebuild isn't mistaken for the user editing every title at once.
+        # It stays scrolled where it was: renaming chapter 40 mustn't throw
+        # the list back to chapter 1.
+        scrolled = self.tree.verticalScrollBar().value()
         self.tree.blockSignals(True)
         self.tree.clear()
         for i, title in enumerate(self._titles):
@@ -253,6 +256,9 @@ class EditTracklistDialog(QDialog):
                 item.setForeground(2, QColor("#3a3f4b"))
             self.tree.addTopLevelItem(item)
         self.tree.blockSignals(False)
+        # Laid out now, or the scroll range is still empty and clamps it to 0.
+        self.tree.doItemsLayout()
+        self.tree.verticalScrollBar().setValue(scrolled)
 
         self.unused_list.clear()
         self.unused_list.addItems(self._unused)
@@ -271,6 +277,7 @@ class EditTracklistDialog(QDialog):
             text = ""
         self._titles[index] = text
         self._refresh()
+        self._select(index)
 
     def _selected(self) -> int | None:
         item = self.tree.currentItem()

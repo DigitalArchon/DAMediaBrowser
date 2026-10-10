@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -121,6 +121,11 @@ SHELF_LIST = 1
 VIEW_SETTING = "shelf_view"
 VIEW_NAMES = {SHELF_GRID: "tiles", SHELF_LIST: "list"}
 
+# The shelf's order, and the window's size and panels as they were left -
+# all kept across restarts, as the view is.
+SORT_SETTING = "shelf_sort"
+WINDOW_SETTING = "window"
+
 # How far Ctrl+Left / Ctrl+Right jump.
 SEEK_STEP_SECONDS = 10.0
 
@@ -154,7 +159,8 @@ class MainWindow(QMainWindow):
         self._artwork_pending: set[str] = set()
         self._scanning = False
         self._scan_cancel: threading.Event | None = None
-        self._sort = SORT_MODES[0]
+        saved_sort = store.load_app_settings().get(SORT_SETTING)
+        self._sort = next((mode for mode in SORT_MODES if mode[0] == saved_sort), SORT_MODES[0])
         self._missing: set[str] = set()
         self._open_video_id: str | None = None
         # Whether videos in hidden folders are on the shelf. Deliberately not
@@ -199,6 +205,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._build_actions()
+        self._restore_window()
         self.refresh_library()
 
     # --- the libraries on show -------------------------------------------------
@@ -432,6 +439,7 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> None:
         bar = QToolBar("Main")
+        bar.setObjectName("mainToolBar")  # saveState names everything it keeps
         bar.setMovable(False)
         self.addToolBar(bar)
 
@@ -466,7 +474,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.list_button)
 
         self.sort_button = QToolButton()
-        self.sort_button.setText("Sort: Name")
+        self.sort_button.setText(f"Sort: {self._sort[1]}")
         self.sort_button.setToolTip("How the shelf is ordered")
         self.sort_button.setPopupMode(QToolButton.InstantPopup)
         sort_menu = QMenu(self.sort_button)
@@ -661,7 +669,7 @@ class MainWindow(QMainWindow):
         view_menu = menu.addMenu("&View")
         focus_search = QAction("Search", self)
         focus_search.setShortcut(QKeySequence.Find)
-        focus_search.triggered.connect(self.search.setFocus)
+        focus_search.triggered.connect(self.focus_search)
         view_menu.addAction(focus_search)
 
         tiles_action = QAction("Tiles", self)
@@ -861,6 +869,9 @@ class MainWindow(QMainWindow):
         for mode in SORT_MODES:
             if mode[0] == key:
                 self._sort = mode
+                settings = store.load_app_settings()
+                settings[SORT_SETTING] = key
+                store.save_app_settings(settings)
                 break
         self.refresh_library()
 
@@ -1298,7 +1309,16 @@ class MainWindow(QMainWindow):
 
     # --- navigation ------------------------------------------------------
 
+    def focus_search(self) -> None:
+        """Into the search box, what's there selected: typing replaces it."""
+        self.search.setFocus()
+        self.search.selectAll()
+
     def show_grid(self) -> None:
+        if self.search.hasFocus() and self.search.text():
+            # Esc in the search box clears it, as it does most places.
+            self.search.clear()
+            return
         if self._fullscreen:
             # Esc in fullscreen leaves fullscreen, and nothing more.
             self.set_fullscreen(False)
@@ -1776,7 +1796,7 @@ class MainWindow(QMainWindow):
             label = f"{name}  ·  {count} · {utils.format_seconds(playlists.length(playlist))}"
             if several:
                 label += f"  ·  {Path(root).name}"
-            sub = menu.addMenu(label)
+            sub = menu.addMenu(_menu_text(label))
             # Play: as it was saved. The rest say how.
             saved_as = "Audio" if playlists.plays_audio_only(
                 playlist, self.default_audio_only()) else "Video"
@@ -2130,7 +2150,9 @@ class MainWindow(QMainWindow):
             QLineEdit.Normal,
             chapter["title"] or "",
         )
-        if not accepted:
+        # OK on the name as it was changes nothing - not even where it came
+        # from (Mark Name as Checked is for that).
+        if not accepted or _same_title(chapter, new_title):
             return
         utils.set_chapter_title(chapter, new_title)
         self._save_and_refresh()
@@ -2321,7 +2343,10 @@ class MainWindow(QMainWindow):
             for chapter, title in zip(
                 current[1]["chapters"], dialog.titles(), strict=False
             ):
-                utils.set_chapter_title(chapter, title)
+                # Only the names changed are the person's; the rest keep
+                # where they came from, as Manual Edit keeps them.
+                if not _same_title(chapter, title):
+                    utils.set_chapter_title(chapter, title)
             self._save_and_refresh()
 
     # --- folders ---------------------------------------------------------
@@ -2409,7 +2434,9 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda: self.hide_video(video_id))
             menu.addAction(action)
         for folder in covering:
-            action = QAction(f"Unhide Folder “{folders.relative_name(folder, root)}”", menu)
+            action = QAction(
+                _menu_text(f"Unhide Folder “{folders.relative_name(folder, root)}”"), menu
+            )
             action.triggered.connect(lambda _checked=False, f=folder: self.unhide_folder(f))
             menu.addAction(action)
         if covering:
@@ -2418,7 +2445,9 @@ class MainWindow(QMainWindow):
         chain = folders.folder_chain(video, root)
         if len(chain) == 1:
             folder = chain[0]
-            action = QAction(f"Hide Folder “{folders.relative_name(folder, root)}”", menu)
+            action = QAction(
+                _menu_text(f"Hide Folder “{folders.relative_name(folder, root)}”"), menu
+            )
             action.triggered.connect(lambda: self.hide_folder(folder))
             menu.addAction(action)
         elif chain:
@@ -2426,7 +2455,7 @@ class MainWindow(QMainWindow):
             # "Extras/Trailers" alone, or all of "Extras".
             submenu = menu.addMenu("Hide Folder")
             for folder in chain:
-                action = QAction(folders.relative_name(folder, root), submenu)
+                action = QAction(_menu_text(folders.relative_name(folder, root)), submenu)
                 action.triggered.connect(lambda _checked=False, f=folder: self.hide_folder(f))
                 submenu.addAction(action)
 
@@ -3202,7 +3231,29 @@ class MainWindow(QMainWindow):
         if self.editor.active():
             # Its own mpv, its poll and its hold on the keyboard go with it.
             self.editor._close()
+        # Out of fullscreen first, so the next start opens as a window.
+        self.set_fullscreen(False)
+        self._remember_window()
         super().closeEvent(event)
+
+    def _remember_window(self) -> None:
+        settings = store.load_app_settings()
+        settings[WINDOW_SETTING] = {
+            "geometry": bytes(self.saveGeometry().toBase64()).decode("ascii"),
+            "panels": bytes(self.saveState().toBase64()).decode("ascii"),
+        }
+        store.save_app_settings(settings)
+
+    def _restore_window(self) -> None:
+        """The size, and the panels, the window was closed with. (Where it
+        was on the screen too, where the desktop lets an app say so.)"""
+        saved = store.load_app_settings().get(WINDOW_SETTING)
+        if not isinstance(saved, dict):
+            return
+        for key, restore in (("geometry", self.restoreGeometry),
+                             ("panels", self.restoreState)):
+            if isinstance(saved.get(key), str):
+                restore(QByteArray.fromBase64(saved[key].encode()))
 
 
 def _screenshot_dir() -> Path:
@@ -3222,6 +3273,16 @@ def _unused_path(folder: Path, name: str, seconds: float) -> Path:
         path = folder / f"{stem} ({count}).png"
         count += 1
     return path
+
+
+def _same_title(chapter: dict, title: str | None) -> bool:
+    return (chapter.get("title") or "") == (title or "").strip()
+
+
+def _menu_text(text: str) -> str:
+    """A name as a menu shows it: a lone & would otherwise vanish, taking
+    the letter after it as the item's shortcut ("Salt & Iron")."""
+    return text.replace("&", "&&")
 
 
 def _track_label(track: dict) -> str:

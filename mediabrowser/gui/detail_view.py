@@ -253,6 +253,10 @@ class DetailView(QWidget):
 
     def show_video(self, video_id: str, video: dict, keep_selection: bool = False) -> None:
         previous = self.selected_chapter() if keep_selection else None
+        # The rest of the selection, and where the list was scrolled: a
+        # rename or a cover arriving rebuilds it, and it mustn't jump.
+        also_selected = self.selected_chapters() if keep_selection else []
+        scrolled = self.tree.verticalScrollBar().value()
         self._video = video
         self._video_id = video_id
 
@@ -304,6 +308,13 @@ class DetailView(QWidget):
 
         if previous is not None and previous < self.tree.topLevelItemCount():
             self.tree.setCurrentItem(self.tree.topLevelItem(previous))
+            for index in also_selected:
+                if index < self.tree.topLevelItemCount():
+                    self.tree.topLevelItem(index).setSelected(True)
+        if keep_selection:
+            # Laid out now, or the scroll range is still empty and clamps it to 0.
+            self.tree.doItemsLayout()
+            self.tree.verticalScrollBar().setValue(scrolled)
         self._update_buttons()
 
     def selected_chapter(self) -> int | None:

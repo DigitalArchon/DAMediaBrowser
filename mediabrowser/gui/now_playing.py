@@ -70,6 +70,9 @@ class NowPlayingBar(QWidget):
         self.subtitle = QLabel("")
         self.subtitle.setObjectName("nowPlayingSubtitle")
         self.subtitle.setTextFormat(Qt.PlainText)
+        # A long chapter title must not set the window's minimum width.
+        for label in (self.title, self.subtitle):
+            label.setMinimumWidth(1)
 
         labels = QVBoxLayout()
         labels.setContentsMargins(0, 0, 0, 0)

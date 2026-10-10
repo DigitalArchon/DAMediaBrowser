@@ -179,6 +179,9 @@ class GridView(QListWidget):
         missing = set(missing)
         hidden = set(hidden)
         scrolled = self.verticalScrollBar().value() if keep_position else 0
+        # The video picked stays picked, as the shelf stays scrolled.
+        chosen = self.selected_video_id() if keep_position else None
+        chosen_item = None
         self.clear()
 
         labels = [
@@ -216,7 +219,11 @@ class GridView(QListWidget):
                 tip = f"{tip}\n\nIn a hidden folder."
             item.setToolTip(tooltip(tip))
             self.addItem(item)
+            if video_id == chosen:
+                chosen_item = item
 
+        if chosen_item is not None:
+            self.setCurrentItem(chosen_item)
         if keep_position:
             # Icon mode lays its items out lazily, so until it does the
             # scroll range is empty and any position is clamped to the top.

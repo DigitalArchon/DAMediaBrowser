@@ -139,6 +139,21 @@ class TestSearch:
         chapters = [chapter("Megitsune"), chapter("Karate"), chapter("Megitsune Reprise")]
         assert [i for i, _ in utils.matching_chapters(chapters, "megi")] == [0, 2]
 
+    def test_accents_on_latin_letters_are_ignored(self):
+        video = {"display_name": "Café Lumière - Live"}
+        assert utils.matches_search(video, [], "cafe lumiere")
+        assert utils.matches_search({"display_name": "Disc"}, [chapter("Zoë")], "zoe")
+        assert [i for i, _ in utils.matching_chapters([chapter("Zoë")], "ZOE")] == [0]
+
+    def test_a_dakuten_still_makes_a_different_letter(self):
+        # か and が are different letters, not one with an accent.
+        assert not utils.matches_search({"display_name": "Disc"}, [chapter("が")], "か")
+        assert utils.matches_search({"display_name": "Disc"}, [chapter("が")], "が")
+
+    def test_full_width_letters_match_ordinary_ones(self):
+        assert utils.matches_search({"display_name": "ＧＬＡＳＳ ＨＡＲＢＯＲ"}, [], "glass")
+        assert utils.matches_search({"display_name": "ｶﾞﾗｽ"}, [], "ガラス")
+
     def test_matching_chapters_with_no_search_returns_them_all(self):
         chapters = [chapter("A"), chapter("B")]
         assert len(utils.matching_chapters(chapters, "")) == 2

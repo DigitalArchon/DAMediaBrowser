@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import re
+import unicodedata
 from pathlib import PurePath
 
 # The app's text is English wherever it runs; strftime("%b") would name
@@ -237,16 +238,32 @@ def chapter_search_text(index: int, chapter) -> str:
     return f"{text}\n{original}" if original else text
 
 
+def search_fold(text: str) -> str:
+    """Text as search compares it: without case, and without the accents
+    on Latin letters, so "cafe lumiere" finds "Café Lumière" and "zoe"
+    "Zoë". Full-width letters are matched as ordinary ones. A mark
+    that changes a letter elsewhere - the dakuten that makes か into が -
+    stays: there it's a different letter, not an accent."""
+    if text.isascii():
+        return text.casefold()
+    kept = []
+    for char in unicodedata.normalize("NFKD", text):
+        if unicodedata.combining(char) and kept and kept[-1].isascii():
+            continue
+        kept.append(char)
+    return unicodedata.normalize("NFC", "".join(kept)).casefold()
+
+
 def matches_search(video, chapters, text: str) -> bool:
     """Whether a video should be listed for this search text - by its own
     name, or by any of its chapter titles.
     """
     if not text:
         return True
-    text = text.lower()
-    if text in video["display_name"].lower():
+    text = search_fold(text)
+    if text in search_fold(video["display_name"]):
         return True
-    return any(text in chapter_search_text(i, ch).lower() for i, ch in enumerate(chapters))
+    return any(text in search_fold(chapter_search_text(i, ch)) for i, ch in enumerate(chapters))
 
 
 def matching_chapters(chapters, text: str):
@@ -255,7 +272,8 @@ def matching_chapters(chapters, text: str):
     """
     if not text:
         return list(enumerate(chapters))
-    text = text.lower()
+    text = search_fold(text)
     return [
-        (i, ch) for i, ch in enumerate(chapters) if text in chapter_search_text(i, ch).lower()
+        (i, ch) for i, ch in enumerate(chapters)
+        if text in search_fold(chapter_search_text(i, ch))
     ]

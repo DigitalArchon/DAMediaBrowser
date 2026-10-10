@@ -50,3 +50,6 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The tests import each other's helpers as tests.*, which needs the
+# checkout on the path - there with python -m pytest, not with plain pytest.
+pythonpath = ["."]

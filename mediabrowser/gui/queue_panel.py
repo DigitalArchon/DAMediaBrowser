@@ -58,6 +58,8 @@ class QueuePanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._repeat = REPEAT_OFF
+        # (video id, chapter) of the entry the list last showed as playing.
+        self._shown_current: tuple[str, int] | None = None
 
         # Without a minimum of its own the dock is sized by its widest row,
         # which on a long track name pushes the whole window wider.
@@ -96,6 +98,8 @@ class QueuePanel(QWidget):
 
         self.repeat_button = QToolButton()
         self.repeat_button.setText("Repeat")
+        # Lit, as Shuffle is, while it repeats; _cycle_repeat sets which way.
+        self.repeat_button.setCheckable(True)
         self.repeat_button.setToolTip(REPEAT_LABELS[REPEAT_OFF][1])
         self.repeat_button.clicked.connect(self._cycle_repeat)
 
@@ -152,6 +156,16 @@ class QueuePanel(QWidget):
     # --- population ------------------------------------------------------
 
     def show_queue(self, entries, current_index: int | None) -> None:
+        # The same entry playing, or still none (one removed or moved
+        # elsewhere): the list stays where it was scrolled. Another: it's
+        # brought into view.
+        playing = (
+            (entries[current_index].video_id, entries[current_index].chapter_index)
+            if current_index is not None and 0 <= current_index < len(entries) else None
+        )
+        same_current = playing == self._shown_current
+        self._shown_current = playing
+        scrolled = self.list.verticalScrollBar().value()
         self.list.blockSignals(True)
         self.list.clear()
         for i, entry in enumerate(entries):
@@ -175,7 +189,10 @@ class QueuePanel(QWidget):
             # playing already, and a selection made to remove others mustn't
             # take it along.
             self.list.setCurrentRow(current_index, QItemSelectionModel.NoUpdate)
-            self.list.scrollToItem(self.list.item(current_index))
+            if not same_current:
+                self.list.scrollToItem(self.list.item(current_index))
+        if same_current:
+            self.list.verticalScrollBar().setValue(scrolled)
 
         has_entries = bool(entries)
         self.list.setVisible(has_entries)

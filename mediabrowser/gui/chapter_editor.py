@@ -246,14 +246,20 @@ class ChapterEditor(QWidget):
         self.remove_button = QPushButton("Remove")
         self.remove_button.setToolTip("Take the selected chapter away (Delete)")
         self.remove_button.clicked.connect(self.remove_selected)
-        mark_row = QHBoxLayout()
-        mark_row.setContentsMargins(0, 0, 0, 0)
-        mark_row.setSpacing(4)
-        for button in (self.go_button, self.move_button, self.earlier_button,
-                       self.later_button, self.remove_button):
-            button.setFocusPolicy(Qt.NoFocus)
-            mark_row.addWidget(button)
-        mark_row.addStretch(1)
+        # Two rows, not one: in one, these five set the narrowest the editor
+        # can be - and the editor shares the main area with every other page,
+        # so it set the narrowest the whole window could be, editing or not.
+        mark_rows = []
+        for row_buttons in ((self.go_button, self.move_button),
+                            (self.earlier_button, self.later_button, self.remove_button)):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            for button in row_buttons:
+                button.setFocusPolicy(Qt.NoFocus)
+                row.addWidget(button)
+            row.addStretch(1)
+            mark_rows.append(row)
 
         names_caption = QLabel("Names in order (optional)")
         names_caption.setObjectName("sectionCaption")
@@ -287,7 +293,8 @@ class ChapterEditor(QWidget):
         right.addWidget(caption)
         right.addWidget(self.tree, 1)
         right.addLayout(name_row)
-        right.addLayout(mark_row)
+        for row in mark_rows:
+            right.addLayout(row)
         right.addWidget(names_caption)
         right.addWidget(names_hint)
         right.addWidget(self.names)

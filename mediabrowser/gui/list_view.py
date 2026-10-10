@@ -112,6 +112,9 @@ class ListView(QTreeWidget):
         missing = set(missing)
         hidden = set(hidden)
         scrolled = self.verticalScrollBar().value() if keep_position else 0
+        # The video picked stays picked, as the shelf stays scrolled.
+        chosen = self.selected_video_id() if keep_position else None
+        chosen_item = None
         self.clear()
 
         for video_id, video in videos:
@@ -163,10 +166,14 @@ class ListView(QTreeWidget):
             row.setToolTip(0, tooltip(tip))
 
             self.addTopLevelItem(row)
+            if video_id == chosen:
+                chosen_item = row
 
             if search:
                 self._add_matches(row, video_id, video, search)
 
+        if chosen_item is not None:
+            self.setCurrentItem(chosen_item)
         if keep_position:
             self.doItemsLayout()
             self.verticalScrollBar().setValue(scrolled)

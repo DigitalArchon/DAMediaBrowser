@@ -313,11 +313,12 @@ says a video is fine as it is — a short music video, or one named by hand
 with a chapter or two left on purpose: it shows green as *Marked named*,
 and Identify Library leaves it alone.
 
-**Searching** matches video names and chapter names. It switches to the list
+**Searching** matches video names and chapter names, without minding
+capitals or accents (`cafe` finds *Café*). It switches to the list
 and puts the chapters that matched underneath their video, so a song you can
 only half-remember the home of is one double-click from playing — no need to
-open each disc to look. Clearing the search puts back whichever view you were
-using.
+open each disc to look. `Ctrl+F` goes to the search box and `Esc` clears it;
+clearing the search puts back whichever view you were using.
 
 **Detect Chapters.** Rename a chapter at a time, or open **Detect
 Chapters** to do a whole video at once.
@@ -764,7 +765,7 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 943 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 959 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
 
