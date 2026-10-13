@@ -189,6 +189,8 @@ class MainWindow(QMainWindow):
         self._was_maximized = False
         self._pointer = None
         self._pointer_still = 0
+        # Whether the queue was showing when Manual Edit hid it.
+        self._queue_shown_before_editing = True
         # Identify Library, once opened: it isn't modal, and a run in it
         # carries on with the window closed.
         self._identify_dialog = None
@@ -442,6 +444,7 @@ class MainWindow(QMainWindow):
         bar.setObjectName("mainToolBar")  # saveState names everything it keeps
         bar.setMovable(False)
         self.addToolBar(bar)
+        self.toolbar = bar
 
         self.rescan_action = QAction("Rescan", self)
         self.rescan_action.setToolTip("Re-read this folder, keeping the names you've given")
@@ -665,6 +668,9 @@ class MainWindow(QMainWindow):
         quit_action.setShortcut(QKeySequence.Quit)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
+        # The window's too, so its key still works while Manual Edit has
+        # the File menu switched off.
+        self.addAction(quit_action)
 
         view_menu = menu.addMenu("&View")
         focus_search = QAction("Search", self)
@@ -777,6 +783,9 @@ class MainWindow(QMainWindow):
             action.setShortcut(QKeySequence(sequence))
             action.triggered.connect(slot)
             chapters_menu.addAction(action)
+        # Split at Playhead inserts a chapter in Manual Edit, where the rest
+        # of this menu is switched off: the window's too, as Quit is.
+        self.addAction(chapters_menu.actions()[0])
         chapters_menu.addSeparator()
         names_action = QAction("Detect Chapters…", self)
         names_action.triggered.connect(self.chapters_and_names)
@@ -809,6 +818,9 @@ class MainWindow(QMainWindow):
         )
         export_audio_action.triggered.connect(lambda: self.export_audio())
         chapters_menu.addAction(export_audio_action)
+
+        # What Manual Edit switches off while it's open (_set_editing).
+        self._menus_off_while_editing = (file_menu, chapters_menu, playlists_menu)
 
         help_menu = menu.addMenu("&Help")
         about_action = QAction("About DA Media Browser…", self)
@@ -1539,6 +1551,11 @@ class MainWindow(QMainWindow):
                      in_app: bool | None = None) -> None:
         """Play the queue from its current entry - which callers have put on
         this chapter. `in_app` overrides the setting for where video plays."""
+        if self.editor.active():
+            # One mpv at a time, and the editor's is the one: see _set_editing.
+            self._set_status("Finish with Manual Edit before playing anything else.",
+                             "warning")
+            return
         video = self.data["videos"].get(video_id)
         if video is None or not 0 <= chapter_index < len(video["chapters"]):
             self.stop_playback()
@@ -2316,17 +2333,46 @@ class MainWindow(QMainWindow):
         # One mpv at a time: the editor's is the one now.
         self.stop_playback()
         self.pages.setCurrentIndex(PAGE_EDITOR)
+        self._set_editing(True)
+        self.editor.open(video_id, video, start)
+
+    def _set_editing(self, on: bool) -> None:
+        """Manual Edit has the window to itself while it's open. Whatever
+        else could start something playing would start a second mpv over
+        the editor's - the same song twice at once - and whatever could
+        change the library, or which one is on show, would change it under
+        the chapters being edited."""
         # The editor has its own transport; the bar would only say
         # "Nothing playing" under it.
-        self.now_playing_bar.hide()
-        self.editor.open(video_id, video, start)
+        self.now_playing_bar.setVisible(not on)
+        # The queue goes away rather than greying: it's the room the
+        # chapter list needs. Back as it was afterwards.
+        if on:
+            self._queue_shown_before_editing = not self.queue_dock.isHidden()
+            self.queue_dock.hide()
+        elif self._queue_shown_before_editing:
+            self.queue_dock.show()
+        self.queue_dock.toggleViewAction().setEnabled(not on)
+        for widget in (self.toolbar, self.libraries):
+            widget.setEnabled(not on)
+        # A menu switched off takes its actions' keys with it (Ctrl+R,
+        # Ctrl+M...), but for the two the window has as well.
+        for menu in self._menus_off_while_editing:
+            menu.menuAction().setEnabled(not on)
 
     def _on_editor_closed(self) -> None:
         self.pages.setCurrentIndex(PAGE_DETAIL)
-        self.now_playing_bar.show()
+        self._set_editing(False)
 
     def _on_editor_saved(self, video_id: str, chapters, origin) -> None:
-        if video_id not in self.data["videos"] or self._refuse_locked(video_id):
+        if video_id not in self.data["videos"]:
+            # A scan that finished meanwhile no longer found it.
+            self._set_status(
+                "That video is no longer in the library, so its chapters weren't saved.",
+                "warning",
+            )
+            return
+        if self._refuse_locked(video_id):
             return
         self._restructure(chapters, lambda old: old, origin, video_id=video_id)
         named = sum(1 for c in chapters if c["title"])
@@ -3220,6 +3266,12 @@ class MainWindow(QMainWindow):
         return True
 
     def closeEvent(self, event) -> None:
+        # Chapters being edited aren't thrown away without asking: the same
+        # question Cancel asks. Its mpv, its poll and its hold on the
+        # keyboard go when it closes.
+        if self.editor.active() and not self.editor.request_close():
+            event.ignore()
+            return
         if self._identify_dialog is not None and self._identify_dialog.running():
             # A run finishes the video it's on and stops; what's done is kept.
             self._identify_dialog.stop()
@@ -3228,9 +3280,6 @@ class MainWindow(QMainWindow):
         self._poll.stop()
         self.session.stop()
         QApplication.instance().removeEventFilter(self)
-        if self.editor.active():
-            # Its own mpv, its poll and its hold on the keyboard go with it.
-            self.editor._close()
         # Out of fullscreen first, so the next start opens as a window.
         self.set_fullscreen(False)
         self._remember_window()

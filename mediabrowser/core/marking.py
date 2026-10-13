@@ -14,7 +14,10 @@ marking through the show names it as it goes. Names can also be put on
 marks in order all at once, for marks made before the names were.
 
 Every operation leaves the sheet in time order with a mark at 0; nothing
-here is applied to a video until chapters() is asked for.
+here is applied to a video until chapters() is asked for. The marks share
+the video between them - each song ends where the next starts, the last
+where the video does - so a mark moves between its neighbours and never
+past one: the songs stay in the order they were marked in.
 """
 
 from __future__ import annotations
@@ -95,6 +98,22 @@ class MarkSheet:
         end = self._marks[index + 1].start if index + 1 < len(self._marks) else self.duration
         return end - self._marks[index].start
 
+    def tenths(self) -> list[tuple[int, int]]:
+        """Each mark's start and length in tenths of a second, for showing.
+        The boundaries are rounded and the lengths taken between them, so a
+        start and its length always give the next start and the lengths add
+        up to the video's - which lengths rounded one by one don't."""
+        edges = [int(round(m.start * 10)) for m in self._marks]
+        edges.append(int(round(self.duration * 10)))
+        return [(edges[i], edges[i + 1] - edges[i]) for i in range(len(self._marks))]
+
+    def room(self, index: int) -> tuple[float, float]:
+        """The earliest and latest mark `index` can start: clear of the
+        marks either side of it, or of the end of the video."""
+        after = (self._marks[index + 1].start if index + 1 < len(self._marks)
+                 else self.duration)
+        return self._marks[index - 1].start + MIN_GAP_SECONDS, after - MIN_GAP_SECONDS
+
     # --- changing --------------------------------------------------------
 
     def _check(self, position: float, ignore: int | None = None) -> float:
@@ -126,15 +145,25 @@ class MarkSheet:
         del self._marks[index]
 
     def move(self, index: int, position: float) -> int:
-        """Put mark `index` at `position` instead; returns its new index."""
+        """Put mark `index` at `position` instead, somewhere between the
+        marks either side of it; returns its index, which is as it was."""
         if index == 0:
             raise MarkError("the first mark is where the video starts")
         if not 0 < index < len(self._marks):
             raise MarkError("no such mark")
+        position = float(position)
+        # Past a neighbour it would take that song's place in the order.
+        before = self._marks[index - 1]
+        if position <= before.start:
+            raise MarkError(
+                f"the one before it starts at {utils.format_seconds(before.start)}"
+            )
+        if index + 1 < len(self._marks) and position >= self._marks[index + 1].start:
+            after = self._marks[index + 1]
+            raise MarkError(f"the next one starts at {utils.format_seconds(after.start)}")
         position = self._check(position, ignore=index)
         self._marks[index] = replace(self._marks[index], start=position)
-        self._marks.sort(key=lambda m: m.start)
-        return self.at(position)
+        return index
 
     def nudge(self, index: int, delta: float) -> int:
         return self.move(index, self._marks[index].start + delta)
@@ -147,6 +176,10 @@ class MarkSheet:
     def clear(self) -> None:
         """Start again: one mark at 0, unnamed. The names in order stay."""
         self._marks = [Mark(0.0)]
+
+    def restore(self, marks) -> None:
+        """Back to marks as marks() gave them earlier: an undo."""
+        self._marks = list(marks)
 
     def set_names(self, names) -> None:
         """The names in order, as typed: one per line, blanks ignored."""

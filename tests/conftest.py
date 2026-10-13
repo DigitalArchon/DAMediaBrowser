@@ -111,6 +111,7 @@ def window(app, tmp_path, monkeypatch):
     w = MainWindow()
     yield w
     w.player.stop()
+    w.editor._dirty = False  # closing asks about edits left unsaved
     w.close()
 
 

@@ -476,28 +476,62 @@ is applied until Apply.
 **Manual Edit** (`Ctrl+Shift+K`, or the button under the chapter list)
 is for doing it all by hand — no AI account needed, and the way to name
 a video nothing else can. The video plays right in the main window, with
-a timeline of its chapters beneath it and the chapters beside it:
+a timeline of its chapters beneath it and the chapters beside it. It has
+the window to itself while it's open: the queue is put away, and the
+libraries, the toolbar and the menus that play something else or change
+the library are switched off, until you save or cancel.
 
 - Get close, then exact: jump ten seconds, five or one (buttons, or
   ←/→ with Ctrl or Shift for the bigger steps), then a frame at a time
   (`,` and `.`). Page Up/Down go to the previous or next chapter; click
   the timeline to go anywhere.
+- The timeline zooms — the mouse wheel over it, the buttons under it, or
+  `+` and `-` (`0` for the whole video again) — down to half a minute
+  across, where a chapter can be dragged to the tenth of a second. A
+  whole concert in its width is several seconds to the pixel. Zoomed in,
+  it follows the playhead, and Shift and the wheel move along it.
+- **Show Audio Levels**, under the timeline, draws how loud the video
+  is along the way, the bass brighter over the rest: where the bass
+  drops away is usually where one song ends and the next hasn't
+  started. It's only measured when you ask, since it reads the whole
+  file's audio once — a few seconds to a minute, longer from a network
+  share. It can be stopped, the video can be worked on meanwhile, and
+  what's measured is kept until the app closes. Files only, not discs.
 - **Insert chapter here** (or `M`) starts a chapter at the playhead and
   puts you straight into its name; Enter goes back to moving through
   the video.
 - Know the setlist? Paste it into *Names in order* first, and each
   chapter you insert takes the next name — or name the chapters in
   order afterwards.
-- A chapter a little out is dragged along the timeline, moved to the
-  playhead, or nudged a second; `Delete` removes one.
+- Click a chapter to go to where it starts; double-click to play it
+  from there. Its name is typed in the box under the list (`Enter`).
+  The selection keeps up with the chapter that's playing, unless you're
+  typing a name.
+- A chapter a little out is dragged along the timeline, started at the
+  playhead, or nudged a second; `Delete` removes one. **End chapter
+  here** (or `E`) is for a song that has finished before its chapter
+  has: the next chapter starts at the playhead instead. **Hear the
+  Join** (or `J`) plays from five seconds before the selected chapter
+  starts, to check it by ear.
+- The chapters always share the whole video between them — each ends
+  where the next starts, the last where the video does — so moving a
+  boundary takes from one chapter what it gives the other, a boundary
+  never goes past the one either side of it, and the lengths in the
+  list add up to the video's. Times are shown to the tenth of a second,
+  the playhead's and the chapters' alike.
+- **Undo** (`Ctrl+Z`) takes back each change in turn — a chapter put in,
+  taken out, moved or named — and **Redo** (`Ctrl+Shift+Z`) makes it
+  again.
 
-Nothing changes until **Save Chapters**. A chapter whose start and name
-you left alone keeps where its name came from, and if you only renamed
-chapters, a disc's or file's own chapters stay its own. The video is
-drawn into the window on X11 — on a Wayland desktop the app runs under
-XWayland for this (and so does mpv), unless `QT_QPA_PLATFORM` is set to
-`wayland` alone, in which case it plays in mpv's own window, the editor
-still drives it, and it says how to bring it in.
+Nothing changes until **Save Chapters**, and leaving with changes
+unsaved — closing the window included — asks first. A chapter whose
+start and name you left alone keeps where its name came from, and if you
+only renamed chapters, a disc's or file's own chapters stay its own. The
+video is drawn into the window on X11 — on a Wayland desktop the app
+runs under XWayland for this (and so does mpv), unless
+`QT_QPA_PLATFORM` is set to `wayland` alone, in which case it plays in
+mpv's own window, the editor still drives it, and it says how to bring
+it in.
 
 **Identify Library** (`Ctrl+I`, in the File menu) does all of that for
 every video that still needs it, unattended — start it and walk away. You
@@ -660,7 +694,7 @@ asked about: replaced, or kept and skipped.
 | `S` `V` `J` `#` | with the video in the app focused: screenshot, subtitles on/off, next subtitles, next audio track |
 | `Ctrl+Shift+P` | pop video out to mpv's window, or bring it back |
 | `Ctrl+K` | split the chapter at the playhead |
-| `Ctrl+Shift+K` | Manual Edit (in it: Space, ←/→, `,` `.`, `M`, Page Up/Down) |
+| `Ctrl+Shift+K` | Manual Edit (in it: Space, ←/→, `,` `.`, `M`, `E`, `J`, Page Up/Down, `+` `-` `0`, `Ctrl+Z`) |
 | `Ctrl+M` | merge the selected chapter with the next |
 | `Ctrl+[` `Ctrl+]` | move the selected chapter's start 1s earlier / later |
 | `Ctrl+1` `Ctrl+2` | tiles / list |

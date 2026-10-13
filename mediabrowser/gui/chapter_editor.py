@@ -12,11 +12,30 @@ jump ten seconds, five, one, then a frame at a time, and insert a chapter
 at the playhead with one click or M. Its name can be typed straight away
 - or the setlist pasted first, and each new chapter takes the next name.
 A boundary that's a little out is dragged along the timeline, or moved to
-the playhead.
+the playhead: the selected chapter's start, or - E - the end of the one
+playing, which is the start of the next. J plays across the join, from a
+few seconds before the selected chapter starts, to hear whether it's right.
+
+The timeline zooms (the wheel, or + and -), since a whole concert in its
+width is seconds to the pixel, and can show how loud the video is along
+the way. That is measured only when asked for (Show Audio Levels): it
+reads the whole file, and most libraries are on a network share that
+nobody wants slowed down without having chosen to. Once measured it is
+kept for the session.
+
+The chapters share the video between them: each ends where the next
+starts and the last where the video does, so moving a boundary takes from
+one what it gives the other, never goes past the one either side, and
+their lengths always add up to the video's. Clicking a chapter goes to
+where it starts; double-clicking plays it from there. Names are typed in
+the box under the list. The selection keeps up with the chapter playing,
+except while a name is being typed.
 
 Keys work wherever you aren't typing: Space plays and pauses, ←/→ step a
 second (Shift five, Ctrl ten), , and . step a frame, Page Up/Down go to the
-previous or next chapter, M inserts, Delete removes, Enter names.
+previous or next chapter, M inserts, E ends the chapter here, J plays
+across the join, Delete removes, Enter names, Ctrl+Z undoes and
+Ctrl+Shift+Z redoes.
 
 Nothing is changed until Save. A chapter whose start and name are as they
 were keeps where its name came from; if only names changed, a disc's own
@@ -25,10 +44,11 @@ chapters stay the disc's.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -49,8 +69,9 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import library, marking, utils
 from mediabrowser.core.player import Player
+from mediabrowser.gui import audio_analysis
 from mediabrowser.gui.mpv_poll import MpvPoll
-from mediabrowser.gui.timeline import Timeline
+from mediabrowser.gui.timeline import MIN_SPAN_SECONDS, Timeline
 from mediabrowser.gui.video_surface import ELSEWHERE, VideoSurface, can_embed, elsewhere_text
 
 # How often the editor asks mpv where playback is: fine enough for the
@@ -59,13 +80,16 @@ POLL_MS = 150
 # The steps the buttons and keys take, in seconds.
 SMALL, MEDIUM, LARGE = 1.0, 5.0, 10.0
 NUDGE = 1.0
+# How long before a chapter's start hearing the join plays from.
+JOIN_LEAD_SECONDS = 5.0
 # A chapter within this of where one was is the same chapter.
 SAME_START_SECONDS = 0.05
 
 KEYS_HINT = (
     "Space play/pause · ←/→ 1s (Shift 5s, Ctrl 10s) · , and . one frame · "
-    "Page Up/Down previous/next chapter · M insert a chapter · Enter name it · "
-    "Delete remove it"
+    "Page Up/Down previous/next chapter · M insert a chapter · E end the chapter "
+    "here · J hear the join · Enter name it · Delete remove it · Ctrl+Z undo · "
+    "+ and − zoom the timeline (0 for all of it)"
 )
 
 
@@ -86,6 +110,17 @@ class ChapterEditor(QWidget):
         self._paused: bool | None = None
         self._dirty = False
         self._embedded = False
+        # The marks as they were opened, as last shown, and before each
+        # change made since (and each one undone): see undo.
+        self._opened: list[marking.Mark] = []
+        self._shown: list[marking.Mark] = []
+        self._undo: list[list[marking.Mark]] = []
+        self._redo: list[list[marking.Mark]] = []
+        # The chapter playback was last seen in: the selection goes with it.
+        self._followed: int | None = None
+        # Set to stop the audio being measured: the editor has closed.
+        self._levels_cancel: threading.Event | None = None
+        self._levels_job = None
         # Changed by whatever moves playback from here - a seek, a step,
         # play or pause, another mpv - so an answer asked of mpv before it,
         # arriving after, can't put the playhead back where it was.
@@ -104,6 +139,14 @@ class ChapterEditor(QWidget):
         self.title = QLabel()
         self.title.setObjectName("detailTitle")
         self.title.setTextFormat(Qt.PlainText)
+        self.undo_button = QPushButton("Undo")
+        self.undo_button.setToolTip("Take back the last change to the chapters (Ctrl+Z)")
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button = QPushButton("Redo")
+        self.redo_button.setToolTip("Make the change just undone again (Ctrl+Shift+Z)")
+        self.redo_button.clicked.connect(self.redo)
+        for button in (self.undo_button, self.redo_button):
+            button.setFocusPolicy(Qt.NoFocus)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.request_close)
         self.save_button = QPushButton("Save Chapters")
@@ -113,6 +156,9 @@ class ChapterEditor(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         top.addWidget(self.back_button)
         top.addWidget(self.title, 1)
+        top.addWidget(self.undo_button)
+        top.addWidget(self.redo_button)
+        top.addSpacing(12)
         top.addWidget(self.cancel_button)
         top.addWidget(self.save_button)
 
@@ -123,10 +169,39 @@ class ChapterEditor(QWidget):
         self.elsewhere.setAlignment(Qt.AlignCenter)
         self.elsewhere.setWordWrap(True)
         self.elsewhere.hide()
-        self.timeline = Timeline()
+        self.timeline = Timeline(min_gap=marking.MIN_GAP_SECONDS)
         self.timeline.seek_requested.connect(self.seek)
         self.timeline.boundary_moved.connect(self._on_boundary_moved)
         self.timeline.boundary_clicked.connect(self._select)
+        self.timeline.view_changed.connect(self._update_zoom)
+        self.levels_button = QPushButton("Show Audio Levels")
+        self.levels_button.setFocusPolicy(Qt.NoFocus)
+        self.levels_button.clicked.connect(self._levels_clicked)
+        self.levels_note = QLabel("")
+        self.levels_note.setObjectName("hintLabel")
+        self.levels_note.setTextFormat(Qt.PlainText)
+        self.zoom_out_button = QPushButton("−")
+        self.zoom_out_button.setToolTip("Show more of the video on the timeline ( - )")
+        self.zoom_out_button.clicked.connect(self.timeline.zoom_out)
+        self.zoom_all_button = QPushButton("All")
+        self.zoom_all_button.setToolTip("Show the whole video on the timeline ( 0 )")
+        self.zoom_all_button.clicked.connect(self.timeline.show_all)
+        self.zoom_in_button = QPushButton("＋")
+        self.zoom_in_button.setToolTip(
+            "Zoom the timeline in, to place a chapter exactly ( + , or the mouse "
+            "wheel over it; Shift and the wheel moves along)"
+        )
+        self.zoom_in_button.clicked.connect(self.timeline.zoom_in)
+        zoom_row = QHBoxLayout()
+        zoom_row.setContentsMargins(0, 0, 0, 0)
+        zoom_row.setSpacing(4)
+        zoom_row.addWidget(self.levels_button)
+        zoom_row.addWidget(self.levels_note, 1)
+        zoom_row.addWidget(QLabel("Timeline:"))
+        for button in (self.zoom_out_button, self.zoom_all_button, self.zoom_in_button):
+            button.setObjectName("transportButton")
+            button.setFocusPolicy(Qt.NoFocus)
+            zoom_row.addWidget(button)
 
         self.position_label = QLabel("0:00.0")
         self.position_label.setObjectName("editorTime")
@@ -177,6 +252,14 @@ class ChapterEditor(QWidget):
         self.insert_button.setMinimumHeight(38)
         self.insert_button.setFocusPolicy(Qt.NoFocus)
         self.insert_button.clicked.connect(self.insert_here)
+        self.end_button = QPushButton("⇥  End chapter here   (E)")
+        self.end_button.setToolTip(
+            "Move the start of the next chapter to the playhead: the one playing "
+            "ends here"
+        )
+        self.end_button.setMinimumHeight(38)
+        self.end_button.setFocusPolicy(Qt.NoFocus)
+        self.end_button.clicked.connect(self.end_here)
         self.message = QLabel("")
         self.message.setObjectName("hintLabel")
         self.message.setTextFormat(Qt.PlainText)
@@ -184,7 +267,7 @@ class ChapterEditor(QWidget):
         insert_row = QHBoxLayout()
         insert_row.setContentsMargins(0, 0, 0, 0)
         insert_row.addWidget(self.insert_button, 1)
-        insert_row.addWidget(self.message, 1)
+        insert_row.addWidget(self.end_button, 1)
 
         keys = QLabel(KEYS_HINT)
         keys.setObjectName("hintLabel")
@@ -195,10 +278,12 @@ class ChapterEditor(QWidget):
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(6)
         left.addWidget(self.surface, 1)
-        left.addWidget(self.elsewhere)
+        left.addWidget(self.elsewhere, 1)
         left.addWidget(self.timeline)
+        left.addLayout(zoom_row)
         left.addLayout(transport)
         left.addLayout(insert_row)
+        left.addWidget(self.message)
         left.addWidget(keys)
 
         # --- the chapters
@@ -211,19 +296,33 @@ class ChapterEditor(QWidget):
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tree.setEditTriggers(QAbstractItemView.DoubleClicked
-                                  | QAbstractItemView.EditKeyPressed)
+        # Names are typed in the box below; a click here is for getting about.
+        self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tree.itemSelectionChanged.connect(self._on_selected)
-        self.tree.itemChanged.connect(self._on_item_edited)
-        self.tree.itemActivated.connect(lambda item, _col: self.play_from_selected())
+        self.tree.itemClicked.connect(self._on_item_clicked)
+        # Not itemActivated: on a desktop set to open things with one click,
+        # that's a single click.
+        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         header = self.tree.header()
+        # The name takes what room there is, not the length after it.
+        header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         header.setSectionResizeMode(1, QHeaderView.Fixed)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
         header.setSectionResizeMode(3, QHeaderView.Fixed)
+        # Wide enough for a time in an hours-long video, in the bold the
+        # chapter playing is shown in.
+        bold = QFont(self.tree.font())
+        bold.setBold(True)
+        time_width = QFontMetrics(bold).horizontalAdvance("0:00:00.0") + 20
         self.tree.setColumnWidth(0, 36)
-        self.tree.setColumnWidth(1, 72)
-        self.tree.setColumnWidth(3, 64)
+        self.tree.setColumnWidth(1, time_width)
+        self.tree.setColumnWidth(3, time_width)
+
+        self.total = QLabel("")
+        self.total.setObjectName("hintLabel")
+        self.total.setTextFormat(Qt.PlainText)
+        self.total.setAlignment(Qt.AlignRight)
 
         self.name = QLineEdit()
         self.name.setPlaceholderText("Name of the selected chapter…")
@@ -234,14 +333,20 @@ class ChapterEditor(QWidget):
         name_row.addWidget(QLabel("Name:"))
         name_row.addWidget(self.name, 1)
 
-        self.go_button = QPushButton("Play from Here")
-        self.go_button.clicked.connect(self.play_from_selected)
-        self.move_button = QPushButton("Move Here")
-        self.move_button.setToolTip("Start the selected chapter at the playhead")
+        self.move_button = QPushButton("Start at Playhead")
+        self.move_button.setToolTip("Start the selected chapter where the playhead is")
         self.move_button.clicked.connect(self.move_selected_here)
+        self.join_button = QPushButton("Hear the Join")
+        self.join_button.setToolTip(
+            f"Play from {JOIN_LEAD_SECONDS:g}s before the selected chapter starts, to "
+            "hear whether it starts in the right place ( J )"
+        )
+        self.join_button.clicked.connect(self.hear_join)
         self.earlier_button = QPushButton(f"−{NUDGE:g}s")
+        self.earlier_button.setToolTip("Start the selected chapter a second sooner")
         self.earlier_button.clicked.connect(lambda: self.nudge_selected(-NUDGE))
         self.later_button = QPushButton(f"+{NUDGE:g}s")
+        self.later_button.setToolTip("Start the selected chapter a second later")
         self.later_button.clicked.connect(lambda: self.nudge_selected(NUDGE))
         self.remove_button = QPushButton("Remove")
         self.remove_button.setToolTip("Take the selected chapter away (Delete)")
@@ -250,7 +355,7 @@ class ChapterEditor(QWidget):
         # can be - and the editor shares the main area with every other page,
         # so it set the narrowest the whole window could be, editing or not.
         mark_rows = []
-        for row_buttons in ((self.go_button, self.move_button),
+        for row_buttons in ((self.move_button, self.join_button),
                             (self.earlier_button, self.later_button, self.remove_button)):
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
@@ -292,6 +397,7 @@ class ChapterEditor(QWidget):
         right.setSpacing(6)
         right.addWidget(caption)
         right.addWidget(self.tree, 1)
+        right.addWidget(self.total)
         right.addLayout(name_row)
         for row in mark_rows:
             right.addLayout(row)
@@ -310,6 +416,9 @@ class ChapterEditor(QWidget):
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setChildrenCollapsible(False)
+        # Two fifths to the chapters to begin with: left to what each side
+        # asks for, the list is too narrow to read a name in.
+        self.splitter.setSizes([600, 400])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -330,12 +439,17 @@ class ChapterEditor(QWidget):
         self._position = max(0.0, start)
         self._paused = True
         self._dirty = False
+        self._opened = self.sheet.marks()
+        self._undo, self._redo = [], []
+        self.timeline.set_playhead(None)
+        self.timeline.show_all()
         self.title.setText(f"Manual Edit · {video['display_name']}")
         self.message.setText("")
         self.names.blockSignals(True)
         self.names.clear()
         self.names.blockSignals(False)
         self._refresh(select=self.sheet.at(self._position))
+        self._update_zoom()
         self._embedded = can_embed()
         self.elsewhere.setText(elsewhere_text())
         self.elsewhere.setVisible(not self._embedded)
@@ -347,6 +461,87 @@ class ChapterEditor(QWidget):
         # mpv can draw into it.
         QTimer.singleShot(0, self._start_player)
         self._poll.start()
+        self._offer_levels()
+
+    # --- how loud it is, along the timeline --------------------------------------
+
+    def _offer_levels(self) -> None:
+        """Show how loud the video is along the timeline if that has been
+        measured this session; if not, offer to. Never measured unasked:
+        it reads the whole file, wherever the file is."""
+        self._stop_measuring()
+        self.timeline.set_levels(None)
+        self.levels_note.setText("")
+        levels = (audio_analysis.cached(self.video)
+                  if audio_analysis.can_analyse(self.video) else None)
+        if levels is not None:
+            self.timeline.set_levels(levels)
+        self._show_levels_button()
+
+    def _show_levels_button(self) -> None:
+        measuring = self._levels_cancel is not None
+        self.levels_button.setText("Stop Measuring" if measuring else "Show Audio Levels")
+        self.levels_button.setToolTip(
+            "Stop reading the file; nothing is shown" if measuring else
+            "Draw how loud the video is along the timeline - where the bass drops "
+            "away is usually between songs. Reads the whole file's audio once: a few "
+            "seconds to a minute, longer from a network share, and kept until the "
+            "app closes."
+        )
+        # Nothing to offer for a disc (see audio_analysis), or once they're there.
+        self.levels_button.setVisible(
+            self.active() and audio_analysis.can_analyse(self.video)
+            and not self.timeline.has_levels()
+        )
+
+    def _levels_clicked(self) -> None:
+        if self._levels_cancel is not None:
+            self._stop_measuring()
+            self.levels_note.setText("")
+            self._show_levels_button()
+        else:
+            self.measure_audio()
+
+    def _stop_measuring(self) -> None:
+        if self._levels_cancel is not None:
+            self._levels_cancel.set()
+        self._levels_cancel = self._levels_job = None
+
+    def measure_audio(self) -> None:
+        """Measure the video's audio for the timeline, off the GUI thread:
+        the video can be worked on meanwhile."""
+        if (not self.active() or self._levels_cancel is not None
+                or not audio_analysis.can_analyse(self.video)):
+            return
+        cancel = self._levels_cancel = threading.Event()
+
+        def wanted() -> bool:
+            # Not once it has been stopped, or the editor has closed or
+            # opened on another video.
+            return self._levels_cancel is cancel
+
+        def progress(percent: int) -> None:
+            if wanted():
+                self.levels_note.setText(f"Measuring the audio… {percent}%")
+
+        def done(levels) -> None:
+            if wanted():
+                self._levels_cancel = self._levels_job = None
+                self.levels_note.setText("")
+                self.timeline.set_levels(levels)
+                self._show_levels_button()
+
+        def failed(_message: str) -> None:
+            if wanted():
+                self._levels_cancel = self._levels_job = None
+                self.levels_note.setText("The audio couldn't be measured.")
+                self._show_levels_button()
+
+        self.levels_note.setText("Measuring the audio…")
+        self._show_levels_button()
+        self._levels_job = audio_analysis.start(
+            self, self.video, cancel, on_progress=progress, on_done=done, on_failed=failed,
+        )
 
     def _start_player(self, paused: bool = True) -> None:
         if not self.active():
@@ -379,6 +574,7 @@ class ChapterEditor(QWidget):
     def _close(self) -> None:
         self._poll.stop()
         self._generation += 1
+        self._stop_measuring()
         if self.player is not None:
             self.player.stop()
         app = QApplication.instance()
@@ -434,15 +630,16 @@ class ChapterEditor(QWidget):
         if select is None:
             select = self.selected()
         marks = self.sheet.marks()
+        times = self.sheet.tenths()
         self.tree.blockSignals(True)
         self.tree.clear()
         for i, mark in enumerate(marks):
+            start, length = times[i]
             item = QTreeWidgetItem([
-                str(i + 1), utils.format_seconds(mark.start), mark.title or "",
-                utils.format_seconds(self.sheet.length_of(i)),
+                str(i + 1), utils.format_tenths(start / 10), mark.title or "",
+                utils.format_tenths(length / 10),
             ])
             item.setData(0, Qt.UserRole, i)
-            item.setFlags(item.flags() | Qt.ItemIsEditable)
             for column in (0, 1, 3):
                 item.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
             if not mark.title:
@@ -454,11 +651,26 @@ class ChapterEditor(QWidget):
             self._select(min(select, len(marks) - 1))
         self.timeline.set_marks([m.start for m in marks], [m.title for m in marks],
                                 self.sheet.duration)
+        self.total.setText(
+            f"{len(marks)} chapter{'' if len(marks) == 1 else 's'} · "
+            f"{utils.format_tenths(sum(length for _start, length in times) / 10)} in all"
+        )
+        self._shown = marks
+        # A chapter put in or taken out moves the rest along: that isn't
+        # playback going from one to another.
+        self._followed = self.sheet.at(self._position)
         self._show_current()
         self._update_controls()
 
     def _show_current(self) -> None:
         current = self.sheet.at(self._position) if self.sheet else None
+        if current is not None and current != self._followed:
+            # Playback has gone into another chapter: the selection goes
+            # with it, so what the buttons act on is what's playing - but
+            # not from under a name being typed.
+            self._followed = current
+            if not self.name.hasFocus():
+                self._select(current)
         self.tree.blockSignals(True)
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
@@ -467,6 +679,8 @@ class ChapterEditor(QWidget):
             for column in range(4):
                 item.setFont(column, font)
         self.tree.blockSignals(False)
+        # The last chapter ends where the video does, and nowhere else.
+        self.end_button.setEnabled(current is not None and current + 1 < len(self.sheet))
 
     def _on_selected(self) -> None:
         index = self.selected()
@@ -476,14 +690,13 @@ class ChapterEditor(QWidget):
         self.timeline.set_selected(index)
         self._update_controls()
 
-    def _on_item_edited(self, item: QTreeWidgetItem, column: int) -> None:
-        if column != 2:
-            return
-        index = item.data(0, Qt.UserRole)
-        text = item.text(2).strip()
-        if text == utils.title_or_number(index, None):
-            text = ""
-        self._rename(index, text)
+    def _on_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        """Go to where the chapter starts, playing or paused as it was."""
+        self.seek(self.sheet.marks()[item.data(0, Qt.UserRole)].start)
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        self._select(item.data(0, Qt.UserRole))
+        self.play_from_selected()
 
     def _update_controls(self) -> None:
         index = self.selected()
@@ -491,13 +704,24 @@ class ChapterEditor(QWidget):
         for button in (self.move_button, self.earlier_button, self.later_button,
                        self.remove_button):
             button.setEnabled(movable)
-        self.go_button.setEnabled(index is not None)
+        self.join_button.setEnabled(index is not None)
         self.name.setEnabled(index is not None)
+        self.undo_button.setEnabled(bool(self._undo))
+        self.redo_button.setEnabled(bool(self._redo))
         self.apply_names_button.setEnabled(bool(self.sheet and self.sheet.names()))
         upcoming = self.sheet.next_name() if self.sheet else None
         self.next_name.setText(f"Next: {upcoming}" if upcoming else "")
         self.play_button.setText("Play" if self._paused is not False else "Pause")
         self.save_button.setEnabled(self.active())
+
+    def _update_zoom(self) -> None:
+        zoomed = self.timeline.zoomed()
+        self.zoom_out_button.setEnabled(zoomed)
+        self.zoom_all_button.setEnabled(zoomed)
+        _start, span = self.timeline.view()
+        self.zoom_in_button.setEnabled(
+            span > min(MIN_SPAN_SECONDS, self.timeline.duration)
+        )
 
     # --- playback --------------------------------------------------------------
 
@@ -537,11 +761,11 @@ class ChapterEditor(QWidget):
 
     def _show_position(self) -> None:
         seconds = self._position
-        whole = int(seconds)
-        tenths = int((seconds - whole) * 10)
+        # To the tenth, as the list has the chapters: put one here and it
+        # says the same time.
         self.position_label.setText(
-            f"{utils.format_seconds(whole)}.{tenths} / "
-            f"{utils.format_seconds(self.sheet.duration if self.sheet else 0)}"
+            f"{utils.format_tenths(seconds)} / "
+            f"{utils.format_tenths(self.sheet.duration if self.sheet else 0)}"
         )
         self.timeline.set_playhead(seconds)
         self._show_current()
@@ -568,6 +792,7 @@ class ChapterEditor(QWidget):
             self.player.seek_exact(seconds)
         else:
             self._start_player(paused=True)
+        self.timeline.reveal(seconds)
         self._show_position()
 
     def step(self, delta: float) -> None:
@@ -594,21 +819,57 @@ class ChapterEditor(QWidget):
             earlier = [s for s in starts if s < here - 1.0]
             self.seek(earlier[-1] if earlier else 0.0)
 
+    def _play_from(self, seconds: float) -> None:
+        self.seek(seconds)
+        if self._paused and self._running():
+            self._generation += 1
+            self.player.set_paused(False)
+            self._paused = False
+            self._update_controls()
+
     def play_from_selected(self) -> None:
         index = self.selected()
         if index is not None:
-            self.seek(self.sheet.marks()[index].start)
-            if self._paused and self._running():
-                self._generation += 1
-                self.player.set_paused(False)
-                self._paused = False
-                self._update_controls()
+            self._play_from(self.sheet.marks()[index].start)
+
+    def hear_join(self) -> None:
+        """Play across where the selected chapter starts, from a few
+        seconds before it: the end of one song and the start of the next."""
+        index = self.selected()
+        if index is not None:
+            self._play_from(self.sheet.marks()[index].start - JOIN_LEAD_SECONDS)
 
     # --- changing the chapters -----------------------------------------------------
 
     def _changed(self, select: int | None = None) -> None:
-        self._dirty = True
+        """The sheet has just been changed: what it was before is what was
+        last shown, and is what undo goes back to."""
+        self._undo.append(self._shown)
+        self._redo.clear()
+        self._dirty = self.sheet.marks() != self._opened
         self._refresh(select=select)
+
+    def _step_back(self, taken: list, given: list, said: str) -> None:
+        if not self.active() or not taken:
+            return
+        before = self.sheet.marks()
+        given.append(before)
+        self.sheet.restore(taken.pop())
+        after = self.sheet.marks()
+        self._dirty = after != self._opened
+        # On the chapter that changed: the first that isn't as it was.
+        changed = next((i for i, (a, b) in enumerate(zip(before, after, strict=False))
+                        if a != b), min(len(before), len(after)))
+        self.message.setText(said)
+        self._refresh(select=min(changed, len(after) - 1))
+
+    def undo(self) -> None:
+        """Take back the last change to the chapters - one put in, taken
+        out, moved or named."""
+        self._step_back(self._undo, self._redo, "Undone.")
+
+    def redo(self) -> None:
+        self._step_back(self._redo, self._undo, "Redone.")
 
     def insert_here(self) -> None:
         if not self.active():
@@ -619,7 +880,7 @@ class ChapterEditor(QWidget):
             self.message.setText(f"Can't insert one there: {exc}.")
             return
         self.message.setText(
-            f"Chapter {index + 1} starts at {utils.format_seconds(self._position)}."
+            f"Chapter {index + 1} starts at {utils.format_tenths(self._position)}."
         )
         self._changed(select=index)
         if not self.sheet.marks()[index].title:
@@ -639,8 +900,12 @@ class ChapterEditor(QWidget):
 
     def _name_entered(self) -> None:
         self._commit_name()
-        # Back to the keys, for the next song.
-        self.timeline.setFocus()
+        # Back to the keys, for the next song - once this Enter is over. A
+        # line edit doesn't keep the key, so it goes on up to its parents,
+        # past the key filter each time: with the name box already left,
+        # the filter took it for the Enter that names a chapter, and put
+        # the keyboard straight back in the box.
+        QTimer.singleShot(0, self.timeline.setFocus)
 
     def remove_selected(self) -> None:
         index = self.selected()
@@ -660,12 +925,30 @@ class ChapterEditor(QWidget):
             self.message.setText(f"Can't move it there: {exc}.")
             self._refresh()
             return
+        self.message.setText(
+            f"Chapter {index + 1} starts at "
+            f"{utils.format_tenths(self.sheet.marks()[index].start)}."
+        )
         self._changed(select=index)
 
     def move_selected_here(self) -> None:
         index = self.selected()
         if index:
             self._move(index, self._position)
+
+    def end_here(self) -> None:
+        """End the chapter playing at the playhead: the next one starts
+        here instead of where it did."""
+        if not self.active():
+            return
+        following = self.sheet.at(self._position) + 1
+        if following >= len(self.sheet):
+            self.message.setText(
+                "The last chapter ends where the video does. Insert a chapter "
+                "here to start another."
+            )
+            return
+        self._move(following, self._position)
 
     def nudge_selected(self, delta: float) -> None:
         index = self.selected()
@@ -691,9 +974,7 @@ class ChapterEditor(QWidget):
 
     def _typing(self) -> bool:
         focus = QApplication.focusWidget()
-        if isinstance(focus, (QLineEdit, QPlainTextEdit, QAbstractSpinBox)):
-            return True
-        return self.tree.state() == QAbstractItemView.EditingState
+        return isinstance(focus, (QLineEdit, QPlainTextEdit, QAbstractSpinBox))
 
     def eventFilter(self, watched, event) -> bool:
         if (event.type() != QEvent.KeyPress or not self.active() or not self.isVisible()
@@ -723,6 +1004,20 @@ class ChapterEditor(QWidget):
             self.go_to_chapter(1)
         elif key in (Qt.Key_M, Qt.Key_Insert) and not ctrl:
             self.insert_here()
+        elif key == Qt.Key_E and not ctrl:
+            self.end_here()
+        elif key == Qt.Key_J and not ctrl:
+            self.hear_join()
+        elif key == Qt.Key_Z and ctrl:
+            self.redo() if shift else self.undo()
+        elif key == Qt.Key_Y and ctrl:
+            self.redo()
+        elif key in (Qt.Key_Plus, Qt.Key_Equal) and not ctrl:
+            self.timeline.zoom_in()
+        elif key == Qt.Key_Minus and not ctrl:
+            self.timeline.zoom_out()
+        elif key == Qt.Key_0 and not ctrl:
+            self.timeline.show_all()
         elif key == Qt.Key_Delete:
             self.remove_selected()
         elif key in (Qt.Key_Return, Qt.Key_Enter):

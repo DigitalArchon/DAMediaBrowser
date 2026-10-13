@@ -27,6 +27,12 @@ def format_seconds(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def format_tenths(seconds: float) -> str:
+    """As format_seconds, to a tenth of a second: for placing chapters."""
+    whole, tenth = divmod(max(0, int(round(seconds * 10))), 10)
+    return f"{format_seconds(whole)}.{tenth}"
+
+
 def guess_search_query(display_name: str) -> str:
     text = re.sub(r"\(.*?\)|\[.*?\]", " ", display_name)
     text = re.sub(r"[._]+", " ", text)

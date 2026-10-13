@@ -40,10 +40,10 @@ class TestMarking:
         assert [m.title for m in sheet.marks()] == [None, "Two", "Three"]
         assert sheet.nudge(2, -1.0) == 2
         assert sheet.marks()[2].start == 399.0
-        assert sheet.move(2, 100.0) == 1, "moved before Two, so it's now second"
-        assert [m.title for m in sheet.marks()] == [None, "Three", "Two"]
+        assert sheet.move(2, 300.0) == 2
+        assert sheet.marks()[2].start == 300.0
         sheet.remove(1)
-        assert [m.title for m in sheet.marks()] == [None, "Two"]
+        assert [m.title for m in sheet.marks()] == [None, "Three"]
         with pytest.raises(marking.MarkError):
             sheet.remove(0)
         with pytest.raises(marking.MarkError):
@@ -54,6 +54,44 @@ class TestMarking:
         sheet.mark(200.0)
         assert sheet.at(0.0) == 0 and sheet.at(199.9) == 0 and sheet.at(200.0) == 1
         assert sheet.length_of(0) == 200.0 and sheet.length_of(1) == 400.0
+
+    def test_a_mark_moves_between_its_neighbours_never_past_one(self):
+        """Past one, it took that song's place: the names changed order."""
+        sheet = marking.MarkSheet(600.0)
+        sheet.mark(200.0, "Two")
+        sheet.mark(400.0, "Three")
+        assert sheet.room(1) == (2.0, 398.0) and sheet.room(2) == (202.0, 598.0)
+        with pytest.raises(marking.MarkError, match="the next one starts at 6:40"):
+            sheet.move(1, 450.0)
+        with pytest.raises(marking.MarkError, match="the one before it starts at 3:20"):
+            sheet.move(2, 100.0)
+        with pytest.raises(marking.MarkError, match="already a mark at 6:40"):
+            sheet.move(1, 399.0)
+        with pytest.raises(marking.MarkError, match="outside"):
+            sheet.move(2, 599.0)
+        assert [(m.start, m.title) for m in sheet.marks()] == [
+            (0.0, None), (200.0, "Two"), (400.0, "Three"),
+        ]
+
+    def test_marks_can_be_put_back_as_they_were(self):
+        sheet = marking.MarkSheet(600.0)
+        sheet.mark(200.0, "Two")
+        before = sheet.marks()
+        sheet.remove(1)
+        sheet.mark(300.0, "Other")
+        sheet.restore(before)
+        assert sheet.marks() == before
+
+    def test_shown_times_add_up_where_lengths_rounded_singly_dont(self):
+        sheet = marking.MarkSheet(301.5)
+        sheet.mark(100.44)
+        sheet.mark(200.88)
+        # 100.44s each: 1:40.4 three times is 5:01.2, of a video 5:01.5 long.
+        times = sheet.tenths()
+        assert times == [(0, 1004), (1004, 1005), (2009, 1006)]
+        assert sum(length for _start, length in times) == 3015
+        for (start, length), (following, _length) in zip(times, times[1:], strict=False):
+            assert start + length == following
 
     def test_starting_from_existing_chapters(self):
         chapters = [
