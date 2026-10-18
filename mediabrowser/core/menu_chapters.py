@@ -113,6 +113,11 @@ def _candidates(root: str, video: dict, progress_cb=None, cancel=None) -> list[_
     navigation = hdmv.read_navigation(root)
     marks = bluray.playlist_marks(root, video["playlist"])
     chapters = video["chapters"]
+    # A pop-up menu is shown only over the playlists that carry its clip.
+    # Its buttons jump to a mark of whatever is playing, so pressed over
+    # any playlist they seem to play it: on a disc of several shows, each
+    # with its own pop-up, every pop-up would seem to be every show's.
+    own_clips = set(bluray.playlist_clips(root).get(video["playlist"], ()))
     clips = bdmenu.clips_with_menus(root)
     found = []
     for n, clip in enumerate(clips):
@@ -123,6 +128,8 @@ def _candidates(root: str, video: dict, progress_cb=None, cancel=None) -> list[_
         except OSError:
             menus = []
         for menu in menus:
+            if menu.popup and own_clips and clip.stem not in own_clips:
+                continue
             for page in menu.pages:
                 hits: dict[int, bdmenu.Button] = {}
                 for button in page.buttons:

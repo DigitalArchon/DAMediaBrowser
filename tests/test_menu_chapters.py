@@ -100,6 +100,39 @@ class TestReading:
         with pytest.raises(menu_chapters.MenuError, match="No menu"):
             menu_chapters.read(video)
 
+    def test_each_show_on_a_disc_of_several_has_its_own_pop_up(self, tmp_path, monkeypatch):
+        """Pop-up buttons jump to a mark of whatever is playing, so pressed
+        over any playlist they seem to play it. Only the pop-up the title's
+        own playlist carries is its menu - not the next show's, though that
+        one reaches more chapters."""
+        def popup(marks):
+            glyph = [[1] * 8, [1] * 8]
+            buttons = [bd.B(n + 1, 10, 10 + 6 * n, normal=0, selected=1,
+                            commands=[bd.link_mark(mark)])
+                       for n, mark in enumerate(marks)]
+            return bd.transport([
+                bd.palette(0, COLOURS), bd.bitmap(0, glyph), bd.bitmap(1, [[2] * 8, [2] * 8]),
+                bd.composition([bd.page(0, [buttons])], width=64, height=48, popup=True),
+                bd.END,
+            ])
+
+        root = bd.make_disc(
+            tmp_path / "SHOWS",
+            clips={"00001": b"", "00002": b"", "00011": popup([1, 2]),
+                   "00012": popup([1, 3, 4, 5])},
+            clip_info={"00001": False, "00002": False, "00011": True, "00012": True},
+            playlists={1: ["00001", "00011"], 2: ["00002", "00012"]},
+            index=bd.index_bdmv([], None, None), objects=bd.movie_objects([]),
+        )
+        monkeypatch.setattr(bluray, "playlist_marks", lambda root, playlist: MARKS)
+        monkeypatch.setattr(menu_chapters.bdmenu, "picture", lambda *a, **kw: b"\xff\xd8")
+        first = title_video(root)
+        second = dict(title_video(root), playlist=2)
+        assert [p.clip for p in menu_chapters.read(first).pages] == ["00011.m2ts"]
+        assert menu_chapters.read(first).chapters() == [1, 2]
+        assert [p.clip for p in menu_chapters.read(second).pages] == ["00012.m2ts"]
+        assert menu_chapters.read(second).chapters() == [1, 3, 4, 5]
+
     def test_it_can_be_cancelled(self, disc):
         import threading
 
