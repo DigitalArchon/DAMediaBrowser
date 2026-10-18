@@ -239,6 +239,77 @@ class TestMissingVideos:
         assert "trailer" in window.data["videos"]
 
 
+    def test_the_status_bar_offers_the_list_only_when_something_is_missing(self, window):
+        from pathlib import Path
+
+        assert window.show_missing_button.isHidden()
+        Path(window.data["videos"]["trailer"]["path"]).unlink()
+        window.refresh_library()
+        assert not window.show_missing_button.isHidden()
+        assert "1 missing" in window.status_label.text()
+
+    def test_the_list_shows_each_missing_video_under_its_folder(self, window, monkeypatch):
+        import shutil
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QApplication
+
+        from mediabrowser.gui.dialogs import missing_dialog
+
+        shown = []
+        monkeypatch.setattr(missing_dialog.MissingDialog, "exec",
+                            lambda self: shown.append(self) or 0)
+        # One file gone from a folder that's still there; one whole folder gone.
+        root = Path(window.data["videos"]["live"]["path"]).parent.parent
+        window.data["videos"]["second"] = _video(root / "Live" / "Northbound.mkv", "Northbound")
+        Path(window.data["videos"]["second"]["path"]).unlink()
+        shutil.rmtree(root / "Extras" / "Trailers")
+        window.refresh_library()
+        window.show_missing_videos()
+
+        dialog = shown[0]
+        folders = [dialog.tree.topLevelItem(i) for i in range(dialog.tree.topLevelItemCount())]
+        assert [f.text(0) for f in folders] == [
+            f"{root / 'Extras' / 'Trailers'}  ({missing_dialog.FOLDER_GONE})",
+            f"{root / 'Live'}  (1 video missing)",
+        ]
+        assert (folders[1].child(0).text(0), folders[1].child(0).text(1)) == (
+            "Northbound", "Northbound.mkv",
+        )
+        assert folders[1].childCount() == 1, "the video still there isn't listed"
+
+        dialog.copy_list()
+        text = QApplication.clipboard().text()
+        assert text.startswith("Missing videos (2)")
+        assert f"{root / 'Extras' / 'Trailers'}  (folder not found)" in text
+        assert "  Teaser  -  Teaser.mkv" in text
+
+    def test_removing_from_the_list_still_asks(self, window, monkeypatch):
+        from pathlib import Path
+
+        from mediabrowser.gui.dialogs import missing_dialog
+        from mediabrowser.gui.main_window import MainWindow
+
+        asked = []
+        monkeypatch.setattr(MainWindow, "_ask", lambda self, *a, **k: asked.append(a) or True)
+        monkeypatch.setattr(missing_dialog.MissingDialog, "exec",
+                            lambda self: self.remove_button.click() or 1)
+        Path(window.data["videos"]["trailer"]["path"]).unlink()
+        window.refresh_library()
+        window.show_missing_videos()
+        assert len(asked) == 1
+        assert list(window.data["videos"]) == ["live"]
+        assert window.show_missing_button.isHidden()
+
+    def test_with_nothing_missing_there_is_no_list(self, window, monkeypatch):
+        from mediabrowser.gui.dialogs import missing_dialog
+
+        monkeypatch.setattr(missing_dialog.MissingDialog, "exec",
+                            lambda self: pytest.fail("nothing to list"))
+        window.show_missing_videos()
+        assert window.status_label.text() == "Nothing is missing."
+
+
 class TestHidingOneTitle:
     """A disc's titles share its folder, so hiding the folder hides them all.
     One title - an extra beside the concert - has to be hideable alone.

@@ -588,6 +588,32 @@ def missing_videos(data):
             if not present(str(video["path"]))]
 
 
+def missing_by_folder(data, video_ids) -> list[dict]:
+    """Missing videos grouped by the folder each was in, folders and the
+    videos in them in order:
+        [{"folder": str, "exists": bool, "videos": [(video_id, name, path)]}]
+
+    Whether the folder is there itself tells a file moved or deleted from a
+    folder that's still there apart from a whole folder renamed or moved,
+    or a share or drive not connected. That costs one look per folder, not
+    per video.
+    """
+    groups: dict[str, list] = {}
+    for video_id in video_ids:
+        video = data["videos"].get(video_id)
+        if video is None:
+            continue
+        path = str(video["path"])
+        groups.setdefault(os.path.dirname(path), []).append(
+            (video_id, video["display_name"], path)
+        )
+    return [
+        {"folder": folder, "exists": os.path.isdir(folder),
+         "videos": sorted(videos, key=lambda v: (v[2].casefold(), v[1].casefold()))}
+        for folder, videos in sorted(groups.items(), key=lambda g: g[0].casefold())
+    ]
+
+
 def original_chapters(video, min_bluray_seconds):
     """Read a video's own chapters from its file or disc again, unnamed.
 

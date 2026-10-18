@@ -764,7 +764,11 @@ dropped, a drive that's unplugged — the rescan stops and changes nothing.
 Individual files that are away are kept, names and all, and listed as
 missing; putting them back and rescanning restores them, and one renamed
 or moved within the library is found under its new name. A file that
-couldn't be read this time keeps what was known about it too. To let go of
+couldn't be read this time keeps what was known about it too. To see which
+videos are missing, and which folder each was in, press **Show Missing…**
+beside the count in the status bar, or use **File → Show Missing Videos**;
+a folder that isn't there at all is marked as such, and **Copy List** puts
+the whole list on the clipboard. To let go of
 videos that are gone for good, right-click one and **Remove from Library**,
 or use **File → Remove Missing Videos**.
 

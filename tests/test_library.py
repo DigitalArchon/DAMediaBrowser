@@ -125,6 +125,23 @@ class TestMissingVideos:
     def test_an_empty_library_reports_nothing(self):
         assert library.missing_videos(store.default_library()) == []
 
+    def test_missing_videos_are_grouped_by_the_folder_they_were_in(self, tmp_path):
+        kept = tmp_path / "Glass Harbor"
+        kept.mkdir()
+        gone = tmp_path / "Moved Away"
+        data = store.default_library(str(tmp_path))
+        data["videos"] = {
+            "b": {"path": str(kept / "Northbound.mkv"), "display_name": "Northbound"},
+            "a": {"path": str(kept / "Copperfield Hall.mkv"), "display_name": "Copperfield"},
+            "c": {"path": str(gone / "Paper Lanterns.mkv"), "display_name": "Paper Lanterns"},
+        }
+        groups = library.missing_by_folder(data, ["b", "c", "a", "not-a-video"])
+        assert [(g["folder"], g["exists"]) for g in groups] == [
+            (str(kept), True), (str(gone), False),
+        ]
+        assert [v[0] for v in groups[0]["videos"]] == ["a", "b"]
+        assert groups[1]["videos"] == [("c", "Paper Lanterns", str(gone / "Paper Lanterns.mkv"))]
+
 
 class TestChaptersTheAppMade:
     """A file without chapter marks has its chapters only in the library, so

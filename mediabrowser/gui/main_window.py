@@ -557,8 +557,17 @@ class MainWindow(QMainWindow):
         self.cancel_scan_button.clicked.connect(self.cancel_scan)
         self.cancel_scan_button.hide()
 
+        # The count of missing videos says how many; this says which.
+        self.show_missing_button = QPushButton("Show Missing…")
+        self.show_missing_button.setToolTip(
+            "List the videos whose files aren't where they were, by folder"
+        )
+        self.show_missing_button.clicked.connect(self.show_missing_videos)
+        self.show_missing_button.hide()
+
         bar = self.statusBar()
         bar.addWidget(self.status_label, 1)
+        bar.addPermanentWidget(self.show_missing_button)
         bar.addPermanentWidget(self.progress)
         bar.addPermanentWidget(self.cancel_scan_button)
 
@@ -594,6 +603,12 @@ class MainWindow(QMainWindow):
         import_action.triggered.connect(self.import_catalog)
         file_menu.addAction(import_action)
         file_menu.addSeparator()
+        show_missing_action = QAction("Show Missing Videos…", self)
+        show_missing_action.setToolTip(
+            "List the videos whose files aren't where they were, by folder"
+        )
+        show_missing_action.triggered.connect(self.show_missing_videos)
+        file_menu.addAction(show_missing_action)
         self.remove_missing_action = QAction("Remove Missing Videos…", self)
         self.remove_missing_action.triggered.connect(self.remove_missing_videos)
         file_menu.addAction(self.remove_missing_action)
@@ -940,6 +955,7 @@ class MainWindow(QMainWindow):
                 text += f" · {len(self._missing)} missing"
                 state = "warning"
             self._set_status(text, state)
+        self.show_missing_button.setVisible(bool(roots) and bool(self._missing))
 
     def _resolve_artwork(self) -> None:
         """Find covers for anything that hasn't been looked at yet.
@@ -2663,6 +2679,19 @@ class MainWindow(QMainWindow):
         self._save()
         self.refresh_library()
         self._set_status(f"Removed {video['display_name']}.")
+
+    def show_missing_videos(self) -> None:
+        """List every missing video under the folder it was in."""
+        from mediabrowser.gui.dialogs.missing_dialog import MissingDialog
+
+        missing = library.missing_videos(self.data)
+        if not missing:
+            self._set_status("Nothing is missing.")
+            return
+        dialog = MissingDialog(self, library.missing_by_folder(self.data, missing))
+        dialog.exec()
+        if dialog.remove_requested:
+            self.remove_missing_videos()
 
     def remove_missing_videos(self) -> None:
         locked = self.locked_ids()
