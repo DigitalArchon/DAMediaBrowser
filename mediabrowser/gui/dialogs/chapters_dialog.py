@@ -31,6 +31,7 @@ or the AI.
 
 from __future__ import annotations
 
+import html
 import threading
 
 from PySide6.QtCore import Qt, QTimer
@@ -945,7 +946,7 @@ class ChaptersDialog(QDialog):
         tape = sum(1 for song in self._setlist.songs if song.tape)
         self.setlist_tape.setVisible(bool(tape))
         self.setlist_credit.setText(
-            f'<a href="{self._setlist.url}">{setlistfm.CREDIT}</a>'
+            f'<a href="{html.escape(self._setlist.url, quote=True)}">{setlistfm.CREDIT}</a>'
         )
         self.setlist_extras.show()
         played = len(self._setlist.songs) - tape

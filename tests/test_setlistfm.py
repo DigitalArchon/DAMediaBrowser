@@ -325,3 +325,15 @@ def test_settings_keeps_the_key_in_the_keyring(app, monkeypatch):
     again = SettingsDialog(None, TAB_SETLISTFM)
     assert again.setlist_key.text() == "my-key"
     assert privacy.SETLISTFM in again.privacy_checks
+
+
+def test_a_setlists_link_is_its_page_on_setlist_fm_or_the_front_page():
+    """The credit is a link the window opens: from setlist.fm's own answer,
+    but only ever an https page on setlist.fm."""
+    page = "https://www.setlist.fm/setlist/glass-harbor/2026/copperfield-hall-1.html"
+    assert setlistfm.page_url(page) == page
+    for elsewhere in ("http://www.setlist.fm/setlist/x.html", "https://evil.example/x",
+                      "file:///etc/passwd", "javascript:alert(1)",
+                      'https://www.setlist.fm/x" onclick="y', "https://setlist.fm.evil/x",
+                      None, ""):
+        assert setlistfm.page_url(elsewhere) == setlistfm.SITE_URL, elsewhere

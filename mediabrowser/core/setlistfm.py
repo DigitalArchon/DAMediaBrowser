@@ -172,6 +172,22 @@ def _parse_date(text: str | None) -> datetime.date | None:
         return None
 
 
+def page_url(url) -> str:
+    """A setlist's page, as setlist.fm's answer gives it - if it is one: an
+    https address on setlist.fm. The credit is a link the window opens, so
+    anything else - plain http, another site, a file - is setlist.fm's
+    front page instead."""
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return SITE_URL
+    if parts.scheme == "https" and (host == "setlist.fm" or host.endswith(".setlist.fm")) \
+            and not netguard.problem(str(url)):
+        return str(url)
+    return SITE_URL
+
+
 def parse_setlist(data: dict) -> Setlist:
     artist = data.get("artist") or {}
     venue = data.get("venue") or {}
@@ -191,7 +207,7 @@ def parse_setlist(data: dict) -> Setlist:
         id=data.get("id") or "", artist=artist.get("name") or "",
         date=_parse_date(data.get("eventDate")), venue=venue.get("name") or "",
         city=city.get("name") or "", country=((city.get("country") or {}).get("name") or ""),
-        tour=((data.get("tour") or {}).get("name") or ""), url=data.get("url") or SITE_URL,
+        tour=((data.get("tour") or {}).get("name") or ""), url=page_url(data.get("url")),
         songs=songs, artist_mbid=artist.get("mbid") or "",
     )
 
