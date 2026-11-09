@@ -188,42 +188,31 @@ class TestChat:
         assert again[0]["content"][0] == ai.text_part("look"), "the words stay"
         assert messages[0]["content"][1]["type"] == "image_url", "the original is untouched"
 
-    def test_the_key_goes_only_over_https(self, http):
+    def test_nothing_goes_but_over_https(self, http):
         assert ai.endpoint_problem("https://nano-gpt.com/api/v1") == ""
         assert ai.endpoint_problem("http://localhost:1234/v1") == ""
         assert ai.endpoint_problem("http://127.0.0.1:8080/v1") == ""
+        assert ai.endpoint_problem("http://192.168.1.20:11434/v1") == "", "the local network"
+        assert ai.endpoint_problem("http://models.onion/v1") == "", "an onion service"
         assert "https" in ai.endpoint_problem("http://models.example/v1")
         assert ai.endpoint_problem("ftp://nano-gpt.com/api/v1")
-        with pytest.raises(ai.AIError, match="in the clear"):
-            ai.chat([], settings(**{ai.SETTING_BASE_URL: "http://models.example/v1"}))
+        plain = settings(**{ai.SETTING_BASE_URL: "http://models.example/v1"})
+        assert "unencrypted" in ai.not_ready(plain)
+        with pytest.raises(ai.AIError, match="unencrypted"):
+            ai.chat([], plain)
+        # Nor a model list, key or no key: the rule is the address's.
+        with pytest.raises(ai.AIError, match="unencrypted"):
+            ai.list_models(settings(**{ai.SETTING_BASE_URL: "http://models.example/v1",
+                                       ai.SETTING_KEY: ""}))
         assert http["calls"] == [], "nothing was sent"
-        # Without a key there's nothing to protect: a model list may be asked for.
-        http["reply"] = {"data": []}
-        ai.list_models(settings(**{ai.SETTING_BASE_URL: "http://models.example/v1",
-                                   ai.SETTING_KEY: ""}))
-        assert len(http["calls"]) == 1
 
-    def test_a_redirect_elsewhere_is_followed_without_the_key(self):
-        import urllib.request
-
-        def request():
-            return urllib.request.Request(
-                "https://nano-gpt.com/api/v1/chat/completions", data=b"{}",
-                headers={"Authorization": "Bearer k", "X-api-key": "s",
-                         "Content-Type": "application/json"},
-            )
-
-        handler = ai._KeysStayHome()
-        elsewhere = handler.redirect_request(
-            request(), None, 302, "Found", {}, "https://elsewhere.example/collect")
-        assert elsewhere.get_header("Authorization") is None
-        assert elsewhere.get_header("X-api-key") is None
-        downgraded = handler.redirect_request(
-            request(), None, 302, "Found", {}, "http://nano-gpt.com/api/v1/x")
-        assert downgraded.get_header("Authorization") is None
-        same = handler.redirect_request(
-            request(), None, 302, "Found", {}, "https://nano-gpt.com/api/v2/chat")
-        assert same.get_header("Authorization") == "Bearer k"
+    def test_a_key_that_cant_be_sent_is_refused_without_quoting_it(self, http):
+        pasted = settings(**{ai.SETTING_KEY: "sk-abc\u200bdef"})
+        assert "Paste it again" in ai.not_ready(pasted)
+        assert "sk-abc" not in ai.not_ready(pasted)
+        with pytest.raises(ai.NotConfigured):
+            ai.chat([], pasted)
+        assert http["calls"] == []
 
     def test_content_parts_are_joined(self, http):
         http["reply"] = {"choices": [{"message": {"content": [

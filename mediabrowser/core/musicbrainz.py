@@ -4,11 +4,12 @@
 import json
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from . import config, privacy
+from . import config, netguard, outbound, privacy
 
 _last_request_time = 0.0
 # Held from one request's turn to the next's: an Identify run and a search in
@@ -27,6 +28,19 @@ _MB_NS = "{http://musicbrainz.org/ns/mmd-2.0#}"
 
 class MusicBrainzError(Exception):
     pass
+
+
+# How a lookup travels, for the list of what was sent.
+HOW = "Over https to musicbrainz.org, which can read it; its data is public"
+
+
+def _what(path: str, params: dict) -> str:
+    """What one lookup tells MusicBrainz, in words: "a release search: ..."
+    or "release 9a1c...'s recordings"."""
+    if params.get("query"):
+        return f"a {path} search: {params['query']}"
+    kind, _, ident = path.partition("/")
+    return f"{kind} {ident}'s {params.get('inc') or 'details'}" if ident else path
 
 
 def _get(path: str, params: dict, fmt: str = "xml") -> dict:
@@ -56,10 +70,11 @@ def _get_in_turn(path: str, params: dict, fmt: str) -> dict:
     query = urllib.parse.urlencode({**params, "fmt": fmt})
     url = f"{config.MUSICBRAINZ_BASE_URL}/{path}?{query}"
     req = urllib.request.Request(url, headers={"User-Agent": config.MUSICBRAINZ_USER_AGENT})
+    what = _what(path, params)
 
     try:
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with netguard.urlopen(req, 15) as resp:
                 body = resp.read()
         except urllib.error.HTTPError as exc:
             # 503 is MusicBrainz saying it's busy, and a moment later it
@@ -67,12 +82,17 @@ def _get_in_turn(path: str, params: dict, fmt: str) -> dict:
             if exc.code != 503:
                 raise
             time.sleep(BUSY_RETRY_SECONDS)
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with netguard.urlopen(req, 15) as resp:
                 body = resp.read()
     except (urllib.error.URLError, OSError) as exc:
-        raise MusicBrainzError(str(exc) or repr(exc)) from exc
+        refused = isinstance(exc, (netguard.InsecureURL, netguard.RedirectRefused))
+        outbound.record("MusicBrainz", url, what, outbound.CLEAR, HOW,
+                        outbound.REFUSED if refused else outbound.FAILED,
+                        netguard.reason(exc))
+        raise MusicBrainzError(netguard.reason(exc)) from exc
     finally:
         _last_request_time = time.monotonic()
+    outbound.record("MusicBrainz", url, what, outbound.CLEAR, HOW)
 
     try:
         if fmt == "xml":

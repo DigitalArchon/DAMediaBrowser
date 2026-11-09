@@ -102,7 +102,7 @@ def test_a_downloaded_cover_is_scaled_into_the_cache(tmp_path, monkeypatch):
         def __init__(self, data):
             self.data = data
 
-        def read(self):
+        def read(self, size=-1):
             return self.data
 
         def __enter__(self):

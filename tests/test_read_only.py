@@ -61,7 +61,7 @@ REVIEWED = {
     "core/bdmenu.py": 2,        # a temporary file for ffmpeg
     "core/catalog.py": 2,       # an export, refused inside any library
     "core/chapter_export.py": 4,  # an export, refused inside any library
-    "core/config.py": 2,        # the data folders
+    "core/config.py": 3,        # the data folders, and the data folder kept to its owner (0700)
     "core/dvd.py": 1,           # a DVD's sectors into ffmpeg's input, a pipe
     "core/library.py": 1,       # cached covers renamed within ARTWORK_DIR
     "core/player.py": 2,        # mpv's socket, in the session's runtime folder

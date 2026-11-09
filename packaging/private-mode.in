@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 Digital Archon
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Privacy Mode's end-to-end encryption client (mediabrowser/core/sealed.py): Tinfoil's own
+# attestation and EHBP SDK. It holds the plaintext, so it is pinned exactly, and
+# everything it pulls in is pinned by hash in private-mode.lock.
+# Bump deliberately, then run packaging/lock-private-mode.sh and commit both files.
+# The EHBP library that seals and opens the bodies, and the HPKE under it, are named
+# too: tinfoil accepts any tinfoil-ehbp>=0.3.0, so a relock would otherwise take a newer
+# one nobody has read (0.4.0, Oct 6 2026: a new request framing).
+# 0.15.0 and 0.4.1 (that framing) were run against the enclave on Oct 22 2026 before
+# being adopted (in DA Assistant and SealedLore), and taken from there as they are,
+# with what DA Media Browser's own AppImage pins (appimage/requirements.txt) as a
+# constraint (Nov 2026).
+tinfoil==0.15.0
+tinfoil-ehbp==0.4.1
+pyhpke==0.6.5
+# The CA bundle tinfoil's requests, httpx and sigstore trust. 2026.10.19 drops emSign
+# ECC Root CA - G3, whose eMudhra intermediates had recoverable keys (Oct 2026); the
+# floor keeps a relock from standing still on an older one. AppRun points the client
+# at the host's own CA store, and this is its fallback.
+certifi>=2026.10.19
+# SOCKS proxies for httpx, which the sealed client sends through when the environment
+# sets one (netguard.env_proxy_for): without it, nothing is sent rather than sent direct.
+socksio
+# pyasn1, which tinfoil and sigstore decode attestation certificates' extensions with:
+# 0.6.5 fixes four denials of service in its decoders (GHSA-2qm8-x737-gmw5,
+# GHSA-fm9c-5rcf-2q5p, GHSA-mm57-4v3p-rchx, GHSA-9m75-vc3g-4x39; Oct 2026). dnspython,
+# under pydantic's email-validator: 2.9.0 fixes one in its name parser
+# (GHSA-45c3-73f7-pv4m). A relock keeps what the lock already pins, so without the floors
+# it stood still on 0.6.4 and 2.8.0 (Nov 2 2026).
+pyasn1>=0.6.5
+dnspython>=2.9.0

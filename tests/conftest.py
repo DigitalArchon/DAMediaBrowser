@@ -53,6 +53,33 @@ def own_settings(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def network_through_urlopen(monkeypatch):
+    """netguard's transport is the one place a request leaves the app. The
+    tests fake the network at urllib.request.urlopen, as they always have,
+    so here the transport goes by way of it - looked up as each request is
+    made, and only after every check netguard makes. Its own tests put the
+    real transport back (tests/test_netguard.py)."""
+    import urllib.request
+
+    from mediabrowser.core import netguard
+
+    monkeypatch.setattr(
+        netguard, "_transport",
+        lambda request, timeout: urllib.request.urlopen(request, timeout=timeout))
+
+
+@pytest.fixture(autouse=True)
+def forget_what_was_sent():
+    """The list of what was sent is the process's: each test starts with it
+    empty."""
+    from mediabrowser.core import outbound
+
+    outbound.clear()
+    yield
+    outbound.clear()
+
+
+@pytest.fixture(autouse=True)
 def everything_allowed(monkeypatch):
     """The network is faked wherever a test reaches for it, so the tests
     are written as if Settings → Privacy allowed everything. The ones about

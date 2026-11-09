@@ -116,6 +116,20 @@ def own(path) -> Path:
 
 def ensure_data_dir() -> None:
     LIBRARIES_DIR.mkdir(parents=True, exist_ok=True)
+    keep_to_self(DATA_DIR)
+
+
+def keep_to_self(folder) -> None:
+    """Make `folder` readable by its owner alone (0700). The data folder names
+    every video in every library, and where each one is kept: nobody else on
+    the computer needs to read it. A folder that can't be changed - one that
+    isn't ours, on a file system without permissions - is left as it is."""
+    try:
+        mode = os.stat(folder).st_mode & 0o777
+        if mode & 0o077:
+            os.chmod(folder, mode & 0o700 or 0o700)
+    except OSError:
+        pass
 
 
 def ensure_artwork_dir() -> None:

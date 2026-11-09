@@ -1,0 +1,292 @@
+# SPDX-FileCopyrightText: 2026 Digital Archon
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""HTTPS, or nothing: which addresses may be used, where a redirect may be
+followed, and that a key never goes where it wasn't sent.
+
+The redirects and the proxy run against real servers on this machine, with
+netguard's own transport (conftest routes it through urllib.request.urlopen,
+which the rest of the suite fakes)."""
+
+import http.server
+import json
+import threading
+import urllib.error
+import urllib.request
+
+import pytest
+
+from mediabrowser.core import ai, artwork, musicbrainz, netguard, outbound, privacy, setlistfm
+
+
+@pytest.fixture
+def real_transport(monkeypatch):
+    """netguard's own transport, redirects and proxy rules and all."""
+    monkeypatch.setattr(netguard, "_transport",
+                        lambda request, timeout: netguard._opener().open(request,
+                                                                         timeout=timeout))
+
+
+class Server:
+    """An HTTP server on 127.0.0.1 answering each path as `routes` says: a
+    (status, headers, body) tuple. Records what it was asked, headers and
+    all."""
+
+    def __init__(self, routes, host="127.0.0.1"):
+        self.routes = routes
+        self.seen = []
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - http.server's name
+                outer.seen.append({"path": self.path, "headers": dict(self.headers)})
+                status, headers, body = outer.routes.get(self.path, (404, {}, b""))
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_POST = do_GET  # noqa: N815
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer((host, 0), Handler)
+        self.url = f"http://{host}:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture
+def server():
+    made = []
+
+    def make(routes, host="127.0.0.1"):
+        made.append(Server(routes, host))
+        return made[-1]
+
+    yield make
+    for each in made:
+        each.close()
+
+
+class TestWhichAddresses:
+    @pytest.mark.parametrize("url", [
+        "https://nano-gpt.com/api/v1",
+        "https://musicbrainz.org/ws/2/release?query=x",
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:8080",
+        "http://10.0.0.5/v1",
+        "http://172.16.4.4/v1",
+        "http://192.168.1.20:11434",
+        "http://169.254.1.1/",
+        "http://[::1]:8080/",
+        "http://[fe80::1%25eth0]:8080/",
+        "http://[fd00::5]/",
+        "http://nas.local/v1",
+        "http://models.localhost/v1",
+        "http://exampleonionaddress.onion/v1",
+    ])
+    def test_these_may_be_used(self, url):
+        assert netguard.problem(url) is None
+
+    @pytest.mark.parametrize("url", [
+        "http://nano-gpt.com/api/v1",
+        "http://172.32.0.1/",               # just outside 172.16/12
+        "http://8.8.8.8/",
+        "http://localhost.example.com/",
+        "http://127.0.0.1%2eexample.com/",  # an escape a parser would decode
+        "http://evil.com\\@localhost/",     # parsers disagree on its host
+        "http://local host/",
+        "https://nano-gpt.com/\x00",
+        "ftp://nano-gpt.com/",
+        "file:///etc/passwd",
+        "nano-gpt.com/api/v1",
+        "http://[fd00::5",
+        "https://host:99999/",
+        "",
+    ])
+    def test_these_may_not(self, url):
+        assert netguard.problem(url)
+
+    def test_plain_http_is_refused_in_words_that_say_why_and_how(self):
+        found = netguard.problem("http://models.example/v1")
+        assert "not https" in found and "https://" in found and "local network" in found
+
+    def test_a_password_in_an_address_is_never_repeated(self):
+        found = netguard.problem("http://alice:secret@models.example/v1")
+        assert "secret" not in found and "alice" not in found
+        assert netguard.shown("https://alice:secret@host/v1") == "https://…@host/v1"
+        assert "secret" not in netguard.shown("alice:secret@host")
+        assert netguard.shown("https://host/v1") == "https://host/v1"
+
+    def test_a_key_that_cant_be_sent_is_said_without_quoting_it(self):
+        assert netguard.key_problem("sk-ok_123") is None
+        assert netguard.key_problem("") is None
+        for pasted in ("sk-1 2", "sk-1\n", "sk-​1", "sk-é"):
+            found = netguard.key_problem(pasted, "Nano-GPT")
+            assert found and pasted.strip() not in found and "Nano-GPT" in found
+
+    def test_nothing_is_sent_to_an_address_that_may_not_be_used(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(netguard, "_transport", lambda r, t: sent.append(r))
+        with pytest.raises(netguard.InsecureURL, match="not https"):
+            netguard.urlopen("http://models.example/v1", 5)
+        request = urllib.request.Request("https://api.setlist.fm/x",
+                                         headers={"x-api-key": "a b"})
+        with pytest.raises(netguard.InsecureURL, match="API key"):
+            netguard.urlopen(request, 5)
+        assert sent == []
+
+
+class TestRedirects:
+    def test_the_rules(self):
+        problem = netguard.redirect_problem
+        assert problem("https://a.example/", "https://b.example/x") is None
+        assert "never carried on over plain http" in problem(
+            "https://a.example/", "http://192.168.1.5/x")
+        assert "not https" in problem("http://localhost/", "http://elsewhere.example/")
+        assert "own network" in problem("https://a.example/", "https://192.168.1.5/admin")
+        assert problem("http://localhost:1/", "http://localhost:2/") is None
+        assert "Not a web address" in problem("https://a.example/", "ftp://a.example/")
+
+    def test_a_redirect_into_the_clear_is_refused_before_anything_goes_there(
+            self, server, real_transport):
+        target = server({"/landed": (200, {}, b"reached")}, host="127.0.0.2")
+        start = server({"/go": (302, {"Location": "http://downloads.example/x"}, b"")})
+        with pytest.raises(netguard.RedirectRefused, match="downloads.example.*not https"):
+            netguard.urlopen(start.url + "/go", 5)
+        assert target.seen == []
+
+    def test_a_redirect_that_may_be_followed_is_without_the_key_elsewhere(
+            self, server, real_transport):
+        other = server({"/landed": (200, {}, b"reached")}, host="127.0.0.2")
+        start = server({"/elsewhere": (302, {"Location": other.url + "/landed"}, b"")})
+        secret = {"Authorization": "Bearer sk-secret", "X-api-key": "setlist-secret"}
+        with netguard.urlopen(urllib.request.Request(start.url + "/elsewhere",
+                                                     headers=secret), 5) as reply:
+            assert reply.read() == b"reached"
+        landed = {name.lower(): value for name, value in other.seen[0]["headers"].items()}
+        assert "authorization" not in landed and "x-api-key" not in landed
+        assert not any("secret" in value for value in landed.values())
+        # To the same server, the key goes with it.
+        same_server = server({"/a": (302, {"Location": "/b"}, b""), "/b": (200, {}, b"b")})
+        with netguard.urlopen(urllib.request.Request(same_server.url + "/a",
+                                                     headers=secret), 5) as reply:
+            assert reply.read() == b"b"
+        assert same_server.seen[1]["headers"].get("Authorization") == "Bearer sk-secret"
+
+    def test_a_server_on_this_network_is_reached_directly_whatever_the_proxy(
+            self, server, real_transport, monkeypatch):
+        """A proxy elsewhere would carry plain http to it across the network."""
+        local = server({"/v1/models": (200, {}, b"{}")})
+        for name in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+            monkeypatch.setenv(name, "http://proxy.invalid:3128")
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising=False)
+        with netguard.urlopen(local.url + "/v1/models", 5) as reply:
+            assert reply.read() == b"{}"
+        assert netguard.env_proxy_for(local.url) is None
+        monkeypatch.setenv("https_proxy", "http://proxy.invalid:3128")
+        assert netguard.env_proxy_for("https://nano-gpt.com/x") == "http://proxy.invalid:3128"
+
+
+class TestSession:
+    def test_it_answers_as_requests_would(self, server, real_transport):
+        backend = server({
+            "/json?a=1&b=two": (200, {"X-Thing": "yes"}, b'{"ok": true}'),
+            "/missing": (404, {}, b'{"error": "none"}'),
+        })
+        with netguard.Session() as session:
+            found = session.get(backend.url + "/json", params={"a": 1, "b": "two"})
+            assert found.status_code == 200 and found.json() == {"ok": True}
+            assert found.headers.get("X-Thing") == "yes"
+            missing = session.get(backend.url + "/missing")
+            assert missing.status_code == 404 and missing.json() == {"error": "none"}
+            posted = session.post(backend.url + "/json?a=1&b=two", json={"x": 1})
+            assert posted.status_code == 200
+            with pytest.raises(ValueError):
+                netguard.Response(200, {}, b"<html>", "u").json()
+
+    def test_what_it_may_not_do_is_a_request_error(self, server, real_transport):
+        with pytest.raises(netguard.RequestError, match="not https"):
+            netguard.Session().get("http://intel.example/")
+        start = server({"/go": (302, {"Location": "http://pcs.example/"}, b"")})
+        with pytest.raises(netguard.RequestError, match="not followed"):
+            netguard.Session().get(start.url + "/go")
+        with pytest.raises(netguard.RequestError):
+            netguard.Session().get("http://127.0.0.1:1/")   # nothing listens there
+
+
+class TestEveryClientGoesThroughIt:
+    """MusicBrainz, cover art, setlist.fm and the AI: each one's request is
+    held to netguard's rules, and each goes on the list of what was sent."""
+
+    @pytest.fixture
+    def answered(self, monkeypatch):
+        sent = []
+
+        class Reply:
+            def __init__(self, body):
+                self.body = body
+
+            def read(self, size=-1):
+                return self.body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+
+        def transport(request, timeout):
+            sent.append(request)
+            url = request.full_url
+            if "musicbrainz" in url:
+                return Reply(json.dumps({"releases": []}).encode())
+            if "setlist.fm" in url:
+                return Reply(json.dumps({"setlist": []}).encode())
+            if "coverartarchive" in url:
+                return Reply(b"\xff\xd8not really a jpeg")
+            return Reply(json.dumps({"choices": [{"message": {"content": "OK"}}]}).encode())
+
+        monkeypatch.setattr(netguard, "_transport", transport)
+        monkeypatch.setattr(musicbrainz, "_MIN_INTERVAL", 0.0)
+        monkeypatch.setattr(setlistfm, "_MIN_INTERVAL", 0.0)
+        return sent
+
+    def test_each_is_listed_with_what_it_carried(self, answered, tmp_path, monkeypatch):
+        monkeypatch.setenv(setlistfm.API_KEY_ENV, "setlist-key")
+        musicbrainz.search_releases("Glass Harbor Copperfield Hall", fmt="json")
+        setlistfm.search("Glass Harbor", year=2026)
+        artwork._from_cover_art_archive("rel-1", tmp_path / "cover.jpg")
+        ai.ping(ai.settings_from({ai.SETTING_KEY: "sk-1"}))
+        assert len(answered) == 4
+        services = [e.service for e in outbound.entries()]
+        assert services == ["MusicBrainz", "setlist.fm", "Cover Art Archive", "Nano-GPT"]
+        mb, sl, cover, model = outbound.entries()
+        assert "Glass Harbor Copperfield Hall" in mb.what and mb.host == "musicbrainz.org"
+        assert "Glass Harbor" in sl.what and "setlist-key" not in sl.what
+        assert "rel-1" in cover.what
+        assert model.protection == outbound.CLEAR and "both can read it" in model.how
+        assert "Reply with the single word OK." in model.content
+        assert all(e.outcome == outbound.SENT for e in outbound.entries())
+
+    def test_a_refused_one_is_listed_as_refused(self, answered, monkeypatch):
+        monkeypatch.setattr(musicbrainz.config, "MUSICBRAINZ_BASE_URL",
+                            "http://musicbrainz.example/ws/2")
+        with pytest.raises(musicbrainz.MusicBrainzError, match="not https"):
+            musicbrainz.search_releases("Glass Harbor", fmt="json")
+        assert answered == []
+        (entry,) = outbound.entries()
+        assert entry.outcome == outbound.REFUSED and "not https" in entry.detail
+
+    def test_nothing_is_listed_while_a_service_isnt_allowed(self, answered, shipped_privacy):
+        with pytest.raises(musicbrainz.MusicBrainzError):
+            musicbrainz.search_releases("Glass Harbor", fmt="json")
+        assert outbound.entries() == [] and answered == []
+        assert not privacy.allowed(privacy.MUSICBRAINZ)

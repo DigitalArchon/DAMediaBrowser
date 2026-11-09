@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
-from . import config, creds, privacy, utils
+from . import config, creds, netguard, outbound, privacy, utils
 
 BASE_URL = "https://api.setlist.fm/rest/1.0"
 SITE_URL = "https://www.setlist.fm"
@@ -55,6 +55,16 @@ CREDIT = "Setlist from setlist.fm"
 
 class SetlistError(Exception):
     pass
+
+
+# How a lookup travels, for the list of what was sent.
+HOW = "Over https to api.setlist.fm, with your setlist.fm key, which can read it"
+
+
+def _what(path: str, params: dict) -> str:
+    """What one lookup tells setlist.fm, in words."""
+    asked = ", ".join(f"{k}: {v}" for k, v in params.items() if k != "p")
+    return f"a {path.split('/')[0]} search ({asked})" if asked else path
 
 
 class NotConfigured(SetlistError):
@@ -191,28 +201,42 @@ def _get(path: str, params: dict, key: str | None = None,
     key = api_key() if key is None else key
     if not key:
         raise NotConfigured("Add a setlist.fm API key in Settings → setlist.fm.")
-    query = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
+    unfit = netguard.key_problem(key, "setlist.fm")
+    if unfit:
+        raise SetlistError(unfit)
+    shown = {k: v for k, v in params.items() if v not in (None, "")}
+    query = urllib.parse.urlencode(shown)
+    url = f"{BASE_URL}/{path}?{query}"
     request = urllib.request.Request(
-        f"{BASE_URL}/{path}?{query}",
+        url,
         headers={"x-api-key": key, "Accept": "application/json",
                  "Accept-Language": "en", "User-Agent": USER_AGENT},
     )
+    what = _what(path, shown)
     with _turn:
         wait = _MIN_INTERVAL - (time.monotonic() - _last_request_time)
         if wait > 0:
             time.sleep(wait)
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            with netguard.urlopen(request, TIMEOUT_SECONDS) as response:
                 body = response.read()
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
+                outbound.record("setlist.fm", url, what, outbound.CLEAR, HOW,
+                                detail="nothing found")
                 return None
+            outbound.record("setlist.fm", url, what, outbound.CLEAR, HOW, outbound.FAILED,
+                            _http_error(exc))
             raise SetlistError(_http_error(exc)) from exc
         except (urllib.error.URLError, OSError) as exc:
-            reason = getattr(exc, "reason", exc)
-            raise SetlistError(str(reason) or repr(exc)) from exc
+            refused = isinstance(exc, (netguard.InsecureURL, netguard.RedirectRefused))
+            outbound.record("setlist.fm", url, what, outbound.CLEAR, HOW,
+                            outbound.REFUSED if refused else outbound.FAILED,
+                            netguard.reason(exc))
+            raise SetlistError(netguard.reason(exc)) from exc
         finally:
             _last_request_time = time.monotonic()
+    outbound.record("setlist.fm", url, what, outbound.CLEAR, HOW)
     try:
         return json.loads(body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:

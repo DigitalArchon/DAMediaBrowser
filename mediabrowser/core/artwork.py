@@ -28,10 +28,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import config, privacy
+from . import config, netguard, outbound, privacy
 
 FFMPEG_TIMEOUT_SECONDS = 20
 FETCH_TIMEOUT_SECONDS = 15
+# A sleeve is a few hundred KB; anything far bigger isn't one.
+MAX_COVER_BYTES = 20 * 1024 * 1024
 
 # Written instead of an image when every source has been tried and failed,
 # so the next launch shows the placeholder immediately rather than running
@@ -208,10 +210,22 @@ def _from_cover_art_archive(release_id, target: Path) -> bool:
     request = urllib.request.Request(
         url, headers={"User-Agent": config.MUSICBRAINZ_USER_AGENT}
     )
+    what = f"the cover of MusicBrainz release {release_id}"
+    # The archive sends the request on to the Internet Archive, which keeps
+    # the pictures: every step of the way is held to netguard's rules.
+    how = ("Over https to coverartarchive.org and the Internet Archive, which can "
+           "read which release was asked for")
     try:
-        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
-            data = response.read()
-    except (urllib.error.URLError, OSError, TimeoutError):
+        with netguard.urlopen(request, FETCH_TIMEOUT_SECONDS) as response:
+            data = response.read(MAX_COVER_BYTES + 1)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        refused = isinstance(exc, (netguard.InsecureURL, netguard.RedirectRefused))
+        outbound.record("Cover Art Archive", url, what, outbound.CLEAR, how,
+                        outbound.REFUSED if refused else outbound.FAILED,
+                        netguard.reason(exc))
+        return False
+    outbound.record("Cover Art Archive", url, what, outbound.CLEAR, how)
+    if len(data) > MAX_COVER_BYTES:
         return False
     # Whatever the archive served, normalise it to the cache's own shape.
     return bool(data) and _rescale_bytes(data, target)

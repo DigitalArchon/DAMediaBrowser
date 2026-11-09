@@ -48,6 +48,12 @@ extend-exclude = ["build", "dist", ".venv"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# Privacy Mode's verifiers and sealed client are kept line for line with the
+# copies in DA Assistant and the other apps that share them, so a fix in one
+# can be carried to the others as a diff; their style is those apps'.
+"mediabrowser/core/{dcap,nras,ethsig,private_ai,sealed}.py" = ["B904", "B905", "UP017"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The tests import each other's helpers as tests.*, which needs the
