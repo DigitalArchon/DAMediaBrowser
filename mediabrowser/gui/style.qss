@@ -623,6 +623,24 @@ QProgressBar::chunk {
   background: transparent;
 }
 
+/* Where the AI's requests go, and what an enclave proved: green sealed or
+   attested, amber where it proved less, red refused. */
+#toneLabel {
+  color: #a9b1c1;
+  font-size: 12px;
+  background: transparent;
+}
+
+#toneLabel[tone="ok"] { color: #9ece6a; }
+#toneLabel[tone="warning"] { color: #e0af68; }
+#toneLabel[tone="error"] { color: #f7768e; }
+
+#privacyButton {
+  color: #9ece6a;
+  font-size: 12px;
+  padding: 1px 8px;
+}
+
 #errorLabel {
   color: #f7768e;
   font-size: 13px;

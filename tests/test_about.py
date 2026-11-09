@@ -27,7 +27,8 @@ def test_it_is_on_the_help_menu(window, monkeypatch):
 
     shown = []
     monkeypatch.setattr(about_dialog.QMessageBox, "about", lambda *a: shown.append(a))
-    [action] = [a for a in window.menuBar().actions() if a.text() == "&Help"][0].menu().actions()
+    help_menu = [a for a in window.menuBar().actions() if a.text() == "&Help"][0].menu()
+    [action] = [a for a in help_menu.actions() if a.text().startswith("About")]
     action.trigger()
     assert shown
 

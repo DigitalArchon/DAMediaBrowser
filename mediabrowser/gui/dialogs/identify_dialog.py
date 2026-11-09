@@ -394,12 +394,14 @@ class IdentifyDialog(QDialog):
             most = min(options.ai_budget,
                        len(videos) * sum(autoname.AI_REQUESTS[m] for m in ai_methods))
             worst = max(AI_CENTS[m] for m in ai_methods)
-            model = self._ai_settings[ai.SETTING_MODEL]
+            model = ai.active_model(self._ai_settings)
             priced = (f"with {ai.short_model_name(model)}" if model == ai.DEFAULT_MODEL else
                       f"at Claude Sonnet's prices ({ai.short_model_name(model)}, set in "
-                      "Settings → AI, may cost more or less)")
+                      "Settings, may cost more or less)")
+            where, _protection = ai.destination(self._ai_settings, online=True)
             text += (f" At most {most} AI request(s), paid for from your Nano-GPT credit - "
-                     f"under ${most * worst / 100:.2f} {priced}, usually much less.")
+                     f"under ${most * worst / 100:.2f} {priced}, usually much less. What "
+                     f"it asks the AI goes {where}.")
         else:
             text += " No AI: this run costs nothing."
         self.estimate.setText(text)

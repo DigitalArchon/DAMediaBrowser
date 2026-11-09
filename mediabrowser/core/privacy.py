@@ -3,7 +3,8 @@
 """What the app may send out, and to whom.
 
 Everything that leaves this computer goes to one of five places, and each
-is the person's to allow in Settings → Privacy:
+is the person's to allow in Settings → Privacy - over https, or plain http
+only to this computer's own network (netguard):
 
 - MusicBrainz, searched for tracklists: the search is usually the video's
   file or folder name.
@@ -12,10 +13,16 @@ is the person's to allow in Settings → Privacy:
 - setlist.fm, searched for what was played at a show: an artist's name
   and a date, a year or a place - usually from the video's name.
 - The AI service: chapter times, file and folder names, tracklists and
-  frames from the video.
-- A web search the AI service runs for the model, about the show.
+  frames from the video. In Privacy Mode, only to a private model whose
+  enclave was attested first, sealed end to end for a private/ one, and
+  then the attestation services are asked about the enclave too - Intel's,
+  NVIDIA's, Sigstore's - which carries nothing about the videos (ai,
+  private_ai).
+- A web search the AI service runs for the model, about the show; never in
+  Privacy Mode.
 
-None is allowed until it's ticked. Each place that goes out checks here
+None is allowed until it's ticked. What was sent, where and how, is listed
+as it goes (outbound: Help → What Was Sent). Each place that goes out checks here
 itself, right where it would, so a path through the app that forgot to
 ask still sends nothing. A video or library marked private (see
 protection) goes nowhere whatever is allowed here.
@@ -57,8 +64,9 @@ TEXT = {
     AI: (
         "Send videos to the AI",
         "Sends chapter times, file and folder names, tracklists and frames from the "
-        "video to the AI service on the AI tab (Nano-GPT unless it's changed), which "
-        "passes them on to the model's maker.",
+        "video to the AI, to name chapters - to the service on the AI tab, or in "
+        "Privacy Mode only to a private model. Where it goes, and who can read it, is "
+        "said below.",
     ),
     WEB_SEARCH: (
         "Let the AI search the web",

@@ -74,6 +74,7 @@ from mediabrowser.core import (
     musicbrainz,
     naming,
     privacy,
+    private_ai,
     proposal,
     setlistfm,
     store,
@@ -253,6 +254,7 @@ class ChaptersDialog(QDialog):
         self.resize(width, height)
 
         self.video = video
+        self._purpose = f"Detect Chapters: {video.get('display_name') or 'a video'}"
         self._library_root = library_root
         # Nothing about a private video goes to MusicBrainz or the AI.
         self._private = private
@@ -906,6 +908,7 @@ class ChaptersDialog(QDialog):
             lambda: setlistfm.search(artist, date=date, year=year, place=place),
             on_done=self._show_setlists,
             on_failed=lambda message: self._setlists_failed(f"Search failed: {message}"),
+            purpose=self._purpose,
         ))
 
     def _setlists_failed(self, message: str) -> None:
@@ -1061,6 +1064,7 @@ class ChaptersDialog(QDialog):
             lambda: musicbrainz.search_releases(query, fmt=fmt),
             on_done=self._show_results,
             on_failed=lambda message: self._mb_failed(f"Search failed: {message}"),
+            purpose=self._purpose,
         ))
 
     def _show_results(self, results) -> None:
@@ -1092,6 +1096,7 @@ class ChaptersDialog(QDialog):
             lambda: musicbrainz.get_release_media(release_id, fmt=fmt),
             on_done=self.show_media,
             on_failed=lambda message: self._mb_failed(f"Lookup failed: {message}"),
+            purpose=self._purpose,
         ))
 
     def _mb_failed(self, message: str) -> None:
@@ -1448,7 +1453,7 @@ class ChaptersDialog(QDialog):
         if not configured:
             self.ai_hint.setText(ai.not_ready(self._ai_settings))
             return
-        model = ai.short_model_name(self._ai_settings[ai.SETTING_MODEL])
+        model = ai.short_model_name(ai.active_model(self._ai_settings))
         if situation is None:
             self.ai_hint.setText(
                 f"{model} needs something to look at: chapters, a tracklist, or a video "
@@ -1461,11 +1466,12 @@ class ChaptersDialog(QDialog):
         what = "check and name them" if situation.mode == ai_chapters.NAME else (
             "check where they start and name them"
         )
+        where, _protection = ai.destination(self._ai_settings, situation.online)
         self.ai_hint.setText(
-            f"Sends the chapter times{', the tracklist' if situation.tracks else ''}"
-            f"{f' and {frames} frames' if frames else ''} to {model} via Nano-GPT"
-            f"{', with a web search,' if situation.online else ''} to "
-            f"{what}. Costs a few cents; nothing is applied until Apply."
+            f"To {what}, sends the file and folder names, the chapter times"
+            f"{', the tracklist' if situation.tracks else ''}"
+            f"{f' and {frames} frames' if frames else ''} {where}. Costs a few cents; "
+            "nothing is applied until Apply."
         )
 
     def ask_ai(self) -> None:
@@ -1484,7 +1490,7 @@ class ChaptersDialog(QDialog):
             return
         self._figured = None
         settings = self._ai_settings
-        model = ai.short_model_name(settings[ai.SETTING_MODEL])
+        model = ai.short_model_name(ai.active_model(settings))
         self.progress.setFormat(f"Asking {model}… %p%")
         self.progress.setValue(0)
         self.progress.show()
@@ -1502,6 +1508,7 @@ class ChaptersDialog(QDialog):
             on_progress=lambda text: self.progress.setValue(int(text)),
             on_done=self._on_ai_done,
             on_failed=self._on_ai_failed,
+            purpose=self._purpose,
         )
         self._jobs.append(self._ai_job)
         self._update_ai_controls()
@@ -1511,6 +1518,20 @@ class ChaptersDialog(QDialog):
         self.progress.hide()
         self._render_ai(result)
         self._update_ai_controls()
+        proved = self._what_was_proved()
+        if proved:
+            self.ai_hint.setText(proved)
+
+    def _what_was_proved(self) -> str:
+        """In Privacy Mode, after an answer: what the enclave proved, and the
+        reply's own check. Empty outside it."""
+        session = ai.session_of(self._ai_settings)
+        if session is None or session.attestation is None:
+            return ""
+        proved = private_ai.attestation_label(session.attestation)[0]
+        reply = private_ai.receipt_label(session.last_receipt())[0]
+        return (f"Answered by {session.model}: {proved}; the reply "
+                f"{reply.lstrip('✓⚠ ')}. Help → What Was Sent has the details.")
 
     def _on_ai_failed(self, message: str) -> None:
         self._ai_job = None
@@ -1578,7 +1599,7 @@ class ChaptersDialog(QDialog):
         disc, video, settings = self._disc_menu, self.video, self._ai_settings
         context = ai_chapters.situation_context(self.video, self._library_root)
         translate = self.ai_translate_check.isChecked()
-        model = ai.short_model_name(settings[ai.SETTING_MODEL])
+        model = ai.short_model_name(ai.active_model(settings))
         self.menu_button.setEnabled(False)
         self.menu_status.setText(
             f"{model} is reading {len(disc.buttons)} button(s) off the menu…"
@@ -1590,6 +1611,7 @@ class ChaptersDialog(QDialog):
             self, lambda: menu_chapters.ask(video, disc, settings, context, translate),
             on_done=self._on_menu_answer,
             on_failed=self._on_menu_failed,
+            purpose=self._purpose,
         )
         self._jobs.append(self._menu_job)
 
@@ -1603,7 +1625,9 @@ class ChaptersDialog(QDialog):
         self._menu_result = result
         from_menu = sum(1 for r in result.rows if r.confidence == "high"
                         and r.note == menu_chapters.MENU_NOTE)
-        self.menu_status.setText(f"{from_menu} chapter(s) named from the menu.")
+        self.menu_status.setText(f"{from_menu} chapter(s) named from the menu."
+                                 + (f" {self._what_was_proved()}"
+                                    if self._what_was_proved() else ""))
         if self.tabs.currentIndex() == TAB_MENU:
             self._render_ai(result)
         self._update_figure_controls()
@@ -1708,9 +1732,12 @@ class ChaptersDialog(QDialog):
             self._update_figure_controls()
 
     def _update_online_check(self) -> None:
-        """The AI's web search, unless the endpoint can't or Settings →
-        Privacy doesn't allow it."""
-        if not ai.searches_the_web(self._ai_settings):
+        """The AI's web search, unless the endpoint can't, Settings → Privacy
+        doesn't allow it, or Privacy Mode is on."""
+        if ai.in_privacy_mode(self._ai_settings):
+            tip = ("Not in Privacy Mode: Nano-GPT would have to read the request to "
+                   "search for it.")
+        elif not ai.searches_the_web(self._ai_settings):
             tip = "Web search is Nano-GPT's own; the endpoint in Settings → AI is another."
         elif not ai.may_search(self._ai_settings):
             tip = privacy.OFF[privacy.WEB_SEARCH]
@@ -1794,7 +1821,7 @@ class ChaptersDialog(QDialog):
         )
 
     def _update_figure_controls(self) -> None:
-        model = ai.short_model_name(self._ai_settings[ai.SETTING_MODEL])
+        model = ai.short_model_name(ai.active_model(self._ai_settings))
         busy = self._figure_job is not None
         self.hints_toggle.setEnabled(not self._private and ai.is_configured(self._ai_settings))
         if self._private:
@@ -1812,7 +1839,9 @@ class ChaptersDialog(QDialog):
             self.figure_button.setEnabled(
                 self._ai_job is None and self._menu_job is None
             )
-            self.figure_note.setText(FIGURE_NOTE.format(model=model))
+            where, _protection = ai.destination(self._ai_settings, online=True)
+            self.figure_note.setText(FIGURE_NOTE.format(model=model)
+                                     + f" What it asks the AI goes {where}.")
 
     def figure_it_out(self) -> None:
         """Identify this video as Identify Library would, with every method
@@ -1843,6 +1872,7 @@ class ChaptersDialog(QDialog):
         self.progress.show()
         self._figure_job = run_job(
             self, work, on_done=self._on_figured, on_failed=self._on_figure_failed,
+            purpose=self._purpose,
         )
         self._jobs.append(self._figure_job)
         self._update_ai_controls()

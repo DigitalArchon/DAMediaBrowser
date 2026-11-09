@@ -90,15 +90,17 @@ class TranslateDialog(QDialog):
             return
         settings = self._settings
         titles = [title for _, title in self._titled]
+        where, _protection = ai.destination(settings)
         self.status.setText(
-            f"Asking {ai.short_model_name(settings[ai.SETTING_MODEL])} for "
-            f"{len(titles)} titles (one AI request - a fraction of a cent)…"
+            f"Sending {len(titles)} titles {where} (one AI request - a fraction of a "
+            "cent)…"
         )
         self._jobs.append(run_job(
             self,
             lambda: ai_chapters.translate_titles(titles, settings),
             on_done=self._show,
             on_failed=lambda message: self.status.setText(f"That didn't work: {message}"),
+            purpose="Romanise Titles",
         ))
 
     def _show(self, translated) -> None:

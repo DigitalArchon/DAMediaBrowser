@@ -29,6 +29,8 @@ from typing import Any
 import shiboken6
 from PySide6.QtCore import QObject, Signal, Slot
 
+from mediabrowser.core import outbound
+
 # Every job still running or with results still to deliver, so none is
 # freed while a signal is on its way to it.
 _live: set[Job] = set()
@@ -49,9 +51,10 @@ class Job(QObject):
 
     def __init__(self, work: Callable[..., Any], *, wants_progress: bool = False,
                  owner: QObject | None = None, on_done=None, on_failed=None,
-                 on_progress=None) -> None:
+                 on_progress=None, purpose: str = "") -> None:
         super().__init__()
         self._work = work
+        self._purpose = purpose
         self._wants_progress = wants_progress
         self._owner = owner
         self._on_done, self._on_failed, self._on_progress = on_done, on_failed, on_progress
@@ -63,10 +66,12 @@ class Job(QObject):
     def run(self) -> None:
         """On the worker thread."""
         try:
-            if self._wants_progress:
-                result = self._work(progress_cb=self.progress.emit)
-            else:
-                result = self._work()
+            # What it sends is listed as being for this (Help → What Was Sent).
+            with outbound.purpose(self._purpose):
+                if self._wants_progress:
+                    result = self._work(progress_cb=self.progress.emit)
+                else:
+                    result = self._work()
         except Exception as exc:  # surfaced in the UI rather than killing the thread
             self.failed.emit(str(exc) or repr(exc))
         else:
@@ -107,15 +112,17 @@ def run_job(
     on_failed: Callable[[str], None] | None = None,
     on_progress: Callable[[str], None] | None = None,
     wants_progress: bool = False,
+    purpose: str = "",
 ) -> tuple[threading.Thread, Job]:
     """Start `work` on its own thread; each callback is called on the GUI
-    thread, and not at all once `parent` has been deleted.
+    thread, and not at all once `parent` has been deleted. `purpose` is what
+    anything it sends is listed as being for, in Help → What Was Sent.
 
     Callers keep the returned pair to know a job is under way; the job
     keeps itself alive until it has delivered everything.
     """
     job = Job(work, wants_progress=wants_progress, owner=parent, on_done=on_done,
-              on_failed=on_failed, on_progress=on_progress)
+              on_failed=on_failed, on_progress=on_progress, purpose=purpose)
     _live.add(job)
     thread = threading.Thread(target=job.run, daemon=True, name="mediabrowser-job")
     thread.start()

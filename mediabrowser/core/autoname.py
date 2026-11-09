@@ -53,6 +53,7 @@ from . import (
     menu_chapters,
     musicbrainz,
     naming,
+    outbound,
     proposal,
     setlistfm,
     utils,
@@ -1166,6 +1167,9 @@ def identify(video_id: str, video: dict, options: Options, settings: dict,
         log("Private: MusicBrainz, setlist.fm and the AI aren't used for it.")
     report.append("Steps, in order: " + ", ".join(STEP_NAMES[m] for m in methods)
                   + f". AI requests allowed: {budget.remaining}.")
+    if any(m in AI_METHODS for m in methods) and ai.is_configured(settings):
+        where, _protection = ai.destination(settings, online=True)
+        report.append(f"What it asks the AI goes {where}.")
     for method in methods:
         step._check()
         report.append("")
@@ -1236,8 +1240,10 @@ def run(videos, options: Options, settings: dict, services: Services | None = No
             on_started(n, len(videos), video_id, video["display_name"])
         try:
             root = library_root(video_id) if callable(library_root) else library_root
-            outcome = identify(video_id, video, options, settings, services, budget,
-                               root, cancel, private=video_id in private)
+            # What it sends is listed as being for this (Help → What Was Sent).
+            with outbound.purpose(f"Identify Library: {video['display_name']}"):
+                outcome = identify(video_id, video, options, settings, services, budget,
+                                   root, cancel, private=video_id in private)
         except Cancelled:
             break
         except Exception as exc:  # one bad video mustn't end the run

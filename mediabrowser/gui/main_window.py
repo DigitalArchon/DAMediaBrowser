@@ -438,6 +438,7 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self._build_status_bar()
+        self.update_privacy_indicator()
 
     def _build_toolbar(self) -> None:
         bar = QToolBar("Main")
@@ -557,6 +558,16 @@ class MainWindow(QMainWindow):
         self.cancel_scan_button.clicked.connect(self.cancel_scan)
         self.cancel_scan_button.hide()
 
+        # Where the AI's requests go, while Privacy Mode keeps them to an
+        # attested enclave: the same in every window, and a click from the
+        # list of what was sent.
+        self.privacy_button = QPushButton("Privacy Mode")
+        self.privacy_button.setObjectName("privacyButton")
+        self.privacy_button.setFlat(True)
+        self.privacy_button.setCursor(Qt.PointingHandCursor)
+        self.privacy_button.clicked.connect(self.show_what_was_sent)
+        self.privacy_button.hide()
+
         # The count of missing videos says how many; this says which.
         self.show_missing_button = QPushButton("Show Missing…")
         self.show_missing_button.setToolTip(
@@ -567,6 +578,7 @@ class MainWindow(QMainWindow):
 
         bar = self.statusBar()
         bar.addWidget(self.status_label, 1)
+        bar.addPermanentWidget(self.privacy_button)
         bar.addPermanentWidget(self.show_missing_button)
         bar.addPermanentWidget(self.progress)
         bar.addPermanentWidget(self.cancel_scan_button)
@@ -838,6 +850,11 @@ class MainWindow(QMainWindow):
         self._menus_off_while_editing = (file_menu, chapters_menu, playlists_menu)
 
         help_menu = menu.addMenu("&Help")
+        sent_action = QAction("What Was Sent…", self)
+        sent_action.setToolTip("Everything the app has sent since it started: where, what "
+                               "and how")
+        sent_action.triggered.connect(self.show_what_was_sent)
+        help_menu.addAction(sent_action)
         about_action = QAction("About DA Media Browser…", self)
         about_action.setMenuRole(QAction.AboutRole)
         about_action.triggered.connect(self.show_about)
@@ -861,6 +878,40 @@ class MainWindow(QMainWindow):
         from mediabrowser.gui.dialogs.about_dialog import show_about
 
         show_about(self)
+
+    def show_what_was_sent(self) -> None:
+        """Help → What Was Sent: one window, kept for the session, raised."""
+        from mediabrowser.gui.dialogs.sent_dialog import SentDialog
+
+        if getattr(self, "_sent_dialog", None) is None:
+            self._sent_dialog = SentDialog(self)
+        self._sent_dialog.show()
+        self._sent_dialog.raise_()
+        self._sent_dialog.activateWindow()
+
+    def update_privacy_indicator(self) -> None:
+        """The status bar's Privacy Mode, as Settings has it now: shown while
+        the AI may be asked and Privacy Mode keeps it to a private model,
+        saying where to; hidden otherwise. Whether Tinfoil's client is there
+        is looked for meanwhile, off this thread, so that the first request
+        doesn't have to."""
+        from mediabrowser.core import ai, private_ai, sealed
+
+        settings = ai.settings_from(store.load_app_settings())
+        on = ai.allowed(settings) and ai.in_privacy_mode(settings)
+        self.privacy_button.setVisible(on)
+        if not on:
+            return
+        model = ai.active_model(settings)
+        sealed_kind = private_ai.kind_of(model) == private_ai.E2EE
+        self.privacy_button.setText("Privacy Mode: end-to-end encrypted" if sealed_kind
+                                    else "Privacy Mode: attested TEE")
+        where, _protection = ai.destination(settings)
+        self.privacy_button.setToolTip(
+            f"The AI is sent things only {where.removeprefix('to ')}. "
+            "Click to see everything that's been sent.")
+        if sealed_kind and sealed.known() is None:
+            sealed.check()
 
     # --- library ---------------------------------------------------------
 
@@ -991,6 +1042,7 @@ class MainWindow(QMainWindow):
             on_progress=self._set_cover,
             on_done=lambda _result: self._artwork_finished(),
             on_failed=lambda _message: self._artwork_finished(),
+            purpose="Covers for the shelf",
         )
 
     def _set_cover(self, video_id: str) -> None:
@@ -2262,7 +2314,9 @@ class MainWindow(QMainWindow):
         from mediabrowser.gui.dialogs.settings_dialog import TAB_PRIVACY, SettingsDialog
 
         covers_before = privacy.allowed(privacy.COVER_ART)
-        if not SettingsDialog(self, TAB_PRIVACY if tab is None else tab).exec():
+        accepted = SettingsDialog(self, TAB_PRIVACY if tab is None else tab).exec()
+        self.update_privacy_indicator()
+        if not accepted:
             return
         if privacy.allowed(privacy.COVER_ART) and not covers_before:
             self._refetch_release_covers()
@@ -2602,6 +2656,7 @@ class MainWindow(QMainWindow):
             self, work,
             on_done=self._on_video_identified,
             on_failed=lambda message: self._on_video_identify_failed(video_id, message),
+            purpose=f"Identify: {video['display_name']}",
         ))
 
     def _on_video_identified(self, outcome) -> None:

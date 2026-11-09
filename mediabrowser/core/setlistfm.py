@@ -61,10 +61,17 @@ class SetlistError(Exception):
 HOW = "Over https to api.setlist.fm, with your setlist.fm key, which can read it"
 
 
+# setlist.fm's names for what a search is by, in words.
+_ASKED = {"artistName": "artist", "cityName": "city", "venueName": "venue",
+          "tourName": "tour"}
+
+
 def _what(path: str, params: dict) -> str:
-    """What one lookup tells setlist.fm, in words."""
-    asked = ", ".join(f"{k}: {v}" for k, v in params.items() if k != "p")
-    return f"a {path.split('/')[0]} search ({asked})" if asked else path
+    """What one lookup tells setlist.fm, in words: "a setlist search (artist:
+    Glass Harbor, year: 2026)"."""
+    asked = ", ".join(f"{_ASKED.get(k, k)}: {v}" for k, v in params.items() if k != "p")
+    kind = path.rsplit("/", 1)[-1].removesuffix("s")
+    return f"{'an' if kind[:1] in 'aeiou' else 'a'} {kind} search ({asked})"
 
 
 class NotConfigured(SetlistError):
