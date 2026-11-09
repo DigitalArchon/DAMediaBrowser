@@ -44,6 +44,16 @@ if [ -z "${SSL_CERT_FILE:-}" ]; then
         fi
     done
 fi
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    # No trust store where any distribution keeps one: Privacy Mode's client
+    # carries certifi's bundle, current when this AppImage was built. Better
+    # than failing every request, and only ever the last resort.
+    for candidate in "$HERE"/opt/python3.12/private-mode/certifi/cacert.pem; do
+        if [ -r "$candidate" ]; then
+            export SSL_CERT_FILE="$candidate"
+        fi
+    done
+fi
 if [ -z "${SSL_CERT_DIR:-}" ]; then
     for candidate in /etc/ssl/certs /etc/pki/tls/certs; do
         if [ -d "$candidate" ]; then
@@ -51,6 +61,13 @@ if [ -z "${SSL_CERT_DIR:-}" ]; then
             break
         fi
     done
+fi
+# Privacy Mode's client (Tinfoil's SDK) fetches with requests, which reads
+# REQUESTS_CA_BUNDLE and otherwise certifi's own bundle, not SSL_CERT_FILE:
+# the same store as everything else, so this machine's trust decisions stand
+# for it too. httpx, its other half, reads SSL_CERT_FILE itself.
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -z "${REQUESTS_CA_BUNDLE:-}" ]; then
+    export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"
 fi
 
 # ffmpeg, mpv and libbluray are deliberately NOT bundled - they are found on

@@ -16,6 +16,8 @@
 #   - the app and PySide6-Essentials, pinned to the version this repo is
 #     tested with. Essentials rather than the full PySide6: the add-ons are
 #     hundreds of megabytes this app never imports;
+#   - Privacy Mode's end-to-end encryption client, Tinfoil's SDK, from
+#     packaging/private-mode.lock, beside the Python it runs on;
 #   - the X11 helper libraries Qt's xcb plugin needs and many systems lack,
 #     taken from Debian 11 (built for glibc <= 2.17) rather than from
 #     whatever machine runs this script - a host's copy can need a newer
@@ -60,6 +62,8 @@ RUNTIME_SHA256="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
 # PySide6 and what builds the app's package, each by version and hash.
 REQUIREMENTS="$HERE/requirements.txt"
 BUILD_REQUIREMENTS="$HERE/build-requirements.txt"
+# Tinfoil's SDK and all it needs, each by version and hash.
+PRIVATE_MODE_LOCK="$REPO/packaging/private-mode.lock"
 
 DEBIAN_POOL="https://deb.debian.org/debian/pool/main"
 DEBIAN_LIBS=(
@@ -153,8 +157,103 @@ if ! diff <(cd "$REPO/mediabrowser" && find . -name '*.py' | sort) \
     exit 1
 fi
 
-log "Trimming what the app never loads"
+log "Privacy Mode's end-to-end encryption client"
 SITE="$("$PYTHON" -s -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+# Into a folder of its own beside the Python (mediabrowser/core/vendored.py
+# finds it there), as wheels only, each checked against the lock. The lock
+# names every platform's wheel for some packages, so the platforms are given
+# rather than read from this machine: two machines with different glibcs
+# must pick the same files. pip takes a manylinux_2_28 platform as that one
+# alone, so every one the bundled Python runs is named, best first.
+PRIVATE_MODE="$APPDIR/opt/python3.12/private-mode"
+PLATFORMS=()
+for minor in $(seq 28 -1 17); do
+    PLATFORMS+=(--platform "manylinux_2_${minor}_x86_64")
+done
+PLATFORMS+=(--platform manylinux2014_x86_64 --platform manylinux2010_x86_64
+            --platform manylinux1_x86_64)
+"${PIP[@]}" --require-hashes --only-binary=:all: --no-deps "${PLATFORMS[@]}" \
+    --implementation cp --python-version 3.12 --abi cp312 --abi abi3 --abi none \
+    --target "$PRIVATE_MODE" -r "$PRIVATE_MODE_LOCK"
+# Its console scripts (sigstore, httpx...) name this build's own Python on
+# their first line, and the app runs none of them. Out they go, with their
+# lines in each package's RECORD, which hold their hashes: left in, two
+# builds in two places differed there.
+rm -rf "$PRIVATE_MODE/bin"
+sed -i '\|^\(\.\./\)*bin/|d' "$PRIVATE_MODE"/*.dist-info/RECORD
+# What both it and site-packages carry is carried once. A package the app
+# pins itself (requirements.txt) must be the same version in both locks, or
+# one would stand in for the other unseen (DA Assistant once shipped
+# cryptography 50.0.1 where its own lock said 50.0.2); lock-private-mode.sh
+# locks against requirements.txt, and the build stops if they part. Its copy
+# here then goes. What the Python base brought along for its own pip
+# (certifi) gives way to the lock's, which is reviewed and newer. Either way
+# file by file, as the package's RECORD lists them.
+"$PYTHON" -s - "$SITE" "$PRIVATE_MODE" "$REQUIREMENTS" <<'DEDUPE'
+import csv, pathlib, re, sys
+
+site, private, requirements = map(pathlib.Path, sys.argv[1:4])
+
+
+def norm(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+pinned = {norm(name) for name in re.findall(r"^([A-Za-z0-9_.-]+)==",
+                                             requirements.read_text(), re.M)}
+
+
+def versions(folder):
+    found = {}
+    for info in folder.glob("*.dist-info"):
+        name, _, version = info.name[:-len(".dist-info")].rpartition("-")
+        found[norm(name)] = (version, info)
+    return found
+
+
+def remove(folder, info):
+    emptied = set()
+    with open(info / "RECORD", newline="") as record:
+        rows = list(csv.reader(record))
+    for row in rows:
+        path = (folder / row[0]).resolve()
+        if path.is_relative_to(folder.resolve()) and path.is_file():
+            path.unlink()
+            emptied.add(path.parent)
+    for parent in sorted(emptied, key=lambda p: len(p.parts), reverse=True):
+        while parent != folder.resolve() and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+
+
+ours, theirs = versions(site), versions(private)
+both = ours.keys() & theirs.keys()
+apart = sorted(f"{name} {ours[name][0]} (requirements.txt) vs {theirs[name][0]} "
+               f"(private-mode.lock)" for name in both & pinned
+               if ours[name][0] != theirs[name][0])
+if apart:
+    sys.exit("the two locks disagree: " + "; ".join(apart))
+for name in sorted(both):
+    if name in pinned:
+        remove(private, theirs[name][1])
+        print(f"  {name} {ours[name][0]}: the app's own copy, not a second")
+    else:
+        remove(site, ours[name][1])
+        print(f"  {name} {theirs[name][0]} from the lock, in place of the Python "
+              f"base's {ours[name][0]}")
+DEDUPE
+"$PYTHON" -s -c "
+import mediabrowser
+from mediabrowser.core import sealed, vendored
+ok, message = sealed.available()
+assert ok, message
+assert vendored.location() == '$PRIVATE_MODE', vendored.location()
+import cryptography, tinfoil
+assert cryptography.__file__.startswith('$SITE'), cryptography.__file__
+print('  ' + message + ', with the app\'s cryptography')
+"
+
+log "Trimming what the app never loads"
 QT="$SITE/PySide6"
 # Qt's developer tools and headers: designer, linguist, the QML tooling.
 rm -rf "$QT"/{include,typesystems,glue,scripts,examples,doc} \

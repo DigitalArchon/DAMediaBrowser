@@ -16,9 +16,10 @@ distribution's older copy, Tinfoil's pyOpenSSL would fail against it.
 mediabrowser/__init__.py calls activate() for that reason, before any other
 module of the app is imported.
 
-The AppImage carries the client in its own site-packages, installed from the
-same lock, and never reads the folder under ~/.local: nothing the user
-installed may shadow what was bundled.
+The AppImage carries the client in a folder of the same name beside its
+Python (sys.prefix/private-mode), installed from the same lock by
+packaging/appimage/build.sh, and never reads the one under ~/.local:
+nothing the user installed may shadow what was bundled.
 
 From DA Assistant's vendored.py (Nov 2026).
 """
@@ -37,31 +38,35 @@ def user_dir() -> str:
     return str(config.DATA_DIR / DIRNAME)
 
 
-def in_appimage() -> bool:
-    """Whether this Python is the AppImage's own: its runtime sets APPDIR, and
-    the interpreter is inside it."""
-    appdir = os.environ.get("APPDIR")
-    return bool(appdir) and os.path.abspath(sys.prefix).startswith(
-        os.path.abspath(appdir) + os.sep)
+def bundled_dir() -> str:
+    """Where the AppImage carries the client: beside its own Python."""
+    return os.path.join(sys.prefix, DIRNAME)
+
+
+def candidates() -> list[str]:
+    """The folder to look in: the AppImage's own if this Python has one -
+    and then never the user's - or else the one the install script fills."""
+    if os.path.isdir(os.path.join(bundled_dir(), "tinfoil")):
+        return [bundled_dir()]
+    return [user_dir()]
 
 
 def activate():
-    """Put the private-mode folder at the front of sys.path, if it is there and
-    this isn't the AppImage. Idempotent; returns the folder, or None."""
+    """Put the private-mode folder at the front of sys.path, if it is there.
+    Idempotent; returns the folder, or None."""
     global _active
     if _active is not None:
         return _active or None
     _active = ""
-    if in_appimage():
-        return None
-    path = user_dir()
-    if os.path.isdir(os.path.join(path, "tinfoil")):
-        if path not in sys.path:
-            sys.path.insert(0, path)
-        _active = path
+    for path in candidates():
+        if os.path.isdir(os.path.join(path, "tinfoil")):
+            if path not in sys.path:
+                sys.path.insert(0, path)
+            _active = path
+            break
     return _active or None
 
 
 def location():
-    """The folder in use, or None (the AppImage's client is in site-packages)."""
+    """The folder in use, or None."""
     return _active or None
