@@ -53,6 +53,7 @@ from mediabrowser.core import (
     playlists,
     privacy,
     protection,
+    reach,
     reset,
     sharing,
     store,
@@ -66,6 +67,7 @@ from mediabrowser.gui.grid_view import GridView
 from mediabrowser.gui.library_panel import LibraryPanel
 from mediabrowser.gui.list_view import ListView
 from mediabrowser.gui.mpv_poll import MpvPoll
+from mediabrowser.gui.network_status import NetworkStatus
 from mediabrowser.gui.now_playing import NowPlayingBar
 from mediabrowser.gui.queue_panel import QueuePanel
 from mediabrowser.gui.video_page import VideoPage
@@ -438,7 +440,7 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self._build_status_bar()
-        self.update_privacy_indicator()
+        self._look_for_private_client()
 
     def _build_toolbar(self) -> None:
         bar = QToolBar("Main")
@@ -558,15 +560,10 @@ class MainWindow(QMainWindow):
         self.cancel_scan_button.clicked.connect(self.cancel_scan)
         self.cancel_scan_button.hide()
 
-        # Where the AI's requests go, while Privacy Mode keeps them to an
-        # attested enclave: the same in every window, and a click from the
-        # list of what was sent.
-        self.privacy_button = QPushButton("Privacy Mode")
-        self.privacy_button.setObjectName("privacyButton")
-        self.privacy_button.setFlat(True)
-        self.privacy_button.setCursor(Qt.PointingHandCursor)
-        self.privacy_button.clicked.connect(self.show_what_was_sent)
-        self.privacy_button.hide()
+        # Where the app can send things, always in sight - Privacy Mode's
+        # included - and for a moment after each request, where it went: a
+        # click from the list of what was sent.
+        self.network_status = NetworkStatus(self.show_what_was_sent)
 
         # The count of missing videos says how many; this says which.
         self.show_missing_button = QPushButton("Show Missing…")
@@ -578,7 +575,7 @@ class MainWindow(QMainWindow):
 
         bar = self.statusBar()
         bar.addWidget(self.status_label, 1)
-        bar.addPermanentWidget(self.privacy_button)
+        bar.addPermanentWidget(self.network_status)
         bar.addPermanentWidget(self.show_missing_button)
         bar.addPermanentWidget(self.progress)
         bar.addPermanentWidget(self.cancel_scan_button)
@@ -889,28 +886,21 @@ class MainWindow(QMainWindow):
         self._sent_dialog.raise_()
         self._sent_dialog.activateWindow()
 
-    def update_privacy_indicator(self) -> None:
-        """The status bar's Privacy Mode, as Settings has it now: shown while
-        the AI may be asked and Privacy Mode keeps it to a private model,
-        saying where to; hidden otherwise. Whether Tinfoil's client is there
-        is looked for meanwhile, off this thread, so that the first request
+    def update_network_status(self) -> None:
+        """The status bar's line on what goes online, as Settings has it now."""
+        self.network_status.refresh()
+        self._look_for_private_client()
+
+    def _look_for_private_client(self) -> None:
+        """In Privacy Mode with a private/ model, whether Tinfoil's client is
+        there is looked for now, off this thread, so that the first request
         doesn't have to."""
         from mediabrowser.core import ai, private_ai, sealed
 
         settings = ai.settings_from(store.load_app_settings())
-        on = ai.allowed(settings) and ai.in_privacy_mode(settings)
-        self.privacy_button.setVisible(on)
-        if not on:
-            return
-        model = ai.active_model(settings)
-        sealed_kind = private_ai.kind_of(model) == private_ai.E2EE
-        self.privacy_button.setText("Privacy Mode: end-to-end encrypted" if sealed_kind
-                                    else "Privacy Mode: attested TEE")
-        where, _protection = ai.destination(settings)
-        self.privacy_button.setToolTip(
-            f"What the AI is asked goes {where}. Click to see everything that's been "
-            "sent.")
-        if sealed_kind and sealed.known() is None:
+        if (ai.allowed(settings) and ai.in_privacy_mode(settings)
+                and private_ai.kind_of(ai.active_model(settings)) == private_ai.E2EE
+                and sealed.known() is None):
             sealed.check()
 
     # --- library ---------------------------------------------------------
@@ -2172,8 +2162,7 @@ class MainWindow(QMainWindow):
         if protection.may_go_online(self._lib(target[0]), target[1]):
             return False
         self._set_status(
-            f"{target[1]['display_name']} is private: nothing about it goes to "
-            "MusicBrainz or the AI.",
+            f"{target[1]['display_name']} is private: nothing about it is sent anywhere.",
             "warning",
         )
         return True
@@ -2315,7 +2304,8 @@ class MainWindow(QMainWindow):
 
         covers_before = privacy.allowed(privacy.COVER_ART)
         accepted = SettingsDialog(self, TAB_PRIVACY if tab is None else tab).exec()
-        self.update_privacy_indicator()
+        # Saved, the status bar has been told (network_status.settings_changed).
+        self._look_for_private_client()
         if not accepted:
             return
         if privacy.allowed(privacy.COVER_ART) and not covers_before:
@@ -2474,13 +2464,20 @@ class MainWindow(QMainWindow):
             return
         owner = self._lib(video_id)
         locked = protection.is_locked(owner, video)
-        uses_ai = self._identify_uses_ai(video_id)
-        identify = QAction("Identify (Uses AI)" if uses_ai else "Identify", menu)
+        options, _settings, private = self._identify_options(video_id)
+        asks = self._identify_asks(options, private)
+        uses_ai = "the AI" in asks
+        # Who it will ask, on the item itself: a menu's tooltip is easily missed.
+        identify = QAction(
+            f"Identify (Asks {reach.and_list(asks)})" if asks else "Identify (On This Computer)",
+            menu)
         identify.setToolTip(
             "Find this video's chapters and names in the background, the way Identify "
-            "Library is set to - which methods, and the AI or not"
-            + (f". The AI may be asked up to {autoname.ONE_VIDEO_AI_BUDGET} times: a few "
-               "cents at most" if uses_ai else ": no AI, so it costs nothing")
+            "Library is set to"
+            + (f". Sends its name to {reach.and_list(asks)}" if asks else
+               ": only what this computer can do, so nothing is sent")
+            + (f"; the AI may be asked up to {autoname.ONE_VIDEO_AI_BUDGET} times: a few "
+               "cents at most" if uses_ai else ", and it costs nothing")
         )
         identify.setEnabled(
             not locked and video_id not in self._identifying_videos
@@ -2607,10 +2604,19 @@ class MainWindow(QMainWindow):
         video = self.data["videos"][video_id]
         return options, settings, protection.is_private(self._lib(video_id), video)
 
-    def _identify_uses_ai(self, video_id: str) -> bool:
-        """Whether Identify on this video may ask the AI - and so cost money."""
-        options, _settings, private = self._identify_options(video_id)
-        return not private and bool(set(options.methods) & set(autoname.AI_METHODS))
+    @staticmethod
+    def _identify_asks(options, private: bool) -> list[str]:
+        """Who identifying one video this way will ask, in the order it asks:
+        none for a private video, which only this computer works on."""
+        if private:
+            return []
+        methods = set(options.methods)
+        asks = [name for method, name in ((autoname.MUSICBRAINZ, "MusicBrainz"),
+                                          (autoname.SETLISTFM, "setlist.fm"))
+                if method in methods]
+        if methods & set(autoname.AI_METHODS):
+            asks.append("the AI")
+        return asks
 
     def identify_video(self, video_id: str) -> None:
         """Identify one video in the background, with the choices Identify
@@ -2647,8 +2653,10 @@ class MainWindow(QMainWindow):
             )
 
         self._identifying_videos.add(video_id)
+        asks = self._identify_asks(options, private)
         self._set_status(
-            f"Identifying {video['display_name']}…"
+            f"Identifying {video['display_name']}"
+            + (f", asking {reach.and_list(asks)}…" if asks else " on this computer…")
             + (f" (the AI may be asked up to {budget.remaining} times - a few cents)"
                if budget.remaining else "")
         )

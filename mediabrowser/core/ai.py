@@ -183,11 +183,12 @@ def _session(settings: dict) -> private_ai.PrivacySession:
     return session
 
 
-def load_settings() -> dict:
-    """The AI settings in force: settings.json's, with the key from the
-    keyring. A keyring that can't be reached, or stays locked, just means
-    no key - the environment's, if it has one, doesn't need it."""
-    app_settings = store.load_app_settings()
+def load_settings(app_settings: dict | None = None) -> dict:
+    """The AI settings in force: settings.json's (or the app's settings
+    given, already loaded), with the key from the keyring. A keyring that
+    can't be reached, or stays locked, just means no key - the
+    environment's, if it has one, doesn't need it."""
+    app_settings = store.load_app_settings() if app_settings is None else dict(app_settings)
     app_settings[SETTING_KEY] = "" if os.environ.get(API_KEY_ENV, "").strip() else stored_key()
     return settings_from(app_settings)
 

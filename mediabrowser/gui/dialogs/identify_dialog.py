@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -31,12 +32,13 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from mediabrowser.core import ai, autoname, naming, privacy, setlistfm, store
+from mediabrowser.core import ai, autoname, naming, privacy, reach, setlistfm, store
 from mediabrowser.gui import identified
 
 SETTINGS_KEY = "identify_options"
@@ -44,37 +46,43 @@ SETTINGS_KEY = "identify_options"
 METHOD_TEXT = {
     autoname.MUSICBRAINZ: (
         "MusicBrainz tracklists",
-        "Free. Used only when a release's tracks add up to the video, so each song "
-        "lands where it plays. Slow: MusicBrainz allows a request every second or two.",
+        "Free. Sends each video's file or folder name to musicbrainz.org. Used only "
+        "when a release's tracks add up to the video, so each song lands where it "
+        "plays. Slow: MusicBrainz allows a request every second or two.",
     ),
     autoname.SETLISTFM: (
         "setlist.fm setlists",
-        "Free, with your own setlist.fm key. For a show whose name gives the artist and "
-        "the date - a bootleg or a broadcast MusicBrainz doesn't have. Names chapters in "
-        "order when there's one per song, and spares the AI a web search.",
+        "Free, with your own setlist.fm key. Sends the artist and date from a video's "
+        "name to setlist.fm. For a bootleg or a broadcast MusicBrainz doesn't have. Names "
+        "chapters in order when there's one per song, and spares the AI a web search.",
     ),
     autoname.AUDIO: (
         "Split videos in one piece where the music stops",
-        "Free, but slow: it reads the whole video - a couple of minutes a concert "
-        "over a network share. The chapters it makes still need names.",
+        "On this computer: nothing is sent. Free, but slow: it reads the whole video - "
+        "a couple of minutes a concert over a network share. The chapters it makes "
+        "still need names.",
     ),
     autoname.MENU: (
         "Read Blu-ray menus (AI)",
         "The most accurate there is: each song named as the disc's own menu names "
-        "it. A cent or two per disc.",
+        "it. The menu is read here and the AI is sent pictures of its buttons: a cent "
+        "or two per disc.",
     ),
     autoname.AI_LOOK: (
-        "AI looks at the video and searches the web",
-        "For what nothing else could name. A few cents a video. It also puts right a "
+        "AI looks at the video",
+        "Sends the AI the file and folder names, the chapter times and frames. For "
+        "what nothing else could name. A few cents a video. It also puts right a "
         "MusicBrainz search the file's name got wrong, and says which release is the show.",
     ),
     autoname.TRANSLATE: (
         "Romanise titles (AI)",
-        "Japanese and other titles as the songs are known in English-language "
-        "releases - romanised (Iine!, not \"So Good\") or the official English title - "
-        "the original kept for searching. A fraction of a cent.",
+        "Sends the AI the titles. Japanese and other titles as the songs are known in "
+        "English-language releases - romanised (Iine!, not \"So Good\") or the "
+        "official English title - the original kept for searching. A fraction of a cent.",
     ),
 }
+# The methods that ask a service other than the AI, and which service.
+LOOKUPS = {autoname.MUSICBRAINZ: privacy.MUSICBRAINZ, autoname.SETLISTFM: privacy.SETLISTFM}
 
 # What an AI request costs, very roughly, in US cents - for the estimate.
 AI_CENTS = {autoname.MENU: 2, autoname.AI_LOOK: 6, autoname.TRANSLATE: 1}
@@ -153,7 +161,7 @@ class IdentifyDialog(QDialog):
         super().__init__(window)
         self.setWindowTitle("Identify Library")
         self.setModal(False)
-        self.resize(760, 760)
+        self.resize(780, 840)
         self.main = window
         self._thread: threading.Thread | None = None
         self._runner: _Runner | None = None
@@ -161,6 +169,8 @@ class IdentifyDialog(QDialog):
         self._counts = {"done": 0, "better": 0, "same": 0, "error": 0}
         self._ai_used = 0
         self._ai_settings = ai.load_settings()
+        # Where each service can be reached, as Settings has it: for saying so.
+        self._reach = reach.services(ai_settings=self._ai_settings)
         self._build()
         self._load_options()
         self._update_estimate()
@@ -179,6 +189,7 @@ class IdentifyDialog(QDialog):
         methods_caption = QLabel("Methods")
         methods_caption.setObjectName("sectionCaption")
         self.method_checks: dict[str, QCheckBox] = {}
+        self.method_details: dict[str, QLabel] = {}
         methods = QGridLayout()
         methods.setContentsMargins(0, 0, 0, 0)
         methods.setHorizontalSpacing(12)
@@ -192,6 +203,7 @@ class IdentifyDialog(QDialog):
             detail.setObjectName("hintLabel")
             detail.setWordWrap(True)
             self.method_checks[method] = check
+            self.method_details[method] = detail
             methods.addWidget(check, 2 * row, 0)
             methods.addWidget(detail, 2 * row + 1, 0)
 
@@ -294,7 +306,14 @@ class IdentifyDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         layout.addWidget(intro)
-        layout.addWidget(self.options_panel)
+        # The choices scroll rather than squeeze on a short screen: squeezed,
+        # wrapped notes overprint one another.
+        self.options_area = QScrollArea()
+        self.options_area.setWidgetResizable(True)
+        self.options_area.setFrameShape(QFrame.NoFrame)
+        self.options_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.options_area.setWidget(self.options_panel)
+        layout.addWidget(self.options_area, 1)
         layout.addWidget(self.estimate)
         layout.addWidget(self.progress)
         layout.addWidget(self.current)
@@ -338,6 +357,7 @@ class IdentifyDialog(QDialog):
         what a run may go by - the AI switched off in Settings since then
         stays off here, and switched on, it's offered."""
         self._ai_settings = ai.load_settings()
+        self._reach = reach.services(ai_settings=self._ai_settings)
         not_ready = ai.not_ready(self._ai_settings)
         musicbrainz = privacy.allowed(privacy.MUSICBRAINZ)
         setlist_off = setlistfm.not_ready()
@@ -352,6 +372,12 @@ class IdentifyDialog(QDialog):
                 off = ""
             check.setEnabled(not off)
             check.setToolTip(off or METHOD_TEXT[method][1])
+            # Off, it says why where it's read, not only on hover.
+            self.method_details[method].setText(
+                f"Off: {off}" if off else METHOD_TEXT[method][1])
+        searches = self._reach[privacy.WEB_SEARCH].on
+        self.method_checks[autoname.AI_LOOK].setText(
+            METHOD_TEXT[autoname.AI_LOOK][0] + (" and searches the web" if searches else ""))
 
     def showEvent(self, event) -> None:
         # Shown again after Settings changed: what may run has too.
@@ -390,7 +416,11 @@ class IdentifyDialog(QDialog):
         ai_methods = options.methods & set(autoname.AI_METHODS)
         if not options.methods:
             text += " Choose at least one method."
-        elif ai_methods:
+            self.estimate.setText(text)
+            self.start_button.setEnabled(False)
+            return
+        text += " " + self._where_it_goes(options)
+        if ai_methods:
             most = min(options.ai_budget,
                        len(videos) * sum(autoname.AI_REQUESTS[m] for m in ai_methods))
             worst = max(AI_CENTS[m] for m in ai_methods)
@@ -398,7 +428,8 @@ class IdentifyDialog(QDialog):
             priced = (f"with {ai.short_model_name(model)}" if model == ai.DEFAULT_MODEL else
                       f"at Claude Sonnet's prices ({ai.short_model_name(model)}, set in "
                       "Settings, may cost more or less)")
-            where, _protection = ai.destination(self._ai_settings, online=True)
+            where, _protection = ai.destination(
+                self._ai_settings, online=autoname.AI_LOOK in ai_methods)
             text += (f" At most {most} AI request(s), paid for from your Nano-GPT credit - "
                      f"under ${most * worst / 100:.2f} {priced}, usually much less. What "
                      f"it asks the AI goes {where}.")
@@ -407,6 +438,21 @@ class IdentifyDialog(QDialog):
         self.estimate.setText(text)
         self.start_button.setEnabled(bool(videos) and bool(options.methods)
                                      and self._thread is None)
+
+    def _where_it_goes(self, options: autoname.Options) -> str:
+        """Which services the run will ask, other than the AI (which the cost
+        sentence names), and the covers that follow: or that it stays here."""
+        asked = [LOOKUPS[method] for method in LOOKUPS if method in options.methods]
+        hosts = reach.names(asked, self._reach)
+        if not hosts and not options.methods & set(autoname.AI_METHODS):
+            return reach.NOTHING
+        if not hosts:
+            return "Nothing goes to MusicBrainz or setlist.fm."
+        text = f"Each video's name goes to {hosts}."
+        if (autoname.MUSICBRAINZ in options.methods
+                and self._reach[privacy.COVER_ART].on):
+            text += " A release it's matched to has its cover fetched from coverartarchive.org."
+        return text
 
     # --- the run -----------------------------------------------------------
 
@@ -523,6 +569,7 @@ class IdentifyDialog(QDialog):
 
     def _show_options(self, show: bool) -> None:
         self.options_panel.setVisible(show)
+        self.options_area.setVisible(show)
         self.estimate.setVisible(show)
         self.log.setVisible(not show)
         if show:

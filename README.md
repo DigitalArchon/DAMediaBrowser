@@ -283,8 +283,9 @@ the next rescan reads the file once to find out.)
 **Identify from the shelf.** Right-click any video and **Identify** works
 out its chapters and names in the background, without opening it — the
 same way Identify Library is set to (which methods, and whether the AI
-may be used). The status bar says what it found, and **Undo Last
-Identification** puts it back.
+may be used). The item says who it will ask — *Identify (Asks MusicBrainz
+and the AI)*, or *Identify (On This Computer)*. The status bar says what it
+found, and **Undo Last Identification** puts it back.
 
 **Locked and private.** Right-click a video, or a library in the
 *Libraries* panel, to set either:
@@ -476,7 +477,8 @@ and メギツネ as "Megitsune". So wherever the AI names songs (the
 officially released in English-language markets — a romanisation, or the
 song's official English title where it has one — and never translates the
 meaning. **Romanise Titles with AI** in the Chapters menu does just that
-for names already there. A romanised chapter keeps its original title
+for names already there: it lists them and says where they'd go, and sends
+them when **Romanise** is pressed. A romanised chapter keeps its original title
 underneath, so a search in either script finds the song (the dot beside
 it is purple).
 
@@ -772,8 +774,9 @@ key is sent to read it.
 An operation's privacy is fixed when it starts — a Detect Chapters window
 opened, an Identify Library run — and only ever tightens: switch Privacy
 Mode on, or the AI off, and a run already going sends nothing more to the
-ordinary model. While Privacy Mode is on the status bar says so, and after
-an answer, Detect Chapters says what the enclave proved.
+ordinary model. While Privacy Mode is on the status bar says so ("AI,
+sealed end to end"), and after an answer, Detect Chapters says what the
+enclave proved.
 
 The end-to-end encrypted models need Tinfoil's own client, which the
 AppImage carries and `tools/install-private-mode.sh` installs from source;
@@ -811,12 +814,45 @@ only through a proxy on this computer. An API key with a space or a hidden
 character in it, picked up where it was copied from, is refused in words
 that don't repeat it.
 
+**You can always see where things can go.** The status bar's right-hand
+corner says it — "Online: MusicBrainz · Covers · AI", "AI, sealed end to
+end" in Privacy Mode, or "Nothing goes online" — and hovering it lists each
+place, with why one is off (switched off, no key yet, no web search in
+Privacy Mode). Each time something is sent it says where for a few
+seconds ("Sent to coverartarchive.org"): covers are fetched in the
+background, by themselves, and this is where that shows. A click opens
+What Was Sent.
+
+**Nothing is sent until a button that says where is pressed.** Every
+control that sends something says what and to whom before it's used:
+
+- Detect Chapters: Search MusicBrainz and Search setlist.fm say what goes
+  in their notes; Read the Menu, Ask AI and Just Figure It Out say where
+  the AI's requests go and who can read them, and Just Figure It Out names
+  only the services it will really ask — one switched off is said to be
+  off. Making the chapters from a tracklist (step 2), pasting one and
+  measuring the audio happen on this computer, and say so.
+- Identify Library: each method says where it sends, or that it runs on
+  this computer; one that's off says why under its box; and the estimate
+  names every place the run will send to, the covers that follow included.
+- A video's right-click Identify says who it asks — *Identify (Asks
+  MusicBrainz and the AI)*, or *Identify (On This Computer)*.
+- Romanise Titles lists the titles and where they'd go, and sends them only
+  when Romanise is pressed.
+- Settings' List Models, Test and Check Attestation say where they go, the
+  web search note names the engine, and the Nano-GPT key's going with List
+  Models is said.
+
+Links (setlist.fm's credit, About's) say on hover what they open, and open
+in your web browser — that's the browser's request, not the app's, so it
+isn't on What Was Sent. A link that isn't https isn't opened at all.
+
 **Help → What Was Sent** lists every request since the app started, as it
 is made: to whom, what it carried, how it travelled (in the clear over
 https, to an attested enclave, or sealed end to end), whether it went, and
 which window or run it was for — and for the AI, the words it was sent,
-the frames left out. The list is kept in memory only, and is gone when the
-app closes.
+the frames left out. Above the list it says where things can go from now
+on. The list is kept in memory only, and is gone when the app closes.
 
 ## Another device
 
@@ -919,7 +955,7 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 1,206 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 1,221 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
 

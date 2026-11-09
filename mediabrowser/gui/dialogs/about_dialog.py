@@ -8,9 +8,11 @@ no warranty, and where the licence is - this is where.
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QWidget
 
 from mediabrowser.core import config
+from mediabrowser.gui import links
 
 LICENSE_URL = "https://www.gnu.org/licenses/gpl-3.0.html"
 
@@ -38,4 +40,15 @@ def about_text() -> str:
 
 
 def show_about(parent: QWidget) -> None:
-    QMessageBox.about(parent, "About DA Media Browser", about_text())
+    """QMessageBox.about's box, its links saying where they go (gui.links)."""
+    box = QMessageBox(parent)
+    box.setWindowTitle("About DA Media Browser")
+    box.setTextFormat(Qt.RichText)
+    box.setText(about_text())
+    icon = parent.windowIcon() if parent is not None else QApplication.windowIcon()
+    if not icon.isNull():
+        box.setIconPixmap(icon.pixmap(64, 64))
+    label = box.findChild(QLabel, "qt_msgbox_label")
+    if label is not None:
+        links.guard(label)
+    box.exec()

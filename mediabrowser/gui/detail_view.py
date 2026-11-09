@@ -186,7 +186,8 @@ class DetailView(QWidget):
         self.chapters_button.setToolTip(
             "Find where the songs start and what they're called: from the disc's menu, "
             "a tracklist (MusicBrainz, or pasted), the audio, or the AI - or let it "
-            "work that out itself"
+            "work that out itself. Nothing is sent until you press a button there that "
+            "says where it goes."
         )
         self.chapters_button.clicked.connect(self.chapters_requested)
         self.edit_button = QPushButton("Edit Tracklist…")

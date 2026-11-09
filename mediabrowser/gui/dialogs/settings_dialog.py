@@ -35,7 +35,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mediabrowser.core import ai, creds, netguard, privacy, private_ai, sealed, setlistfm, store
+from mediabrowser.core import (
+    ai,
+    creds,
+    netguard,
+    outbound,
+    privacy,
+    private_ai,
+    sealed,
+    setlistfm,
+    store,
+)
+from mediabrowser.gui import links, network_status
 from mediabrowser.gui.worker import run_job
 
 OTHER_ENDPOINTS = (
@@ -79,6 +90,15 @@ STRICT_NOTE = (
 )
 WEB_SEARCH_OFF_IN_PRIVACY_MODE = (
     "Not in Privacy Mode: Nano-GPT would have to read the request to search for it."
+)
+ATTEST_E2EE = (
+    "Asks nano-gpt's relay for the enclave's report, and checks it against AMD's or "
+    "Intel's certificates and Tinfoil's release record on Sigstore. Nothing about your "
+    "videos is sent, and it costs nothing."
+)
+ATTEST_TEE = (
+    "Asks nano-gpt for the enclave's report, and checks it with Intel's and NVIDIA's "
+    "attestation services. Nothing about your videos is sent, and it costs nothing."
 )
 KEY_NOTE = (
     "The key is kept in the system keyring (GNOME Keyring or KWallet), not in "
@@ -247,9 +267,6 @@ class SettingsDialog(QDialog):
         self.strict_note = strict_note
 
         self.attest_button = QPushButton("Check Attestation")
-        self.attest_button.setToolTip(
-            "Attest the private model's enclave now. Nothing is sent for it to read, "
-            "and it costs nothing.")
         self.attest_button.clicked.connect(self.check_attestation)
         self.attest_status = QLabel("")
         self.attest_status.setObjectName("toneLabel")
@@ -288,8 +305,12 @@ class SettingsDialog(QDialog):
             widget.setEnabled(ai_on and private)
         search = self.privacy_checks[privacy.WEB_SEARCH]
         search.setEnabled(ai_on and not private)
+        provider = (self.search.currentText() if hasattr(self, "search")
+                    else ai.SEARCH_PROVIDERS[ai.DEFAULT_SEARCH])
         self.web_search_note.setText(
-            WEB_SEARCH_OFF_IN_PRIVACY_MODE if private else privacy.TEXT[privacy.WEB_SEARCH][1])
+            WEB_SEARCH_OFF_IN_PRIVACY_MODE if private else
+            f"Nano-GPT has {provider} (chosen on the AI tab) search the web about the show "
+            "for the model - the artist, tour and venue. Both see the search.")
         if hasattr(self, "base_url"):
             self._update_where()
 
@@ -314,6 +335,11 @@ class SettingsDialog(QDialog):
                      listed.get("note", "") or ai.PRIVATE_RECOMMENDED.get(model, "")]
             self._tone(self.private_model_note, " · ".join(p for p in parts if p),
                        "ok" if private_ai.kind_of(model) == private_ai.E2EE else "warning")
+        self.attest_button.setToolTip(
+            ATTEST_E2EE if private_ai.kind_of(model) == private_ai.E2EE else ATTEST_TEE)
+        where, _protection = ai.destination(settings)
+        self.test_button.setToolTip(
+            f"Sends the model one tiny request {where}: a fraction of a cent.")
         self.ai_privacy_note.setVisible(self.privacy_mode_check.isChecked())
         self.ai_privacy_note.setText(
             f"Privacy Mode is on (Privacy tab): the AI's requests go only to {model}. "
@@ -330,7 +356,7 @@ class SettingsDialog(QDialog):
         about = QLabel(ABOUT)
         about.setObjectName("hintLabel")
         about.setWordWrap(True)
-        about.setOpenExternalLinks(True)
+        links.guard(about)
         self.ai_privacy_note = QLabel()
         self.ai_privacy_note.setObjectName("warningLabel")
         self.ai_privacy_note.setWordWrap(True)
@@ -374,7 +400,6 @@ class SettingsDialog(QDialog):
         self.model_note.setTextFormat(Qt.PlainText)
         self._models: dict[str, dict] = {}
         self.fetch_button = QPushButton("List Models")
-        self.fetch_button.setToolTip("Ask Nano-GPT which models can look at images")
         self.fetch_button.clicked.connect(self.fetch_models)
         model_row = QHBoxLayout()
         model_row.setContentsMargins(0, 0, 0, 0)
@@ -401,6 +426,7 @@ class SettingsDialog(QDialog):
             "and Perplexity find setlist.fm pages reliably; the deep options read "
             "more pages and cost more."
         )
+        self.search.currentIndexChanged.connect(lambda _index: self._update_privacy())
 
         self.base_url = QLineEdit(settings[ai.SETTING_BASE_URL])
         self.base_url.setToolTip("Only worth changing for another OpenAI-compatible service")
@@ -411,7 +437,6 @@ class SettingsDialog(QDialog):
         other.setWordWrap(True)
 
         self.test_button = QPushButton("Test")
-        self.test_button.setToolTip("Sends the model one tiny request - a fraction of a cent")
         self.test_button.clicked.connect(self.test)
         self.status = QLabel("")
         self.status.setObjectName("hintLabel")
@@ -450,7 +475,7 @@ class SettingsDialog(QDialog):
         about = QLabel(SETLISTFM_ABOUT)
         about.setObjectName("hintLabel")
         about.setWordWrap(True)
-        about.setOpenExternalLinks(True)
+        links.guard(about)
         self.setlist_key = QLineEdit(self._stored_setlist_key)
         self.setlist_key.setEchoMode(QLineEdit.Password)
         self.setlist_key.setPlaceholderText("Paste your setlist.fm API key…")
@@ -594,6 +619,7 @@ class SettingsDialog(QDialog):
         store.save_app_settings(settings)
         if settings[ai.SETTING_PRIVACY_MODE] and private_ai.is_private_mode(private_model):
             sealed.check()      # known before the first request needs it
+        network_status.settings_changed()
         super().accept()
 
     # --- asking Nano-GPT ---------------------------------------------------
@@ -604,7 +630,7 @@ class SettingsDialog(QDialog):
             self.status.setText(AI_OFF_HERE)
             return
         self.fetch_button.setEnabled(False)
-        self.status.setText("Asking Nano-GPT for its models…")
+        self.status.setText(f"Asking {self._endpoint_host()} for its models…")
         self._jobs.append(run_job(
             self,
             lambda: ai.list_models(settings),
@@ -643,6 +669,10 @@ class SettingsDialog(QDialog):
             parts.append(note)
         self.model_note.setText(" · ".join(parts))
 
+    def _endpoint_host(self) -> str:
+        url = self.base_url.text().strip() or ai.DEFAULT_BASE_URL
+        return outbound.host_of(url) or url
+
     def _update_search(self) -> None:
         on_nano = ai.searches_the_web({ai.SETTING_BASE_URL: self.base_url.text().strip()})
         self.search.setEnabled(on_nano)
@@ -650,6 +680,9 @@ class SettingsDialog(QDialog):
             "Who searches the web when the model is asked to look a show up." if on_nano
             else "Web search is Nano-GPT's own: with another endpoint it's switched off."
         )
+        self.fetch_button.setToolTip(
+            f"Asks {self._endpoint_host()} which models can look at pictures. The API key "
+            "goes with it, if there is one, so that the prices are yours.")
 
     def test(self) -> None:
         settings = self.settings()

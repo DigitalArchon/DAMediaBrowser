@@ -33,7 +33,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from mediabrowser.core import outbound
+from mediabrowser.core import outbound, reach
+from mediabrowser.gui import network_status
 
 INTRO = (
     "Everything this app has sent since it started: to whom, what it carried, and how "
@@ -116,6 +117,11 @@ class SentDialog(QDialog):
         self.summary = QLabel()
         self.summary.setObjectName("toneLabel")
         self.summary.setWordWrap(True)
+        # What can be sent from now on, beside what was.
+        self.allowed = QLabel()
+        self.allowed.setObjectName("hintLabel")
+        self.allowed.setWordWrap(True)
+        self.allowed.setTextFormat(Qt.PlainText)
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(5)
@@ -157,6 +163,7 @@ class SentDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         layout.addWidget(intro)
+        layout.addWidget(self.allowed)
         layout.addWidget(self.summary)
         layout.addWidget(splitter, 1)
         layout.addWidget(buttons)
@@ -166,9 +173,8 @@ class SentDialog(QDialog):
         # One callable, kept, so that the one added is the one taken off.
         self._listener = self._bridge.arrived.emit
         outbound.add_listener(self._listener)
-        for entry in outbound.entries():
-            self._add(entry)
-        self._update_summary()
+        network_status.hub().settings_changed.connect(self.update_allowed)
+        self.reload()
 
     def done(self, result: int) -> None:
         outbound.remove_listener(self._listener)
@@ -185,7 +191,13 @@ class SentDialog(QDialog):
         self.reload()
         super().showEvent(event)
 
+    def update_allowed(self) -> None:
+        """Where the app can send things now, as Settings → Privacy has it."""
+        self.allowed.setText("Where it can send things now (Settings → Privacy):\n"
+                             + reach.overview(reach.services()))
+
     def reload(self) -> None:
+        self.update_allowed()
         self.tree.clear()
         self._entries = []
         self._shown = set()

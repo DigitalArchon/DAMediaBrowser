@@ -10,6 +10,9 @@ officially known in English-language releases - romanised, or its
 official English title where it has one -
 shows the before and after, and keeps the original on the chapter so a
 search in either script finds it.
+
+Nothing is sent when it opens: it lists the titles and says where they would
+go, and only Romanise sends them.
 """
 
 from __future__ import annotations
@@ -62,8 +65,10 @@ class TranslateDialog(QDialog):
         self.status.setWordWrap(True)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.romanise_button = buttons.addButton("Romanise", QDialogButtonBox.ActionRole)
+        self.romanise_button.setObjectName("primaryButton")
+        self.romanise_button.clicked.connect(self.start)
         self.apply_button = buttons.addButton("Apply", QDialogButtonBox.AcceptRole)
-        self.apply_button.setObjectName("primaryButton")
         self.apply_button.setEnabled(False)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -79,29 +84,44 @@ class TranslateDialog(QDialog):
             item = QTreeWidgetItem([str(i + 1), title, "", ""])
             item.setTextAlignment(0, Qt.AlignRight | Qt.AlignVCenter)
             self.tree.addTopLevelItem(item)
-        self.start()
+        self.romanise_button.setEnabled(self._ready())
+        if self._ready():
+            where, _protection = ai.destination(self._settings)
+            self.status.setText(
+                f"Romanise sends these {len(self._titled)} titles {where}. One AI "
+                "request, a fraction of a cent; nothing changes until Apply.")
 
-    def start(self) -> None:
+    def _ready(self) -> bool:
+        """Whether there's anything to send, and somewhere it may go - saying
+        why not when there isn't."""
         if not self._titled:
             self.status.setText("None of these chapters has a name yet.")
-            return
+            return False
         if not ai.is_configured(self._settings):
             self.status.setText(ai.not_ready(self._settings))
+            return False
+        return True
+
+    def start(self) -> None:
+        if self._jobs or not self._ready():
             return
         settings = self._settings
         titles = [title for _, title in self._titled]
         where, _protection = ai.destination(settings)
-        self.status.setText(
-            f"Sending {len(titles)} titles {where} (one AI request - a fraction of a "
-            "cent)…"
-        )
+        self.romanise_button.setEnabled(False)
+        self.status.setText(f"Sending {len(titles)} titles {where}…")
         self._jobs.append(run_job(
             self,
             lambda: ai_chapters.translate_titles(titles, settings),
             on_done=self._show,
-            on_failed=lambda message: self.status.setText(f"That didn't work: {message}"),
+            on_failed=self._failed,
             purpose="Romanise Titles",
         ))
+
+    def _failed(self, message: str) -> None:
+        self._jobs.clear()
+        self.romanise_button.setEnabled(True)
+        self.status.setText(f"That didn't work: {message}")
 
     def _show(self, translated) -> None:
         self._translated = translated
@@ -120,6 +140,10 @@ class TranslateDialog(QDialog):
             "Every title is already as it's known in English - nothing to change."
         )
         self.apply_button.setEnabled(changed > 0)
+        if changed:
+            self.apply_button.setObjectName("primaryButton")
+            self.apply_button.style().unpolish(self.apply_button)
+            self.apply_button.style().polish(self.apply_button)
 
     def mapping(self) -> list[tuple[int, str, str | None]]:
         """(chapter_index, title, original_title) for each title that

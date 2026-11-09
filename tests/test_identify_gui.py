@@ -55,8 +55,36 @@ class TestTheChoices:
         monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
         d = dialog(library)
         assert d.options().methods == {autoname.MUSICBRAINZ, autoname.AUDIO}
-        assert d.estimate.text() == "2 video(s) to identify. No AI: this run costs nothing."
+        assert d.estimate.text() == (
+            "2 video(s) to identify. Each video's name goes to musicbrainz.org. A release "
+            "it's matched to has its cover fetched from coverartarchive.org. No AI: this "
+            "run costs nothing.")
         assert not d.method_checks[autoname.MENU].isEnabled(), "no key, no AI"
+        # Off, it says why under the box, not only on hover.
+        assert d.method_details[autoname.MENU].text().startswith("Off: Set a Nano-GPT API key")
+        assert d.method_details[autoname.SETLISTFM].text().startswith(
+            "Off: Add a setlist.fm API key")
+        assert "On this computer" in d.method_details[autoname.AUDIO].text()
+
+    def test_it_says_where_each_service_is_asked(self, app, library, monkeypatch):
+        from mediabrowser.core import privacy
+
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+        d = dialog(library)
+        d.method_checks[autoname.MUSICBRAINZ].setChecked(False)
+        assert "Nothing leaves this computer." in d.estimate.text()
+        monkeypatch.setenv(ai.API_KEY_ENV, "k")
+        d._refresh_availability()
+        d.method_checks[autoname.AI_LOOK].setChecked(True)
+        assert "Nothing goes to MusicBrainz or setlist.fm." in d.estimate.text()
+        assert "through Nano-GPT" in d.estimate.text()
+        assert "searches the web" in d.method_checks[autoname.AI_LOOK].text()
+        settings = store.load_app_settings()
+        privacy.set_allowed(settings, privacy.WEB_SEARCH, False)
+        store.save_app_settings(settings)
+        d._refresh_availability()
+        assert d.method_checks[autoname.AI_LOOK].text() == "AI looks at the video", (
+            "no web search promised when it can't search")
 
     def test_ai_methods_show_a_ceiling_on_the_cost(self, app, library, monkeypatch):
         monkeypatch.setenv(ai.API_KEY_ENV, "k")

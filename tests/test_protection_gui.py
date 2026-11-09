@@ -111,7 +111,7 @@ class TestLocked:
         menu = QMenu()
         window._add_folder_actions(menu, "v")
         actions = menu_texts(menu)
-        assert not actions["Identify"].isEnabled()
+        assert not actions["Identify (Asks MusicBrainz)"].isEnabled()
         assert not actions["Rename Video…"].isEnabled()
         assert not actions["Hide This Video"].isEnabled()
         assert actions["Locked"].isChecked() and actions["Locked"].isEnabled()
@@ -239,25 +239,34 @@ class TestIdentifyFromTheMenu:
             return outcome_for(snapshot, None)
 
         monkeypatch.setattr(autoname, "identify", identify)
+        # Who it will ask is on the item itself.
         store.save_app_settings({"identify_options": {"methods": ["musicbrainz"]}})
         menu = QMenu()
         window._add_folder_actions(menu, "v")
-        assert "Identify" in menu_texts(menu)
+        action = menu_texts(menu)["Identify (Asks MusicBrainz)"]
+        assert "Sends its name to MusicBrainz" in action.toolTip()
+        assert "costs nothing" in action.toolTip()
+        store.save_app_settings({"identify_options": {"methods": ["audio"]}})
+        menu = QMenu()
+        window._add_folder_actions(menu, "v")
+        assert "nothing is sent" in menu_texts(menu)["Identify (On This Computer)"].toolTip()
         store.save_app_settings({"identify_options": {"methods": ["musicbrainz", "ai_look"],
                                                       "ai_budget": 40}})
         menu = QMenu()
         window._add_folder_actions(menu, "v")
-        action = menu_texts(menu)["Identify (Uses AI)"]
+        action = menu_texts(menu)["Identify (Asks MusicBrainz and the AI)"]
         assert "cents" in action.toolTip()
         window.identify_video("v")
-        assert "the AI may be asked up to 6 times" in window.status_label.text()
+        status = window.status_label.text()
+        assert "asking MusicBrainz and the AI" in status
+        assert "the AI may be asked up to 6 times" in status
         assert pump(app, lambda: not window._identifying_videos)
         assert seen["budget"] == autoname.ONE_VIDEO_AI_BUDGET, "not a whole run's 40"
-        # A private video never uses it, so doesn't say it will.
+        # A private video is never sent anywhere, so doesn't say it will be.
         window.set_video_flag("v", "private", True)
         menu = QMenu()
         window._add_folder_actions(menu, "v")
-        assert "Identify" in menu_texts(menu)
+        assert "Identify (On This Computer)" in menu_texts(menu)
 
 
 class TestJustFigureItOut:

@@ -5,7 +5,7 @@ the settings. The model is a stand-in; nothing leaves the machine."""
 
 import pytest
 
-from mediabrowser.core import ai, ai_chapters, config, creds, library, methods, store
+from mediabrowser.core import ai, ai_chapters, config, creds, library, methods, outbound, store
 from tests.test_chapters_dialog import (
     _finished,
     detect,
@@ -194,6 +194,11 @@ class TestTranslating:
             lambda titles, settings: [("Megitsune", "メギツネ"), ("Karate", None)],
         )
         dialog = TranslateDialog(window, video)
+        # Nothing goes until Romanise: first it says what would, and where.
+        assert "Romanise sends these 2 titles to claude-sonnet-5 through Nano-GPT" in (
+            dialog.status.text())
+        assert outbound.entries() == [] and not dialog._jobs
+        dialog.romanise_button.click()
         assert pump(app, lambda: dialog.apply_button.isEnabled())
         assert dialog.tree.topLevelItem(0).text(2) == "Megitsune"
         assert dialog.mapping() == [(0, "Megitsune", "メギツネ")]
@@ -213,6 +218,7 @@ class TestTranslating:
         dialog = TranslateDialog(window, video)
         assert "Settings → AI" in dialog.status.text()
         assert not dialog.apply_button.isEnabled()
+        assert not dialog.romanise_button.isEnabled()
 
 
 class TestSettings:

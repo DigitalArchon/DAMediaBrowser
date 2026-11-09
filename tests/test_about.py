@@ -26,11 +26,15 @@ def test_it_is_on_the_help_menu(window, monkeypatch):
     from mediabrowser.gui.dialogs import about_dialog
 
     shown = []
-    monkeypatch.setattr(about_dialog.QMessageBox, "about", lambda *a: shown.append(a))
+    monkeypatch.setattr(about_dialog.QMessageBox, "exec", lambda box: shown.append(box))
     help_menu = [a for a in window.menuBar().actions() if a.text() == "&Help"][0].menu()
     [action] = [a for a in help_menu.actions() if a.text().startswith("About")]
     action.trigger()
-    assert shown
+    [box] = shown
+    assert config.VERSION in box.text()
+    from PySide6.QtWidgets import QLabel
+    label = box.findChild(QLabel, "qt_msgbox_label")
+    assert not label.openExternalLinks(), "its links say where they go first (gui.links)"
 
 
 def test_every_source_file_carries_the_licence():

@@ -77,11 +77,12 @@ from mediabrowser.core import (
     privacy,
     private_ai,
     proposal,
+    reach,
     setlistfm,
     store,
     utils,
 )
-from mediabrowser.gui import audio_analysis
+from mediabrowser.gui import audio_analysis, links
 from mediabrowser.gui.worker import run_job
 
 TAB_MENU, TAB_TRACKLIST = range(2)
@@ -118,18 +119,22 @@ PASTE_INSTRUCTIONS = (
     "One track per line, from a sleeve, setlist.fm or anywhere. A leading track "
     "number and a duration anywhere on the line are both understood - \"3. "
     "Megitsune 5:16\". Durations let the lengths place the chapters; without them "
-    "the titles still name them, and tell detection how many songs to find."
+    "the titles still name them, and tell detection how many songs to find. A pasted "
+    "tracklist stays on this computer, unless the AI is asked to check (step 3)."
 )
 SETLIST_HINT = (
     "What was played on the night - for a bootleg, a broadcast or a festival set "
     "MusicBrainz doesn't have. Give the artist and the date (or just the year, and "
-    "the venue or city). A setlist has no lengths: it names chapters, and tells the "
-    "audio how many songs to find. Free, and no AI."
+    "the venue or city): Search sends them to setlist.fm, with your API key. A "
+    "setlist has no lengths: it names chapters, and tells the audio how many songs "
+    "to find. Free, and no AI."
 )
 SETLIST_PRIVATE_NOTE = "This video is private: nothing about it goes to setlist.fm."
 LOOK_UP_HINT = (
     "Most concerts are on MusicBrainz. Check the search - add the artist or the "
-    "album if it's missing - then press Search. It limits how often it can be asked."
+    "album if it's missing - then press Search: what's in the box goes to "
+    "musicbrainz.org, and so does the release you pick, for its tracklist. It limits "
+    "how often it can be asked."
 )
 NO_TRACKLIST_CHAPTERED = (
     "No tracklist anywhere? The chapters stay where they are, unnamed: step 3's AI "
@@ -148,7 +153,7 @@ AI_OPTIONAL = (
     "missing or in another script, or to check where the chapters start."
 )
 PRIVATE_NOTE = (
-    "This video is private: nothing about it goes to MusicBrainz or the AI. Paste a "
+    "This video is private: nothing about it is sent anywhere. Paste a "
     "tracklist, or detect the chapters from the audio."
 )
 MUSICBRAINZ_OFF_NOTE = (
@@ -157,10 +162,11 @@ MUSICBRAINZ_OFF_NOTE = (
 )
 
 FIGURE_NOTE = (
-    "Uses the AI: reads the disc's menu if it has one, looks the show up on "
-    "MusicBrainz, measures the audio and has {model} look at the video - whatever "
-    "this video turns out to need. A few cents; nothing changes until Apply."
+    "Uses the AI: reads the disc's menu if it has one, {look}measures the audio and "
+    "has {model} look at the video - whatever this video turns out to need. A few "
+    "cents; nothing changes until Apply."
 )
+LOOKUPS = (privacy.MUSICBRAINZ, privacy.SETLISTFM)
 HINTS_TIP = "Tell it what you know about this video: what it's called, how many songs, the setlist"
 HINTS_NOTE = (
     "All optional. What it's known as is searched on MusicBrainz first; a release "
@@ -182,9 +188,11 @@ MENU_HINT = (
     "A Blu-ray's scene-selection menu is its makers' own list of the songs, and "
     "each button plays exactly one chapter. This works out which chapter every "
     "button plays from the disc's navigation, draws the menu as a player would, "
-    "and has the AI read each button's text - no matching, no guessing. Uses the "
-    "AI: a cent or two each time the menu is read; nothing changes until Apply."
+    "and has the AI read each button's text - no matching, no guessing. The menu "
+    "is read here; the AI is sent pictures of its buttons, a cent or two each time. "
+    "Nothing changes until Apply."
 )
+LOCAL_STEP = "2 · Make the chapters from it - on this computer"
 MENU_NOT_A_DISC = (
     "Only a Blu-ray folder keeps its menus; a rip to a single file leaves them behind."
 )
@@ -287,6 +295,8 @@ class ChaptersDialog(QDialog):
 
         # The model's answer, while it is what the table shows.
         self._ai_settings = ai.load_settings()
+        # Where each lookup can go, as Settings has it: for saying so.
+        self._reach = reach.services(ai_settings=self._ai_settings)
         self._ai_result: ai_chapters.Result | None = None
         self._ai_job = None
         # Ask AI was pressed before the audio was measured: ask once it is.
@@ -361,6 +371,8 @@ class ChaptersDialog(QDialog):
             self.menu_status.setText(
                 "This title is private: the menu is read by the AI, which isn't used for it."
             )
+        else:
+            self._update_menu_controls()
         self.tabs.setCurrentIndex(TAB_MENU if is_disc and not self._private else TAB_TRACKLIST)
         self.tabs.currentChanged.connect(lambda _index: self.refresh())
 
@@ -443,13 +455,7 @@ class ChaptersDialog(QDialog):
         )
         self.ai_translate_check.setChecked(True)
         self.ai_online_check = QCheckBox("Look the show up online")
-        self.ai_online_check.setToolTip(
-            "Nano-GPT searches the web for the model first, so it reads the show's "
-            "setlist from setlist.fm rather than guessing it. Costs a little more; "
-            "worth it whenever the frames don't show the titles."
-        )
         self.ai_online_check.setChecked(True)
-        self._online_tip = self.ai_online_check.toolTip()
         self._update_online_check()
         self.ask_ai_button = QPushButton("Ask AI")
         self.ask_ai_button.setObjectName("primaryButton")
@@ -516,7 +522,7 @@ class ChaptersDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
-        how = QLabel("2 · Make the chapters from it")
+        how = QLabel(LOCAL_STEP)
         how.setObjectName("stepCaption")
         self.ai_caption = QLabel("3 · Optional: have the AI check")
         self.ai_caption.setObjectName("stepCaption")
@@ -619,7 +625,9 @@ class ChaptersDialog(QDialog):
         hint.setWordWrap(True)
         self.menu_button = QPushButton("Read the Menu")
         self.menu_button.setObjectName("primaryButton")
-        self.menu_button.setToolTip("Sends pictures of the menu to the AI - a cent or two")
+        self.menu_button.setToolTip(
+            "Reads the disc's menu here, then sends pictures of its buttons to the AI - "
+            "a cent or two")
         self.menu_button.clicked.connect(self.read_menu)
         self.menu_status = QLabel("")
         self.menu_status.setObjectName("hintLabel")
@@ -832,8 +840,8 @@ class ChaptersDialog(QDialog):
         # setlist.fm asks to be credited, with a link, wherever its data shows.
         self.setlist_credit = QLabel()
         self.setlist_credit.setObjectName("hintLabel")
-        self.setlist_credit.setOpenExternalLinks(True)
         self.setlist_credit.setTextFormat(Qt.RichText)
+        links.guard(self.setlist_credit)
         extras = QHBoxLayout()
         extras.setContentsMargins(0, 0, 0, 0)
         extras.addWidget(self.setlist_tape)
@@ -1569,6 +1577,22 @@ class ChaptersDialog(QDialog):
         )
         self._jobs.append(self._menu_job)
 
+    def _menu_where(self) -> str:
+        """Where Read the Menu's pictures will go, before it's pressed."""
+        if not ai.is_configured(self._ai_settings):
+            return ai.not_ready(self._ai_settings)
+        where, _protection = ai.destination(self._ai_settings)
+        return (f"Sends pictures of the menu's buttons, and the file and folder names, "
+                f"{where}.")
+
+    def _update_menu_controls(self) -> None:
+        """Until the menu is read, its line says where the pictures will go."""
+        if (self._private or self.video.get("type") != "bluray"
+                or self._menu_job is not None or self._menu_result is not None
+                or self._disc_menu is not None):
+            return
+        self.menu_status.setText(self._menu_where())
+
     def _on_menu_read(self, disc: menu_chapters.DiscMenu) -> None:
         self._menu_job = None
         self._disc_menu = disc
@@ -1726,6 +1750,8 @@ class ChaptersDialog(QDialog):
             tab = TAB_AI if ai.allowed(self._ai_settings) else TAB_PRIVACY
         if SettingsDialog(self, tab).exec():
             self._ai_settings = ai.load_settings()
+            self._reach = reach.services(ai_settings=self._ai_settings)
+            self._update_menu_controls()
             self._update_mb_controls()
             self._update_setlist_controls()
             self._update_online_check()
@@ -1749,7 +1775,14 @@ class ChaptersDialog(QDialog):
             # once it can.
             self.ai_online_check.setChecked(not tip)
         self.ai_online_check.setEnabled(not tip)
-        self.ai_online_check.setToolTip(tip or self._online_tip)
+        provider = reach.search_provider(self._ai_settings)
+        self.ai_online_check.setText(
+            f"Look the show up online ({provider})" if not tip else "Look the show up online")
+        self.ai_online_check.setToolTip(tip or (
+            f"Nano-GPT has {provider} search the web for the model first - the artist, "
+            "tour and venue - so it reads the show's setlist from setlist.fm rather than "
+            "guessing it. Both see the search. Costs a little more; worth it whenever "
+            "the frames don't show the titles."))
 
     # --- the whole job ---------------------------------------------------------
 
@@ -1840,9 +1873,28 @@ class ChaptersDialog(QDialog):
             self.figure_button.setEnabled(
                 self._ai_job is None and self._menu_job is None
             )
-            where, _protection = ai.destination(self._ai_settings, online=True)
-            self.figure_note.setText(FIGURE_NOTE.format(model=model)
-                                     + f" What it asks the AI goes {where}.")
+            self.figure_note.setText(self._figure_note(model))
+
+    def _figure_note(self, model: str) -> str:
+        """What Just Figure It Out does, and where each part of it goes, as
+        Settings has it: a lookup that's off isn't promised."""
+        found = self._reach
+        lookups = [found[choice].name for choice in LOOKUPS if found[choice].on]
+        look = f"looks the show up on {reach.and_list(lookups)}, " if lookups else ""
+        hosts = reach.names(LOOKUPS, found)
+        where, _protection = ai.destination(self._ai_settings, online=True)
+        goes = [f"the video's name, to {hosts}"] if hosts else []
+        goes.append(f"what it asks the AI, {where}")
+        if found[privacy.MUSICBRAINZ].on and found[privacy.COVER_ART].on:
+            goes.append("and for the cover of a release it finds, the release, to "
+                        "coverartarchive.org")
+        text = (FIGURE_NOTE.format(model=model, look=look)
+                + "\n\nWhere it goes: " + "; ".join(goes) + ".")
+        off = [found[choice].name for choice in LOOKUPS if not found[choice].on]
+        if off:
+            text += (f" {reach.and_list(off)} {'isn' if len(off) == 1 else 'aren'}'t asked:"
+                     " Settings → Privacy, or setlist.fm's key.")
+        return text
 
     def figure_it_out(self) -> None:
         """Identify this video as Identify Library would, with every method
@@ -1864,9 +1916,10 @@ class ChaptersDialog(QDialog):
             )
 
         self.figure_button.setEnabled(False)
+        lookups = [self._reach[choice].name for choice in LOOKUPS if self._reach[choice].on]
         self.figure_note.setText(
-            "Working it out: the menu, MusicBrainz, the audio and the AI, as far as "
-            "this video needs. This can take a minute or two."
+            f"Working it out: the menu, {''.join(f'{name}, ' for name in lookups)}the audio "
+            "and the AI, as far as this video needs. This can take a minute or two."
         )
         self.progress.setFormat("Figuring it out…")
         self.progress.setRange(0, 0)

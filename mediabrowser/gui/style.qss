@@ -635,11 +635,16 @@ QProgressBar::chunk {
 #toneLabel[tone="warning"] { color: #e0af68; }
 #toneLabel[tone="error"] { color: #f7768e; }
 
-#privacyButton {
-  color: #9ece6a;
+/* The status bar's line on what goes online: a click opens What Was Sent. */
+#networkButton {
+  color: #a9b1c1;
   font-size: 12px;
   padding: 1px 8px;
+  text-align: right;
 }
+
+#networkButton:hover { color: #c0caf5; }
+#networkButton[tone="off"] { color: #9ece6a; }
 
 #errorLabel {
   color: #f7768e;
