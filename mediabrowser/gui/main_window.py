@@ -908,8 +908,8 @@ class MainWindow(QMainWindow):
                                     else "Privacy Mode: attested TEE")
         where, _protection = ai.destination(settings)
         self.privacy_button.setToolTip(
-            f"The AI is sent things only {where.removeprefix('to ')}. "
-            "Click to see everything that's been sent.")
+            f"What the AI is asked goes {where}. Click to see everything that's been "
+            "sent.")
         if sealed_kind and sealed.known() is None:
             sealed.check()
 

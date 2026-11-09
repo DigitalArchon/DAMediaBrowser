@@ -48,6 +48,7 @@ External programs, installed with your package manager:
 | `mpv` | playback |
 | `libbluray` | Blu-ray disc folders (optional) |
 | GNOME Keyring or KWallet | keeping the AI's API key (optional; any Secret Service provider) |
+| `python3-cryptography` | checking a `TEE/` model's attestation, in [Privacy Mode](#privacy-mode) (from source; the AppImage carries it) |
 
 ```
 # Debian/Ubuntu
@@ -88,10 +89,13 @@ table above: mpv has to reach your machine's own audio server, GPU and
 display, and a copy shipped in here would be the wrong one.
 
 It uses your system's CA certificates for the things it fetches over
-HTTPS (MusicBrainz lookups, cover art, and the AI through Nano-GPT), rather
-than carrying its own bundle — so your machine's trust decisions apply, and
-the certificates stay current with your package manager. `SSL_CERT_FILE` / `SSL_CERT_DIR` override
-the search if you need them to.
+HTTPS (MusicBrainz lookups, cover art, the AI through Nano-GPT, and Privacy
+Mode's attestation checks), rather than its own bundle — so your machine's
+trust decisions apply, and the certificates stay current with your package
+manager. `SSL_CERT_FILE` / `SSL_CERT_DIR` override the search if you need
+them to; the bundle it carries for [Privacy Mode](#privacy-mode)'s client is
+used only on a machine that has none at all. It also carries that client,
+Tinfoil's, which no distribution packages.
 
 To put it in your desktop menu:
 
@@ -118,6 +122,15 @@ python3 -m venv .venv
 `.venv/bin/python main.py` does the same thing. `--library <folder>` opens a
 particular folder on start.
 
+[Privacy Mode](#privacy-mode)'s end-to-end encrypted models need Tinfoil's
+client, which no distribution packages. Install it once, pinned by hash, into
+the app's own data folder (it touches nothing else), and restart the app:
+
+```
+tools/install-private-mode.sh            # PYTHON=.venv/bin/python for the venv's
+tools/install-private-mode.sh --remove   # and to take it out again
+```
+
 ## Using it
 
 **First, Settings.** The first start says so: open **File → Settings**
@@ -134,14 +147,19 @@ each is off until you tick it:
 - **Look up setlists on setlist.fm** — an artist's name and a date, year
   or place, usually from the video's name, with your own free API key.
 - **Send videos to the AI** — chapter times, file and folder names,
-  tracklists and frames, to the AI service on the *AI* tab.
+  tracklists and frames, to the AI service on the *AI* tab — or, with
+  **Privacy Mode** ticked under it, only to a private model whose enclave
+  has proved what it is first, sealed end to end so Nano-GPT relays only
+  ciphertext (see [Privacy Mode](#privacy-mode)). A line under it says, as
+  you tick, where the AI's requests will go and who can read them.
 - **Let the AI search the web** — the AI service searches for the show
-  for the model.
+  for the model. Never in Privacy Mode.
 
 Everything else — scanning, playing, detecting chapters from the audio,
 reading a disc's own chapters, Manual Edit — works with none of them. A
 video or library marked **Private** (below) is never sent anywhere,
-whatever is ticked.
+whatever is ticked. **Help → What Was Sent** lists everything the app has
+sent since it started (see [What leaves this computer](#what-leaves-this-computer)).
 
 **Add a folder** scans it for videos, Blu-ray disc folders and DVD folders
 (a folder with a `VIDEO_TS` folder in it, as a rip copies the disc).
@@ -446,10 +464,10 @@ pictures, which everything here needs, with `anthropic/claude-sonnet-5`
 (the default, and the one this app was tested with) and
 `anthropic/claude-opus-5.5` first. Any other OpenAI-compatible service
 and vision model can be used — set the endpoint (https, unless it runs
-on this machine: the key is never sent in the clear, nor handed on by a
-redirect to another site) and model — but web search is Nano-GPT's own
-and is switched off elsewhere, and another model may not read menus and
-video frames as well.
+on this computer, its local network or an onion service: the key is never
+sent in the clear, nor handed on by a redirect to another site) and model
+— but web search is Nano-GPT's own and is switched off elsewhere, and
+another model may not read menus and video frames as well.
 
 **Romanised titles.** The name a Japanese song goes by outside Japan is
 rarely a translation of it: いいね! is released as "Iine!", not "So Good",
@@ -471,7 +489,9 @@ Opus is more careful and several times the price). A concert's chapters
 cost a few cents. The key is kept in the system keyring (GNOME Keyring,
 KWallet), never in a file; without one, set `NANOGPT_API_KEY` in the
 environment instead. Nothing is sent until you press Ask AI, and nothing
-is applied until Apply.
+is applied until Apply. Ask AI says, before you press it, what it will
+send and where to: through Nano-GPT to the model's maker, who can both
+read it — or in Privacy Mode, sealed to an attested enclave.
 
 **Manual Edit** (`Ctrl+Shift+K`, or the button under the chapter list)
 is for doing it all by hand — no AI account needed, and the way to name
@@ -704,6 +724,96 @@ asked about: replaced, or kept and skipped.
 
 Media keys work too, where the keyboard has them.
 
+## Privacy Mode
+
+Ordinarily the AI's requests go over https to Nano-GPT, which passes them
+on to whoever runs the model: both can read the file and folder names, the
+chapter times, the tracklist and the frames. **Privacy Mode** (Settings →
+Privacy, under *Send videos to the AI*) sends them only to a private model
+running in a trusted execution environment, and only once that enclave has
+proved what it is. The checks are DA Assistant's, line for line.
+
+There are two kinds, and the private model's name says which:
+
+- **`private/` models are end-to-end encrypted** (nano-gpt's Private
+  Mode). Before anything is sent, the enclave — Tinfoil's router — is
+  attested: its hardware report, signed by AMD (SEV-SNP) or Intel (TDX),
+  and its software release, against Tinfoil's record of it on Sigstore. The
+  request is then sealed on this computer to a key only that enclave holds,
+  and the reply comes back sealed the same way. Nano-GPT relays only
+  ciphertext: it sees your account, the model, when, how much and the
+  cost, never the frames or the names. The enclave is attested again once
+  its proof is five minutes old, time asleep included. The default,
+  `private/kimi-k3`, is the largest of them that can see the frames;
+  `private/deepseek-v4-1-flash` is quicker and far cheaper. They cost about
+  5% more than the same model as `TEE/`. They haven't been tried against
+  this app's prompts as thoroughly as Claude Sonnet has.
+- **`TEE/` models are attested, not sealed.** Before the first request,
+  and again once that is 15 minutes old, the app asks for a fresh Intel TDX
+  quote binding the enclave's signing key to a nonce of its own, and checks
+  it up to Intel's root (revocation and Intel's TCB information included),
+  with the GPU evidence sent to NVIDIA's attestation service and its signed
+  verdict checked in turn. Each reply's signature is then checked against
+  that key, where nano-gpt keeps one. But Nano-GPT's gateway reads what is
+  sent on the way, and in Nov 2026 every `TEE/` model it attests comes
+  through RedPill's gateway, whose attestation doesn't reach the model's
+  own host: it is used, and shown in amber as partial.
+
+Nothing is sent if an enclave can't be attested, and nothing ever falls
+back to the ordinary model. There is no web search: Nano-GPT would have to
+read the request to run one. **Strict** refuses an enclave that proved less
+than it could — an older release, Intel's or NVIDIA's services out of
+reach, RedPill's gateway — rather than using it in amber. **Check
+Attestation** attests the enclave on the spot, sending nothing for it to
+read, for free; **Test** on the AI tab asks the private model one word,
+through the same checks. The private model's list is nano-gpt's, public: no
+key is sent to read it.
+
+An operation's privacy is fixed when it starts — a Detect Chapters window
+opened, an Identify Library run — and only ever tightens: switch Privacy
+Mode on, or the AI off, and a run already going sends nothing more to the
+ordinary model. While Privacy Mode is on the status bar says so, and after
+an answer, Detect Chapters says what the enclave proved.
+
+The end-to-end encrypted models need Tinfoil's own client, which the
+AppImage carries and `tools/install-private-mode.sh` installs from source;
+it is pinned by hash (`packaging/private-mode.lock`). Nano-GPT's own client
+is a Node package run with `npx …@latest`, which would let the party the
+encryption keeps out update the code that holds what you send: it isn't
+used. Checking a `TEE/` model's attestation needs Python's `cryptography`
+package; without it, nothing is sent to one.
+
+## What leaves this computer
+
+Only what is ticked in Settings → Privacy, and never anything about a
+video or library marked Private:
+
+| To | What | When |
+|---|---|---|
+| MusicBrainz | a search, usually the video's file or folder name; a release's id | a tracklist is looked up |
+| Cover Art Archive (and the Internet Archive, where it keeps the pictures) | a release's id | a matched video gets its sleeve |
+| setlist.fm, with your key | an artist and a date, year or place | a setlist is looked up |
+| Nano-GPT, or the endpoint on the AI tab | file and folder names, chapter times, tracklists, frames | the AI is asked; in Privacy Mode sealed to an attested enclave |
+| Nano-GPT; Intel; NVIDIA; Sigstore; Tinfoil's proxies for AMD's certificates and its GitHub releases | a fresh nonce and the enclave's own evidence: nothing about your videos | Privacy Mode attests an enclave |
+
+Everything goes over https. Plain http is accepted only for this computer,
+its local network and Tor onion services — an endpoint of your own, say —
+and anything else is refused before a byte is sent, never quietly
+rewritten to https; certificates are always checked. A redirect is
+followed only to where the request could have gone in the first place:
+never from https to plain http, never from a server out there onto your own
+network, and never with the key to another server. A server on your own
+network is reached directly, whatever the environment's proxy says. An API
+key with a space or a hidden character in it, picked up where it was
+copied from, is refused in words that don't repeat it.
+
+**Help → What Was Sent** lists every request since the app started, as it
+is made: to whom, what it carried, how it travelled (in the clear over
+https, to an attested enclave, or sealed end to end), whether it went, and
+which window or run it was for — and for the AI, the words it was sent,
+the frames left out. The list is kept in memory only, and is gone when the
+app closes.
+
 ## Another device
 
 A catalog — a library's chapters and names — can go with you. The same
@@ -737,7 +847,9 @@ settings.json           app preferences
 ```
 
 The Nano-GPT and setlist.fm keys are in the system keyring, under
-`da-media-browser`.
+`da-media-browser`. Run from source, Privacy Mode's client is installed
+into `private-mode/` there. The data folder is readable only by you (its
+permissions are set to `0700`): it names every video in every library.
 
 Nothing is ever written into a library. Every file the app writes,
 renames or deletes — library records, backups, covers, settings — is
@@ -803,9 +915,17 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 959 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 1,196 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
+
+Thirteen of the Privacy Mode tests need Tinfoil's client, and skip without
+it: install it (`PYTHON=.venv/bin/python tools/install-private-mode.sh`) to
+run them too. Its verifiers (`core/dcap.py`, `nras.py`, `ethsig.py`,
+`private_ai.py`'s TEE client, `sealed.py`) are kept line for line with DA
+Assistant's, which they were ported from, and are tested against a real
+attestation captured with Intel's and NVIDIA's collateral
+(`tests/data/tee_attestation.json`) and forgeries of it.
 
 The split that matters: **`mediabrowser/core/` never imports a GUI toolkit**
 and holds everything with real logic — chapter/track matching, scanning,
@@ -833,3 +953,11 @@ ran in. A dirty working tree builds what's in it, stamped with the last
 commit's time - release from a clean checkout. To bump PySide6, change both
 wheels' versions and hashes in `requirements.txt` (PyPI lists the sha256 of
 each file).
+
+Privacy Mode's client comes from `packaging/private-mode.lock`, every wheel
+pinned by sha256 and installed for a fixed platform (manylinux_2_28,
+CPython 3.12) whatever machine builds it. To move to a newer one, change
+`packaging/private-mode.in` and run `packaging/lock-private-mode.sh`, which
+resolves with a pinned, checksummed `uv` and holds anything the AppImage's
+own `requirements.txt` pins to the same version; the build stops if the
+two ever disagree.

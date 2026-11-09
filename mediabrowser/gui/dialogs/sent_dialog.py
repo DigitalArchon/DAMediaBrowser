@@ -162,23 +162,25 @@ class SentDialog(QDialog):
 
         self._bridge = _Bridge()
         self._bridge.arrived.connect(self._arrived)
-        outbound.add_listener(self._bridge.arrived.emit)
+        # One callable, kept, so that the one added is the one taken off.
+        self._listener = self._bridge.arrived.emit
+        outbound.add_listener(self._listener)
         for entry in outbound.entries():
             self._add(entry)
         self._update_summary()
 
     def done(self, result: int) -> None:
-        outbound.remove_listener(self._bridge.arrived.emit)
+        outbound.remove_listener(self._listener)
         super().done(result)
 
     def closeEvent(self, event) -> None:
-        outbound.remove_listener(self._bridge.arrived.emit)
+        outbound.remove_listener(self._listener)
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:
         # Shown again after it was closed: listening again, and up to date.
-        outbound.remove_listener(self._bridge.arrived.emit)
-        outbound.add_listener(self._bridge.arrived.emit)
+        outbound.remove_listener(self._listener)
+        outbound.add_listener(self._listener)
         self.reload()
         super().showEvent(event)
 

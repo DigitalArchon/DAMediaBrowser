@@ -562,8 +562,9 @@ def _attestation_listener(session: private_ai.PrivacySession):
 def _checked_with(session) -> str:
     if session.kind == private_ai.E2EE:
         return ("Asked nano-gpt's relay for the enclave's report, and checked it against "
-                "AMD's or Intel's certificates and Tinfoil's release record on Sigstore: "
-                "a fresh nonce, nothing about your videos")
+                "AMD's or Intel's certificates (through Tinfoil's proxy, for AMD's) and "
+                "Tinfoil's release record on Sigstore: a fresh nonce, nothing about "
+                "your videos")
     return ("Asked nano-gpt for the enclave's report, and checked it with Intel's and "
             "NVIDIA's attestation services: a fresh nonce, nothing about your videos")
 
