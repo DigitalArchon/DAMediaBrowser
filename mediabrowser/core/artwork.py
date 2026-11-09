@@ -219,7 +219,7 @@ def _from_cover_art_archive(release_id, target: Path) -> bool:
         with netguard.urlopen(request, FETCH_TIMEOUT_SECONDS) as response:
             data = response.read(MAX_COVER_BYTES + 1)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        refused = isinstance(exc, (netguard.InsecureURL, netguard.RedirectRefused))
+        refused = isinstance(exc, netguard.REFUSALS)
         outbound.record("Cover Art Archive", url, what, outbound.CLEAR, how,
                         outbound.REFUSED if refused else outbound.FAILED,
                         netguard.reason(exc))

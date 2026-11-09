@@ -38,6 +38,7 @@ Every request is listed as it is made in outbound, for Help → What Was Sent.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import urllib.error
@@ -388,9 +389,11 @@ def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TI
             raw = resp.read()
     except urllib.error.HTTPError as exc:
         raise AIError(_http_error_message(exc)) from exc
-    except (netguard.InsecureURL, netguard.RedirectRefused) as exc:
+    except netguard.REFUSALS as exc:
         raise Refused(str(exc.reason)) from exc
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
+        # A malformed answer, cut short or too long a line, as much as a network
+        # that failed: said as what went wrong, and listed (chat).
         raise AIError(netguard.reason(exc)) from exc
     try:
         return json.loads(raw.decode("utf-8"))
@@ -583,6 +586,12 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
     model = session.model
     text, pictures = outbound.text_of(messages)
     what = _what(text, pictures, model)
+    if private_ai.searches(model):
+        message = (f"Nothing was sent. {model} asks nano-gpt to search the web, which "
+                   "Privacy Mode never does.")
+        outbound.record(_service(session.api_url), session.api_url, what, outbound.CLEAR,
+                        "Not sent", outbound.REFUSED, message, text)
+        raise Refused(message)
     sealed = session.kind == private_ai.E2EE
     protection = outbound.SEALED if sealed else outbound.TEE
     where = (f"sealed end to end to {model}'s attested enclave: Nano-GPT relays only "
@@ -614,6 +623,10 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
                         outbound.REFUSED if isinstance(exc, Refused) else outbound.FAILED,
                         str(exc), text)
         raise
+    except Exception as exc:  # noqa: BLE001 - listed, then said, whatever it was
+        outbound.record(service, session.api_url, what, protection, f"Sends it {where}",
+                        outbound.FAILED, f"{type(exc).__name__}: {exc}", text)
+        raise AIError(f"the private request failed: {exc}") from exc
     receipt = session.last_receipt()
     outbound.record(service, session.api_url, what, protection, f"Sent it {where}",
                     outbound.SENT,
@@ -696,6 +709,8 @@ def check_attestation(settings: dict) -> private_ai.PrivacySession:
     """Attest the private model's enclave now, sending nothing for it to read
     (and paying nothing): Settings' Check Attestation. Returns the session,
     whose `attestation` says what it proved; raises AIError when it didn't."""
+    if not allowed(settings):
+        raise NotConfigured(privacy.OFF[privacy.AI])
     found = private_ai.problems(settings[SETTING_BASE_URL],
                                 settings.get(SETTING_PRIVATE_MODEL), wait=True)
     if found:

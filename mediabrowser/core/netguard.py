@@ -39,6 +39,12 @@ that goes to another server is followed without the key.
 A server on this machine or its own network is reached directly, whatever
 the environment's proxy says: plain http to it through a proxy elsewhere
 would carry the key and what was sent across the network in the clear.
+Everything else takes the environment's proxy as httpx and requests read it,
+ALL_PROXY included, so that every request of the app's goes the same way;
+one urllib can't go through - SOCKS, Tor's usual - means nothing is sent,
+rather than sent around it from this machine's own address. And an onion
+service over plain http goes only through a proxy on this machine: through
+one elsewhere, it would cross the network in the clear before Tor.
 
 Ported from DA Assistant's netguard.py (Nov 2026), whose rules these are;
 it speaks requests, and this app urllib, so the transport is this app's own.
@@ -85,6 +91,16 @@ class RedirectRefused(urllib.error.URLError):
 
 class RequestError(Exception):
     """A request Session could not make: refused, or the network failed."""
+
+
+class ProxyRefused(urllib.error.URLError):
+    """Nothing was sent: the environment's proxy can't be used for it, and it
+    would have gone around it."""
+
+
+# Every way a request is refused before it is sent, for a caller to tell
+# "nothing was sent" from "the network failed".
+REFUSALS = (InsecureURL, RedirectRefused, ProxyRefused)
 
 
 def _unescaped(host):
@@ -240,9 +256,26 @@ class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
         return new
 
 
+def env_proxies() -> dict:
+    """The environment's proxies as httpx and requests take them: a scheme's
+    own, or ALL_PROXY's for one that has none. urllib by itself reads no
+    ALL_PROXY, and with Tor set that way its requests went direct while the
+    sealed client's went through Tor."""
+    proxies = urllib.request.getproxies()
+    every = proxies.get("all")
+    for scheme in ("http", "https"):
+        if every and not proxies.get(scheme):
+            proxies[scheme] = every
+    return proxies
+
+
 class _LocalDirect(urllib.request.ProxyHandler):
-    """The environment's proxy, for everything but this machine and its own
-    network, which are reached directly: see the module's docstring."""
+    """The environment's proxy (env_proxies), for everything but this machine
+    and its own network, which are reached directly: see the module's
+    docstring."""
+
+    def __init__(self):
+        super().__init__(env_proxies())
 
     def proxy_open(self, req, proxy, type):
         host = urlparse(req.full_url).hostname
@@ -254,6 +287,30 @@ class _LocalDirect(urllib.request.ProxyHandler):
 def _opener() -> urllib.request.OpenerDirector:
     # Made per request: the environment's proxy is read as it is now.
     return urllib.request.build_opener(_LocalDirect(), _GuardedRedirects())
+
+
+def proxy_problem(url) -> str | None:
+    """Why the environment's proxy won't do for `url`, or None: one urllib
+    can't go through (SOCKS), or plain http to an onion service through a
+    proxy that isn't on this machine."""
+    proxy = env_proxy_for(url)
+    if not proxy:
+        return None
+    try:
+        parsed = urlparse(proxy)
+        scheme, host = parsed.scheme.lower(), parsed.hostname
+    except ValueError:
+        scheme, host = "", None
+    if scheme not in ("http", "https") or not host:
+        return (f"The environment's proxy, {shown(proxy)}, isn't one this app's "
+                f"requests can go through (an http:// proxy is: Tor's HTTPTunnelPort, "
+                f"for one), so nothing was sent rather than sent around it.")
+    target = urlparse(url)
+    if target.scheme.lower() == "http" and is_onion(target.hostname) and not is_local(host):
+        return (f"{shown(url)} is plain http, and the environment's proxy, "
+                f"{shown(proxy)}, isn't on this computer: it would cross the network "
+                f"unencrypted before reaching Tor. Nothing was sent.")
+    return None
 
 
 def _transport(request, timeout):
@@ -270,6 +327,9 @@ def urlopen(request, timeout):
     if isinstance(request, str):
         request = urllib.request.Request(request)
     check(request.full_url)
+    refused = proxy_problem(request.full_url)
+    if refused:
+        raise ProxyRefused(refused)
     for name in ("Authorization", "X-api-key"):
         value = request.get_header(name) or request.get_header(name.capitalize()) or ""
         secret = value[7:] if value.startswith("Bearer ") else value
@@ -378,8 +438,7 @@ def env_proxy_for(url) -> str | None:
         return None
     if urllib.request.proxy_bypass(parsed.hostname or ""):
         return None
-    proxies = urllib.request.getproxies()
-    return proxies.get(parsed.scheme.lower()) or proxies.get("all") or None
+    return env_proxies().get(parsed.scheme.lower()) or None
 
 
 # --- requests, as Tinfoil's SDK is given it ---------------------------------

@@ -699,12 +699,12 @@ class SettingsDialog(QDialog):
         ))
 
     def _attested(self, session) -> None:
-        self.attest_button.setEnabled(self.privacy_mode_check.isChecked())
+        self._update_privacy()      # the button, as the form has it now
         text, tone = private_ai.attestation_label(session.attestation)
         self._tone(self.attest_status, f"{text}. {session.attestation.detail}", tone)
 
     def _attestation_failed(self, message: str) -> None:
-        self.attest_button.setEnabled(self.privacy_mode_check.isChecked())
+        self._update_privacy()
         self._tone(self.attest_status, f"Refused: {message}", "error")
 
     def fetch_private_models(self) -> None:

@@ -242,16 +242,24 @@ for name in sorted(both):
         print(f"  {name} {theirs[name][0]} from the lock, in place of the Python "
               f"base's {ours[name][0]}")
 DEDUPE
-"$PYTHON" -s -c "
+# Isolated, as AppRun runs it, so that it is the installed app that is
+# checked and not the checkout it may be started from; the folders are given
+# as arguments, never written into the code.
+"$PYTHON" -I -B - "$PRIVATE_MODE" "$SITE" <<'CLIENT'
+import sys
+
 import mediabrowser
 from mediabrowser.core import sealed, vendored
+
 ok, message = sealed.available()
 assert ok, message
-assert vendored.location() == '$PRIVATE_MODE', vendored.location()
-import cryptography, tinfoil
-assert cryptography.__file__.startswith('$SITE'), cryptography.__file__
-print('  ' + message + ', with the app\'s cryptography')
-"
+assert vendored.location() == sys.argv[1], vendored.location()
+import cryptography  # noqa: E402
+import tinfoil  # noqa: E402,F401
+
+assert cryptography.__file__.startswith(sys.argv[2]), cryptography.__file__
+print("  " + message + ", with the app's cryptography")
+CLIENT
 
 log "Trimming what the app never loads"
 QT="$SITE/PySide6"
@@ -304,6 +312,12 @@ STDLIB="$("$PYTHON" -s -c 'import sysconfig; print(sysconfig.get_paths()["stdlib
 # out, the app would quietly go back to compiling itself on every launch.
 [ -f "$SITE/mediabrowser/gui/__pycache__/app.cpython-312.pyc" ] \
     || { echo "site-packages ($SITE) wasn't compiled with the standard library" >&2; exit 1; }
+# Privacy Mode's client is beside the standard library, not in it: the same,
+# or its 1,200 modules would be compiled again each time it's first used.
+"$PYTHON" -s -m compileall -q --invalidation-mode unchecked-hash \
+    -s "$APPDIR" -p / "$PRIVATE_MODE" >/dev/null
+[ -f "$PRIVATE_MODE/tinfoil/__pycache__/__init__.cpython-312.pyc" ] \
+    || { echo "Privacy Mode's client ($PRIVATE_MODE) wasn't compiled" >&2; exit 1; }
 
 log "Smoke test"
 # Builds the actual window offscreen, with its own data directory so the

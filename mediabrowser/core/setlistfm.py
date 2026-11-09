@@ -252,7 +252,7 @@ def _get(path: str, params: dict, key: str | None = None,
                             _http_error(exc))
             raise SetlistError(_http_error(exc)) from exc
         except (urllib.error.URLError, OSError) as exc:
-            refused = isinstance(exc, (netguard.InsecureURL, netguard.RedirectRefused))
+            refused = isinstance(exc, netguard.REFUSALS)
             outbound.record("setlist.fm", url, what, outbound.CLEAR, HOW,
                             outbound.REFUSED if refused else outbound.FAILED,
                             netguard.reason(exc))

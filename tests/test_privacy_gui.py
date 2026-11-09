@@ -123,7 +123,13 @@ class TestTheWindow:
         assert "For: Detect Chapters: Glass Harbor" in dialog.details.toPlainText()
         dialog.copy()
         assert "Paper Lanterns?" in QApplication.clipboard().text()
+        # Told of late, across threads: one already listed isn't listed twice,
+        # and one from before Clear doesn't come back after it.
+        late = outbound.entries()[0]
+        dialog._arrived(late)
+        assert dialog.tree.topLevelItemCount() == 2
         dialog.clear()
+        dialog._arrived(late)
         assert dialog.tree.topLevelItemCount() == 0 and outbound.entries() == []
         dialog.close()
         outbound.record("MusicBrainz", "https://musicbrainz.org/", "after it was closed",

@@ -55,12 +55,15 @@ class Entry:
     detail: str = ""    # why it was refused or failed; what an enclave proved
     purpose: str = ""   # what it was for, as the window doing it said
     content: str = ""   # the text sent, for the AI
+    seq: int = 0        # its place in the list since the app started, from 1
 
 
 _lock = threading.Lock()
 _entries: deque = deque(maxlen=MAX_ENTRIES)
 _listeners: list = []
 _local = threading.local()
+_seq = 0                # the last entry's seq
+_cleared = 0            # the last seq before the list was last cleared
 
 
 @contextmanager
@@ -92,12 +95,14 @@ def host_of(url: str) -> str:
 def record(service: str, url: str, what: str, protection: str, how: str,
            outcome: str = SENT, detail: str = "", content: str = "") -> Entry:
     """Put one request on the list, and tell whoever is listening."""
-    entry = Entry(
-        when=time.time(), service=service, host=host_of(url), what=what,
-        protection=protection, how=how, outcome=outcome, detail=detail,
-        purpose=current_purpose(), content=content[:MAX_CONTENT],
-    )
+    global _seq
     with _lock:
+        _seq += 1
+        entry = Entry(
+            when=time.time(), service=service, host=host_of(url), what=what,
+            protection=protection, how=how, outcome=outcome, detail=detail,
+            purpose=current_purpose(), content=content[:MAX_CONTENT], seq=_seq,
+        )
         _entries.append(entry)
         listeners = list(_listeners)
     for listener in listeners:
@@ -114,8 +119,17 @@ def entries() -> list[Entry]:
 
 
 def clear() -> None:
+    global _cleared
     with _lock:
         _entries.clear()
+        _cleared = _seq
+
+
+def cleared_through() -> int:
+    """The last seq the list held when it was last cleared: a window told of
+    an entry at or before it, late, shows it no more."""
+    with _lock:
+        return _cleared
 
 
 def add_listener(listener) -> None:

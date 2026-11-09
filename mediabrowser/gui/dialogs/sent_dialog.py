@@ -108,6 +108,7 @@ class SentDialog(QDialog):
         self.setWindowTitle("What Was Sent")
         self.resize(900, 600)
         self._entries: list[outbound.Entry] = []
+        self._shown: set[int] = set()     # their seqs
 
         intro = QLabel(INTRO)
         intro.setObjectName("hintLabel")
@@ -187,17 +188,23 @@ class SentDialog(QDialog):
     def reload(self) -> None:
         self.tree.clear()
         self._entries = []
+        self._shown = set()
         for entry in outbound.entries():
             self._add(entry)
         self._update_summary()
 
     @Slot(object)
     def _arrived(self, entry) -> None:
+        # Told of across threads, so late: one listed already, by a reload
+        # since, or one from before the list was cleared, isn't listed again.
+        if entry.seq in self._shown or entry.seq <= outbound.cleared_through():
+            return
         self._add(entry)
         self._update_summary()
 
     def _add(self, entry: outbound.Entry) -> None:
         self._entries.append(entry)
+        self._shown.add(entry.seq)
         item = QTreeWidgetItem([
             time.strftime("%H:%M:%S", time.localtime(entry.when)),
             entry.service,

@@ -140,6 +140,12 @@ def sealed_only(model):
     return str(model or "").strip().lower().startswith("private/")
 
 
+def searches(model):
+    """Whether `model` carries nano-gpt's ":online" suffix, which has it run a web
+    search with what is sent - however it is written."""
+    return ":online" in str(model or "").lower()
+
+
 def kind_of(model):
     """TEE, E2EE, or None for a model that runs nowhere in particular."""
     if is_private_mode(model):
@@ -201,6 +207,10 @@ def problems(api_url, model, wait=True):
     model = (model or "").strip()
     if not model:
         found.append("No private model is set (Settings → AI).")
+    elif searches(model):
+        found.append(f"{model} asks nano-gpt to search the web for it, which it can only "
+                     f"do by reading the request; Privacy Mode never searches. Leave "
+                     f"out the \":online\".")
     elif kind_of(model) is None:
         found.append(f"The private model, {model}, runs in no attested enclave: "
                      f"choose a private/ or TEE/ model in Settings → AI.")

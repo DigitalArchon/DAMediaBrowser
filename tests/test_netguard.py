@@ -290,3 +290,45 @@ class TestEveryClientGoesThroughIt:
             musicbrainz.search_releases("Glass Harbor", fmt="json")
         assert outbound.entries() == [] and answered == []
         assert not privacy.allowed(privacy.MUSICBRAINZ)
+
+
+class TestTheEnvironmentsProxy:
+    """Every request goes the way httpx and requests would send it, or not at
+    all: ALL_PROXY counts, a proxy urllib can't use refuses rather than goes
+    around, and plain http to an onion goes only through a proxy here."""
+
+    @pytest.fixture(autouse=True)
+    def clean(self, monkeypatch):
+        for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+            monkeypatch.delenv(name, raising=False)
+            monkeypatch.delenv(name.upper(), raising=False)
+
+    def test_all_proxy_counts_as_httpx_and_requests_count_it(self, monkeypatch):
+        monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:8118")
+        assert netguard.env_proxies()["https"] == "http://127.0.0.1:8118"
+        assert netguard.env_proxy_for("https://musicbrainz.org/") == "http://127.0.0.1:8118"
+        assert netguard.env_proxy_for("http://192.168.1.20/") is None, "local goes direct"
+
+    def test_a_proxy_urllib_cant_use_sends_nothing_rather_than_go_around(
+            self, monkeypatch, real_transport):
+        sent = []
+        monkeypatch.setattr(netguard, "_opener", lambda: sent.append(1))
+        monkeypatch.setenv("ALL_PROXY", "socks5h://127.0.0.1:9050")
+        with pytest.raises(netguard.ProxyRefused, match="socks5h.*nothing was sent"):
+            netguard.urlopen("https://musicbrainz.org/ws/2/release?query=x", 5)
+        with pytest.raises(netguard.RequestError, match="nothing was sent"):
+            netguard.Session().get("https://api.trustedservices.intel.com/x")
+        assert sent == []
+        assert isinstance(netguard.ProxyRefused("x"), netguard.REFUSALS)
+
+    def test_an_onion_over_plain_http_goes_only_through_a_proxy_here(
+            self, monkeypatch, server, real_transport):
+        monkeypatch.setenv("http_proxy", "http://proxy.example:3128")
+        with pytest.raises(netguard.ProxyRefused, match="unencrypted before reaching Tor"):
+            netguard.urlopen("http://glassharbor.onion/v1/models", 5)
+        tor = server({"http://glassharbor.onion/v1/models": (200, {}, b"through tor")})
+        monkeypatch.delenv("http_proxy")
+        monkeypatch.setenv("ALL_PROXY", tor.url)
+        with netguard.urlopen("http://glassharbor.onion/v1/models", 5) as reply:
+            assert reply.read() == b"through tor"
+        assert tor.seen[0]["path"] == "http://glassharbor.onion/v1/models"

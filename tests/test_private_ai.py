@@ -269,6 +269,21 @@ class TestSealed:
 
 
 class TestNeverTheOrdinaryWayRound:
+    def test_a_private_model_typed_to_search_the_web_is_refused(self, endpoint):
+        """":online" on a model's name has nano-gpt search the web with what is
+        sent, which it can do only by reading it."""
+        settings = private_settings(model="TEE/glm-5.1:online")
+        assert "never searches" in ai.not_ready(settings)
+        with pytest.raises(ai.NotConfigured, match="never searches"):
+            ai.chat([], settings)
+        # Held to at the moment of sending too, however the session was made.
+        session = PrivacySession(BASE, "sk-1", "TEE/glm-5.1:Online/kagi",
+                                 tee_factory=FakeNanoGpt().tee_client)
+        with pytest.raises(ai.Refused, match="never does"):
+            ai._private_chat({"model": "x"}, [], session)
+        assert endpoint == []
+        assert outbound.entries()[-1].outcome == outbound.REFUSED
+
     def test_a_private_model_is_never_sent_unsealed(self, endpoint):
         settings = ai.settings_from({privacy.AI: True, ai.SETTING_KEY: "sk-1",
                                      ai.SETTING_MODEL: " Private/kimi-k3"})
@@ -398,6 +413,60 @@ class TestTheModelsOnOffer:
         assert fake.sealed == []
         (entry,) = outbound.entries()
         assert entry.protection == outbound.CHECK
+
+
+class TestNothingGoesUnlisted:
+    def test_a_malformed_answer_is_an_ai_error_and_listed(self, monkeypatch):
+        import http.client
+
+        def broken(request, timeout):
+            raise http.client.BadStatusLine("HTTP/9 nonsense")
+
+        monkeypatch.setattr(netguard, "_transport", broken)
+        with pytest.raises(ai.AIError):
+            ai.chat([], ai.settings_from({privacy.AI: True, ai.SETTING_KEY: "sk-1"}))
+        (entry,) = outbound.entries()
+        assert entry.outcome == outbound.FAILED
+
+    def test_nothing_is_attested_while_the_ai_isnt_allowed(self, monkeypatch):
+        monkeypatch.setattr(sealed, "PrivateModeClient",
+                            lambda *a, **k: pytest.fail("attested"))
+        settings = ai.settings_from({privacy.AI: False, ai.SETTING_PRIVACY_MODE: True},
+                                    form=True)
+        with pytest.raises(ai.NotConfigured, match="Settings → Privacy"):
+            ai.check_attestation(settings)
+        assert outbound.entries() == []
+
+
+class TestTheAppImage:
+    ROOT = os.path.dirname(HERE)
+
+    def test_its_python_runs_isolated(self):
+        """Without -I, the folder it was started from came ahead of the
+        standard library: a secrets.py there stood in for the nonces' source."""
+        with open(os.path.join(self.ROOT, "packaging", "appimage", "AppRun")) as f:
+            launcher = f.read()
+        assert 'exec "$PYTHON" -I -m mediabrowser.gui.app "$@"' in launcher
+        assert "REQUESTS_CA_BUNDLE" in launcher
+
+    def test_privacy_modes_client_is_compiled_and_checked_with_the_rest(self):
+        with open(os.path.join(self.ROOT, "packaging", "appimage", "build.sh")) as f:
+            build = f.read()
+        assert '-s "$APPDIR" -p / "$PRIVATE_MODE"' in build
+        assert "--require-hashes" in build and "$PRIVATE_MODE_LOCK" in build
+
+    def test_inside_an_appimage_the_users_own_client_is_never_read(self, monkeypatch,
+                                                                   tmp_path):
+        from mediabrowser.core import vendored
+
+        monkeypatch.setattr(vendored.sys, "prefix", str(tmp_path / "app" / "opt" / "py"))
+        monkeypatch.setenv("APPDIR", str(tmp_path / "app"))
+        assert vendored.in_appimage() and vendored.candidates() == []
+        (tmp_path / "app" / "opt" / "py" / "private-mode" / "tinfoil").mkdir(parents=True)
+        assert vendored.candidates() == [vendored.bundled_dir()]
+        monkeypatch.delenv("APPDIR")
+        monkeypatch.setattr(vendored.sys, "prefix", str(tmp_path / "venv"))
+        assert vendored.candidates() == [vendored.user_dir()]
 
 
 class TestHousekeeping:

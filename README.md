@@ -803,9 +803,13 @@ rewritten to https; certificates are always checked. A redirect is
 followed only to where the request could have gone in the first place:
 never from https to plain http, never from a server out there onto your own
 network, and never with the key to another server. A server on your own
-network is reached directly, whatever the environment's proxy says. An API
-key with a space or a hidden character in it, picked up where it was
-copied from, is refused in words that don't repeat it.
+network is reached directly, whatever the environment's proxy says;
+everything else goes through it, `ALL_PROXY` included, and a proxy the app
+can't go through (SOCKS: use Tor's `HTTPTunnelPort` instead) means nothing
+is sent rather than sent around it. Plain http to an onion service goes
+only through a proxy on this computer. An API key with a space or a hidden
+character in it, picked up where it was copied from, is refused in words
+that don't repeat it.
 
 **Help → What Was Sent** lists every request since the app started, as it
 is made: to whom, what it carried, how it travelled (in the clear over
@@ -915,7 +919,7 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 1,196 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 1,206 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
 

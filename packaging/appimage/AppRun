@@ -74,4 +74,10 @@ fi
 # the host at runtime. mpv in particular has to reach the machine's own audio
 # server, GPU and display; a copy carried in here would be the wrong one. The
 # app checks for them at startup and says what to install.
-exec "$PYTHON" -s -m mediabrowser.gui.app "$@"
+#
+# -I: isolated. Without it the folder the AppImage was started from came
+# first on Python's path, ahead of the standard library, so a secrets.py
+# lying there - the module Privacy Mode's nonces come from - or a folder
+# named mediabrowser would have been run in place of the real one. It also
+# keeps the user's own site-packages and PYTHON* settings out.
+exec "$PYTHON" -I -m mediabrowser.gui.app "$@"

@@ -85,7 +85,7 @@ def _get_in_turn(path: str, params: dict, fmt: str) -> dict:
             with netguard.urlopen(req, 15) as resp:
                 body = resp.read()
     except (urllib.error.URLError, OSError) as exc:
-        refused = isinstance(exc, (netguard.InsecureURL, netguard.RedirectRefused))
+        refused = isinstance(exc, netguard.REFUSALS)
         outbound.record("MusicBrainz", url, what, outbound.CLEAR, HOW,
                         outbound.REFUSED if refused else outbound.FAILED,
                         netguard.reason(exc))

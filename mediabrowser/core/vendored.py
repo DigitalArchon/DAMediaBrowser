@@ -43,11 +43,22 @@ def bundled_dir() -> str:
     return os.path.join(sys.prefix, DIRNAME)
 
 
+def in_appimage() -> bool:
+    """Whether this Python is an AppImage's: its runtime sets APPDIR, and the
+    interpreter is inside it."""
+    appdir = os.environ.get("APPDIR")
+    return bool(appdir) and os.path.abspath(sys.prefix).startswith(
+        os.path.abspath(appdir) + os.sep)
+
+
 def candidates() -> list[str]:
-    """The folder to look in: the AppImage's own if this Python has one -
-    and then never the user's - or else the one the install script fills."""
+    """The folder to look in: the AppImage's own if this Python has one, or
+    else the one the install script fills - but never that one from inside an
+    AppImage, even one that somehow lacks its own."""
     if os.path.isdir(os.path.join(bundled_dir(), "tinfoil")):
         return [bundled_dir()]
+    if in_appimage():
+        return []
     return [user_dir()]
 
 
