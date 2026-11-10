@@ -755,11 +755,21 @@ There are two kinds, and the private model's name says which:
   quote binding the enclave's signing key to a nonce of its own, and checks
   it up to Intel's root (revocation and Intel's TCB information included),
   with the GPU evidence sent to NVIDIA's attestation service and its signed
-  verdict checked in turn. Each reply's signature is then checked against
-  that key, where nano-gpt keeps one. But Nano-GPT's gateway reads what is
-  sent on the way, and in Nov 2026 every `TEE/` model it attests comes
-  through RedPill's gateway, whose attestation doesn't reach the model's
-  own host: it is used, and shown in amber as partial.
+  verdict checked in turn; and beside it, for a nonce of its own, RedPill's
+  gateway's own report, whose quote binds every key the gateway signs
+  replies with. Each reply's signature is then checked against those keys,
+  where nano-gpt keeps a record of it, found by the receipt the reply
+  names. But Nano-GPT's gateway reads what is sent on the way, and in Nov
+  2026 every `TEE/` model it attests but Chutes' own comes through
+  RedPill's gateway, whose attestation doesn't reach the model's own host:
+  it is used, and shown in amber as partial. `TEE/deepseek-v3.2` and
+  `TEE/qwen3.6-27b`, whose own evidence comes relayed for a nonce that
+  isn't the app's, were refused; since Nov 10 2026 they are attested
+  through the gateway alone, short of GPU evidence too. Chutes' models
+  attest every instance that could answer, and their replies are signed by
+  nothing; those Chutes serves first are answered by RedPill's gateway now
+  and then, which is attested and named as well. The Tinfoil-hosted ones
+  offer no attestation here, and are refused.
 
 Nothing is sent if an enclave can't be attested, and nothing ever falls
 back to the ordinary model. There is no web search: Nano-GPT would have to
@@ -955,7 +965,7 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 1,221 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 1,236 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
 
