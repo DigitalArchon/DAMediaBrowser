@@ -370,10 +370,13 @@ def _without_frames(messages) -> list[dict]:
     return stripped
 
 
-def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TIMEOUT_SECONDS):
+def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TIMEOUT_SECONDS,
+             answered: dict | None = None):
     """One request, by way of netguard: refused - Refused, before anything is
     sent - unless the address is https or on this machine's own network, and
-    the key one that can be sent."""
+    the key one that can be sent. `answered`, when given, is filled with the
+    reply's headers, their names in lower case: those of a TEE reply name
+    the receipt and route its check looks up (_private_chat)."""
     insecure = netguard.problem(url)
     if insecure:
         raise Refused(insecure)
@@ -388,6 +391,10 @@ def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TI
     try:
         with netguard.urlopen(req, timeout) as resp:
             raw = resp.read()
+            if answered is not None:
+                headers = getattr(resp, "headers", None)
+                answered.update((str(name).lower(), str(value))
+                                for name, value in (headers.items() if headers else ()))
     except urllib.error.HTTPError as exc:
         raise AIError(_http_error_message(exc)) from exc
     except netguard.REFUSALS as exc:
@@ -569,8 +576,9 @@ def _checked_with(session) -> str:
                 "AMD's or Intel's certificates (through Tinfoil's proxy, for AMD's) and "
                 "Tinfoil's release record on Sigstore: a fresh nonce, nothing about "
                 "your videos")
-    return ("Asked nano-gpt for the enclave's report, and checked it with Intel's and "
-            "NVIDIA's attestation services: a fresh nonce, nothing about your videos")
+    return ("Asked nano-gpt for the enclave's report and RedPill's gateway's, and "
+            "checked them with Intel's and NVIDIA's attestation services: a fresh nonce "
+            "for each, nothing about your videos")
 
 
 def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> str:
@@ -583,7 +591,9 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
         endpoint the session was made with, never to another.
 
     Afterwards the reply is checked - a TEE reply's signature against the
-    attested key - and the receipt kept on the session for the window."""
+    keys its attestation bound, its record looked up by the receipt and the
+    route its headers name - and the receipt kept on the session for the
+    window."""
     model = session.model
     text, pictures = outbound.text_of(messages)
     what = _what(text, pictures, model)
@@ -610,9 +620,14 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
         if sealed:
             answer = _sealed_chat(body, session)
         else:
-            reply = _request(f"{session.api_url}/chat/completions", session.api_key, body)
+            answered = {}
+            reply = _request(f"{session.api_url}/chat/completions", session.api_key, body,
+                             answered=answered)
             answer = reply_text(reply)
-            session.check_reply(reply.get("id") if isinstance(reply, dict) else None)
+            session.check_reply(reply.get("id") if isinstance(reply, dict) else None,
+                                receipt_id=(answered.get("x-receipt-id")
+                                            or answered.get("x-tee-signature-id")),
+                                route=answered.get("x-tee-verification-route"))
     except private_ai.PrivacyError as exc:
         refused = "nothing was sent" in str(exc).lower()
         outbound.record(service, session.api_url, what, protection, f"Sends it {where}",

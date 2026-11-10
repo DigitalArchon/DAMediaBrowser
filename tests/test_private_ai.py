@@ -27,8 +27,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 class Reply:
-    def __init__(self, body):
+    def __init__(self, body, headers=None):
         self.body = json.dumps(body).encode()
+        self.headers = headers or {}
 
     def read(self, size=-1):
         return self.body
@@ -211,13 +212,46 @@ class TestTee:
         assert len(endpoint) == 1
         assert "less than it could prove: no GPU evidence" in outbound.entries()[-1].detail
 
+    def test_the_record_is_looked_up_by_the_receipt_and_route_the_reply_names(
+            self, monkeypatch):
+        """A reply RedPill's gateway answers names its receipt and, now and then, a
+        route (Nov 2026): its record is found by the receipt, the route named with it.
+        For a model Chutes answers first, only such a reply is looked up (Nov 10 2026)."""
+        from tests.test_attestation import InstanceEvidence, ShapedNanoGpt
+        named = {}
+
+        def transport(request, timeout):
+            return Reply({"id": "chatcmpl-42",
+                          "choices": [{"message": {"content": '{"ok": true}'}}]}, named)
+
+        monkeypatch.setattr(netguard, "_transport", transport)
+        server = FakeNanoGpt(aci="bound")
+        named.update({"X-Receipt-Id": "rcpt-7", "X-TEE-Verification-Route": "r2"})
+        settings = private_settings(server=server)
+        ai.chat([], settings)
+        assert ai.session_of(settings).last_receipt().state == private_ai.SIGNED
+        assert "/tee/signature/rcpt-7" in [g for g in server.gets if "/tee/signature/" in g][-1]
+        assert server.lookups[-1].get("X-TEE-Verification-Route") == "r2"
+        assert not any("X-TEE-Verification-Route" in r["headers"] for r in server.reports)
+
+        instances = InstanceEvidence()
+        chutes = ShapedNanoGpt(lambda nonce: (200, instances.body(nonce)), aci="bound")
+        settings = private_settings(model="TEE/glm-5.1", server=chutes)
+        named.clear()
+        ai.chat([], settings)
+        assert ai.session_of(settings).last_receipt().state == private_ai.UNSIGNED
+        assert chutes.lookups == [], "Chutes answered: nothing to look up"
+        named["X-Receipt-Id"] = "rcpt-8"
+        ai.chat([], settings)
+        assert ai.session_of(settings).last_receipt().state == private_ai.SIGNED
+
     def test_strict_attests_again_after_a_signature_by_another_key(self, endpoint):
         server = FakeNanoGpt(signer=0x1234)
         settings = private_settings(server=server, strict=True)
         ai.chat([], settings)
         assert ai.session_of(settings).last_receipt().state == private_ai.MISMATCH
         ai.chat([], settings)
-        assert len([g for g in server.gets if "/tee/attestation" in g]) == 2
+        assert len(server.plain_reports()) == 2
 
 
 class TestSealed:
