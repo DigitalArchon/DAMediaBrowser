@@ -1251,6 +1251,61 @@ def _requests():
     return True
 
 
+def _sigstore():
+    """sigstore-python, with TUF's client, as the Private Mode client installs them - or
+    None where it is not installed."""
+    try:
+        import sigstore
+        import sigstore._internal.tuf  # noqa: F401
+        import tuf.ngclient  # noqa: F401
+    except Exception:
+        return None
+    return sigstore
+
+
+needs_sigstore = pytest.mark.skipif(_sigstore() is None, reason="Tinfoil's client is not "
+                                    "installed (tools/install-private-mode.sh)")
+# sigstore's command line, never loaded (sealed._SIGSTORE_SKIPPED, which a test pins).
+SIGSTORE_SKIPPED = ("sigstore.__main__", "sigstore._cli")
+# sigstore's modules that take requests: Rekor's, Fulcio's, a timestamp authority's and
+# OIDC's clients (sigstore 4.5).
+SIGSTORE_REQUESTS = ("sigstore.oidc", "sigstore._internal.rekor",
+                     "sigstore._internal.rekor.client",
+                     "sigstore._internal.rekor.client_v2",
+                     "sigstore._internal.fulcio.client", "sigstore._internal.timestamp")
+
+
+@pytest.fixture
+def sigstore_as_installed(monkeypatch, tmp_path):
+    """sigstore-python as it is before the guard, and put back as it was after the test:
+    the guard changes it for the rest of the process, as the app wants it to. Every
+    module of it is loaded first, so that the guard loads none whose requests is not put
+    back; its TUF metadata and cache go in a folder of the test's own. From DA
+    Assistant's tests/test_sdk_redirects.py (3ef062a)."""
+    sigstore = _sigstore()
+    if sigstore is None:
+        return
+    import importlib
+    import pkgutil
+    import sys
+    import types
+
+    import requests
+    from tuf.ngclient import Updater
+
+    for found in pkgutil.walk_packages(sigstore.__path__, "sigstore.",
+                                       onerror=lambda _name: None):
+        if found.name not in sys.modules and found.name not in SIGSTORE_SKIPPED:
+            importlib.import_module(found.name)
+    for name, module in list(sys.modules.items()):
+        if module is not None and (name == "sigstore" or name.startswith("sigstore.")) \
+                and isinstance(getattr(module, "requests", None), types.ModuleType):
+            monkeypatch.setattr(module, "requests", requests)
+    monkeypatch.setattr(sys.modules["sigstore._internal.tuf"], "Updater", Updater)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+
 FAKE_SDK = {
     "__init__.py": "from .client import SecureClient\n",
     "client.py": (
@@ -1286,7 +1341,7 @@ class TestTheSdkFetchesThroughNetguard:
     URL = "https://github-proxy.example/repos/owner/repo"
 
     @pytest.fixture
-    def sdk(self, tmp_path, monkeypatch):
+    def sdk(self, tmp_path, monkeypatch, sigstore_as_installed):
         import importlib
         import sys
 
@@ -1360,3 +1415,230 @@ class TestTheSdkFetchesThroughNetguard:
             importlib.import_module("tinfoil.later.collateral").fetch(
                 "https://kds.example/vcek")
         assert sdk["sent"] == ["https://kds.example/vcek"]
+
+    @needs_sigstore
+    def test_sigstores_own_requests_users_are_guarded_as_the_sdks_are(self, sdk):
+        """Rekor's, Fulcio's, a timestamp authority's and OIDC's clients: none fetches
+        while an attestation is verified, all of them while signing (DA Assistant's
+        3ef062a, after DA Vibe Manager's 4b03b1a)."""
+        import sys
+
+        import requests
+        given = sealed.guard_sdk_requests()
+        assert set(SIGSTORE_REQUESTS) <= set(given)
+        assert "sigstore._internal.tuf" in given
+        for name in SIGSTORE_REQUESTS:
+            assert isinstance(sys.modules[name].requests, sealed._GuardedRequests), name
+        assert "sigstore._cli" not in given             # its command line: never loaded
+        assert sealed._SIGSTORE_SKIPPED == SIGSTORE_SKIPPED
+        sdk["answers"]["https://rekor.example/api/v1/log"] = "http://rekor.example/api/v1/log"
+        session = sys.modules["sigstore._internal.rekor.client"].requests.Session()
+        with pytest.raises(requests.RequestException, match="not followed"):
+            session.get("https://rekor.example/api/v1/log")
+        assert sdk["sent"] == ["https://rekor.example/api/v1/log"]
+
+    @needs_sigstore
+    def test_with_sigstores_internals_elsewhere_nothing_is_attested(self, sdk,
+                                                                    monkeypatch):
+        """Another sigstore or TUF, its TUF client not where this expects: the
+        attestation is refused, saying why, rather than its trust root fetched
+        unguarded; and nothing is fetched."""
+        from sigstore._internal import tuf as sigstore_tuf
+        monkeypatch.setattr(sigstore_tuf, "Updater", object)
+        with pytest.raises(sealed.Unguarded, match="is not tuf.ngclient.Updater"):
+            sealed.guard_sdk_requests()
+        sdk["answers"][self.URL] = "http://evil.example/release"
+        relay = "https://nano-gpt.com/api/v1/private/tinfoil"
+        for attest in (lambda: sealed.tinfoil_verify(relay, "s"),
+                       sealed.Enclave(relay).current):
+            with pytest.raises(PrivacyError) as refused:
+                attest()
+            assert str(refused.value) == (
+                "the private model's enclave could not be attested: Sigstore's trust root "
+                "cannot be fetched with its redirects held to https, so nothing is "
+                "attested: sigstore._internal.tuf.Updater is not tuf.ngclient.Updater")
+        assert sdk["sent"] == []
+
+
+TUF_URL = "https://tuf.example/14.root.json"
+SIGSTORE_TUF = "https://tuf-repo-cdn.sigstore.dev"
+
+
+class Wire:
+    """urllib3's connection pools: each URL answered as `answers` says - a redirect to
+    another, or 200 - a host in `everywhere` redirected wherever it is asked, and every
+    request that reached a pool recorded, with its User-Agent. urllib3's own redirect
+    handling runs above it, as it would for real."""
+
+    def __init__(self):
+        self.sent, self.answers, self.everywhere, self.agents = [], {}, {}, []
+
+    def urlopen(self, pool, method, url, **kwargs):
+        import io
+
+        import urllib3
+        whole = url if "://" in url else f"{pool.scheme}://{pool.host}{url}"
+        self.sent.append(whole)
+        self.agents.append((kwargs.get("headers") or {}).get("User-Agent", ""))
+        target = self.answers.get(whole) or self.everywhere.get(pool.host)
+        if target:
+            return urllib3.HTTPResponse(body=io.BytesIO(b""), status=302,
+                                        headers={"Location": target},
+                                        preload_content=False, request_url=whole)
+        return urllib3.HTTPResponse(body=io.BytesIO(b"fine"), status=200,
+                                    preload_content=False, request_url=whole)
+
+
+@needs_sigstore
+class TestSigstoresTrustRoot:
+    """Fetched, while a private/ model's enclave is attested, through TUF's own client,
+    whose fetcher asks urllib3, which follows a redirect anywhere, https to plain http
+    included (sealed.guard_sigstore). sigstore and TUF as the Private Mode client installs
+    them, urllib3's connection pools answered by a fake (Wire); nothing reaches the
+    network. From DA Assistant's tests/test_sdk_redirects.py (3ef062a)."""
+
+    @pytest.fixture(autouse=True)
+    def wire(self, monkeypatch, sigstore_as_installed, tmp_path):
+        import urllib3
+        for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+            monkeypatch.delenv(name, raising=False)
+            monkeypatch.delenv(name.upper(), raising=False)
+        self.wire = Wire()
+        monkeypatch.setattr(
+            urllib3.connectionpool.HTTPConnectionPool, "urlopen",
+            lambda pool, method, url, **kwargs: self.wire.urlopen(pool, method, url,
+                                                                  **kwargs))
+        self.dir = str(tmp_path)
+
+    @staticmethod
+    def fetched(fetcher, url=TUF_URL):
+        return b"".join(fetcher.fetch(url))
+
+    @staticmethod
+    def guarded_fetcher():
+        return sealed._tuf_fetcher_class()(app_user_agent="sigstore-python/4.5.0")
+
+    def updater(self, **kwargs):
+        """An Updater as sigstore's TrustUpdater builds one, by the name it imported."""
+        from sigstore._internal import tuf as sigstore_tuf
+        from sigstore._utils import read_embedded
+        return sigstore_tuf.Updater(
+            metadata_dir=os.path.join(self.dir, "metadata"),
+            metadata_base_url=SIGSTORE_TUF,
+            bootstrap=read_embedded("root.json", SIGSTORE_TUF), **kwargs)
+
+    def test_unguarded_tufs_own_fetcher_follows_one_into_the_clear(self):
+        """What TUF's client does by itself, and why: urllib3 follows it to plain http."""
+        from tuf.ngclient import Urllib3Fetcher
+        self.wire.answers[TUF_URL] = "http://evil.example/14.root.json"
+        assert self.fetched(Urllib3Fetcher()) == b"fine"
+        assert self.wire.sent == [TUF_URL, "http://evil.example/14.root.json"]
+
+    def test_one_off_https_or_into_this_network_is_refused_and_nothing_sent_there(self):
+        from tuf.api import exceptions
+        for target, said in (("http://evil.example/14.root.json", "not https"),
+                             ("https://192.168.1.1/admin", "own network")):
+            self.wire.sent.clear()
+            self.wire.answers[TUF_URL] = target
+            with pytest.raises(exceptions.DownloadError, match=said):   # a failed fetch
+                self.fetched(self.guarded_fetcher())
+            assert self.wire.sent == [TUF_URL]
+
+    def test_one_that_stays_on_https_is_followed_and_a_relative_one_too(self):
+        import tuf
+        self.wire.answers[TUF_URL] = "https://cdn.example/14.root.json"
+        assert self.fetched(self.guarded_fetcher()) == b"fine"
+        assert self.wire.sent == [TUF_URL, "https://cdn.example/14.root.json"]
+        self.wire.sent.clear()
+        self.wire.answers[TUF_URL] = "/elsewhere/14.root.json"
+        assert self.fetched(self.guarded_fetcher()) == b"fine"
+        assert self.wire.sent == [TUF_URL, "https://tuf.example/elsewhere/14.root.json"]
+        # TUF's own User-Agent, sigstore's before it, as its fetcher sends them
+        assert set(self.wire.agents) == {
+            f"sigstore-python/4.5.0 python-tuf/{tuf.__version__}"}
+
+    def test_only_a_few_are_followed(self):
+        from tuf.api import exceptions
+        hops = [TUF_URL] + [f"https://hop{n}.example/14.root.json" for n in range(10)]
+        self.wire.answers.update(zip(hops, hops[1:]))
+        with pytest.raises(exceptions.DownloadError,
+                           match=f"more than {sealed.TUF_MAX_REDIRECTS} times"):
+            self.fetched(self.guarded_fetcher())
+        assert self.wire.sent == hops[:sealed.TUF_MAX_REDIRECTS + 1]
+
+    def test_sigstores_trust_root_is_refreshed_through_the_guarded_fetcher(self):
+        """sigstore's TrustUpdater builds TUF's Updater with no fetcher: unguarded, a
+        refresh sent on into the clear went there; guarded, the refresh fails, and the
+        attestation with it, saying why, and nothing is fetched there."""
+        from sigstore._internal import tuf as sigstore_tuf
+        from sigstore.errors import TUFError
+        self.wire.everywhere["tuf-repo-cdn.sigstore.dev"] = "http://evil.example/root.json"
+        with pytest.raises(TUFError):
+            sigstore_tuf.TrustUpdater(SIGSTORE_TUF)
+        assert "http://evil.example/root.json" in self.wire.sent     # by itself
+        self.wire.sent.clear()
+        assert "sigstore._internal.tuf" in sealed.guard_sigstore()
+
+        def verifier(_relay, _secret):
+            sigstore_tuf.TrustUpdater(SIGSTORE_TUF)
+
+        with pytest.raises(PrivacyError) as refused:
+            sealed.Enclave("https://nano-gpt.com/api/v1/private/tinfoil",
+                           verifier=verifier).current()
+        assert ("could not be attested: Failed to refresh TUF metadata (The server sent "
+                "the request on to http://evil.example/root.json, which was not followed: "
+                in str(refused.value))
+        assert self.wire.sent
+        assert all(url.startswith(SIGSTORE_TUF + "/") for url in self.wire.sent), \
+            self.wire.sent
+
+    def test_the_updater_it_builds_has_the_guarded_fetcher_and_keeps_one_given(self):
+        from sigstore._internal import tuf as sigstore_tuf
+        from sigstore._utils import read_embedded
+        from tuf.ngclient import Updater, UpdaterConfig
+        sealed.guard_sigstore()
+        made = self.updater(config=UpdaterConfig(app_user_agent="sigstore-python/4.5.0"))
+        assert isinstance(made, Updater)
+        assert type(made._fetcher).__name__ == "GuardedFetcher"
+        mine = self.guarded_fetcher()
+        assert self.updater(fetcher=mine)._fetcher is mine
+        placed = sigstore_tuf.Updater(os.path.join(self.dir, "m"), SIGSTORE_TUF, None, None,
+                                      None, bootstrap=read_embedded("root.json",
+                                                                    SIGSTORE_TUF))
+        assert type(placed._fetcher).__name__ == "GuardedFetcher"    # None in its place
+        guarded = sigstore_tuf.Updater
+        assert "sigstore._internal.tuf" not in sealed.guard_sigstore()   # twice is once
+        assert sigstore_tuf.Updater is guarded
+
+    def test_what_the_guard_rests_on_is_where_it_expects(self):
+        """sigstore 4.5 and tuf 7.0, as packaging/private-mode.lock pins them: a version
+        that moves these fails here first (and in the app, refuses to attest:
+        Unguarded); a new user of requests in sigstore is named here, to be looked at.
+        (DA Assistant's also pins what its SOCKS proxy setting rests on: this app has
+        none.)"""
+        import inspect
+        import sys
+
+        import requests
+        from sigstore._internal import tuf as sigstore_tuf
+        from tuf.api import exceptions
+        from tuf.ngclient import Updater, Urllib3Fetcher
+        from tuf.ngclient._internal.proxy import ProxyEnvironment
+        assert sigstore_tuf.Updater is Updater
+        assert callable(sigstore_tuf.TrustUpdater)
+        built = inspect.getsource(sigstore_tuf.TrustUpdater.__init__)
+        assert "Updater(" in built
+        assert "fetcher" not in built           # it gives none: the guard's is used
+        assert list(inspect.signature(Updater.__init__).parameters)[1:7] == [
+            "metadata_dir", "metadata_base_url", "target_dir", "target_base_url",
+            "fetcher", "config"]
+        assert isinstance(Urllib3Fetcher()._proxy_env, ProxyEnvironment)
+        assert callable(Urllib3Fetcher._chunks)
+        assert issubclass(exceptions.DownloadHTTPError, exceptions.DownloadError)
+        # the guarded fetcher's requests go through ProxyEnvironment: the environment's
+        # proxy, as TUF reads it
+        assert "get_pool_manager(" in inspect.getsource(ProxyEnvironment.request)
+        users = sorted(name for name, module in sys.modules.items() if module is not None
+                       and (name == "sigstore" or name.startswith("sigstore."))
+                       and getattr(module, "requests", None) is requests)
+        assert users == sorted(SIGSTORE_REQUESTS)
