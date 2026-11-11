@@ -72,6 +72,7 @@ import base64
 import binascii
 import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -115,6 +116,35 @@ GPUS_LOOSE = "GPUs not tied to the quote"
 # gateway for it, for any reason but that RedPill does not serve it (a 400): whether the
 # gateway answers it instead now and then, unattested, is not known (_attest_instances).
 GATEWAY_UNCHECKED = "RedPill's gateway unchecked"
+
+# RedPill's public records of its gateway's sessions with the machines that run the
+# models (Settings > Privacy, "Name the provider behind each TEE reply", off by default:
+# TeeClient.served_by). Each receipt's `upstream.verified` names its session by the
+# sha256 of the record's RFC 8785 JSON, so the attested gateway's signature pins the
+# record whoever serves it. No key goes with it. From SealedLore (44e145d, Nov 11 2026).
+SESSION_RECORDS = "https://api.redpill.ai/v1/aci/sessions/"
+# A record past this is never read: a Chutes instance's is megabytes (3.4 MB for
+# TEE/deepseek-v3.2, SealedLore, Nov 11 2026), and its replies spread over instances
+# with a session each, so it would be megabytes nearly every message. The others were
+# 3 KB to 0.3 MB, one an hour a model.
+SESSION_RECORD_MAX_BYTES = 1_000_000
+# Records already read, by session id (content-addressed, so the same for every
+# client): a session serves every reply to its provider for about an hour.
+SESSION_RECORDS_KEPT = 64
+_records = {}
+_records_lock = threading.Lock()
+# RedPill's names for its upstreams as a reply's mark shows them (upstream_label); any
+# other is shown as RedPill writes it.
+_UPSTREAM_LABELS = {
+    "tinfoil": "Tinfoil",
+    "phala": "Phala",
+    "fortanix": "Fortanix",
+    "armet": "Armet",
+    "near-ai": "NEAR AI",
+    "0g-private-computer": "0G",
+    "chutes": "Chutes",
+    "privatemode": "Privatemode",
+}
 
 # A stream's receipt is complete just after the stream ends (nano-gpt's own example
 # waits up to about 20 seconds): a reply that names one is looked up again meanwhile.
@@ -632,6 +662,140 @@ class _Gateway:
     # record (the gateway's e2ee keys, live Nov 2026), lower case.
     signers: frozenset
     check: _Checks
+
+
+@dataclass(frozen=True)
+class TeeUpstream:
+    """Who ran a TEE/ reply's model, by RedPill's record of its gateway's session with
+    that machine (TeeClient.served_by; Settings > Privacy, "Name the provider behind
+    each TEE reply", off by default). The record is RedPill's word, pinned by the receipt
+    the attested gateway signed; nothing in it is checked by this app."""
+
+    # RedPill's name for the provider ("tinfoil", "phala-244"); "" when the lookup was
+    # made and named none, `note` saying why.
+    name: str = ""
+    # The verifier RedPill's gateway checked that machine with, what it vouched for
+    # ("model_instance", "router", "near-ai-gateway"), and what RedPill says of its GPUs
+    # ("asserted", "unknown").
+    verifier: str = ""
+    scope: str = ""
+    gpus: str = ""
+    # The model id the receipt names upstream ("gemma4-31b").
+    model: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class ReplyCheck:
+    """What TeeClient.check found of a reply: its state (VERIFIED, SIGNED, FAILED or
+    UNCHECKED) and the sentence saying why, as check_reply gives them, and who ran its
+    model, when asked to look (`upstream`, a TeeUpstream, else None)."""
+
+    state: str
+    detail: str
+    upstream: object = None
+
+
+@dataclass(frozen=True)
+class _Record:
+    """What a session record says, read once (_session_record)."""
+
+    name: str
+    verifier: str
+    scope: str
+    gpus: str
+    established: int
+    expires: int
+
+
+def upstream_label(upstream):
+    """The provider as a reply's mark names it: "Tinfoil" for "tinfoil", "Phala" for
+    "phala-244", else as RedPill writes it."""
+    name = upstream.name
+    return _UPSTREAM_LABELS.get(re.sub(r"-\d+$", "", name), name)
+
+
+def upstream_words(upstream):
+    """A reply's provider, said plainly, for its mark's tooltip: whose word it is, and
+    what it does not prove."""
+    if not upstream.name:
+        return f"The provider that ran it was not named: {upstream.note}."
+    scope = upstream.scope
+    what = ("the machine that ran the model" if scope == "model_instance"
+            else "its router, which passes requests on to the model" if scope == "router"
+            else "its gateway, which passes requests on to the model" if "gateway" in scope
+            else "it")
+    gpus = {"asserted": "RedPill's verifier checked its GPUs",
+            "unknown": "RedPill's record has no GPU attestation"}.get(upstream.gpus, "")
+    model = f" (as {upstream.model})" if upstream.model else ""
+    return (f"Run by {upstream_label(upstream)}{model}: RedPill's record of its gateway's "
+            f"session says its verifier ({upstream.verifier or 'unnamed'}) checked {what}"
+            + (f"; {gpus}" if gpus else "")
+            + ". That is RedPill's word, fetched from api.redpill.ai and matched to the "
+              "receipt the attested gateway signed; this app does not check that machine.")
+
+
+def _int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _session_record(session, session_id):
+    """RedPill's record of one session, read once a process: from api.redpill.ai, with
+    no key, through `session` (netguard's: https only, its redirect rules and the proxy
+    every request takes), at most SESSION_RECORD_MAX_BYTES a piece at a time, and kept
+    only if its sha256 is the id the receipt named. Raises PrivacyError, in words a
+    tooltip can carry, for whatever kept it from being read. From SealedLore (44e145d)."""
+    with _records_lock:
+        if session_id in _records:
+            return _records[session_id]
+    try:
+        response = session.get(SESSION_RECORDS + session_id, timeout=TIMEOUT_SECONDS,
+                               stream=True)
+    except netguard.RequestError as e:
+        # netguard's refusals among them: a redirect it would not follow, an
+        # environment's proxy that cannot be used.
+        raise PrivacyError(f"api.redpill.ai could not be reached ({type(e).__name__})")
+    body = bytearray()
+    try:
+        if response.status_code != 200:
+            raise PrivacyError(f"api.redpill.ai answered HTTP {response.status_code}")
+        length = str(response.headers.get("content-length") or "")
+        if length.isdigit() and int(length) > SESSION_RECORD_MAX_BYTES:
+            raise PrivacyError(f"its record is {int(length) // 1000:,} KB, more than is "
+                               f"read for one reply")
+        for chunk in response.iter_content(chunk_size=65536):
+            body += chunk
+            if len(body) > SESSION_RECORD_MAX_BYTES:
+                raise PrivacyError("its record is more than is read for one reply")
+    except netguard.RequestError as e:
+        raise PrivacyError(f"api.redpill.ai could not be reached ({type(e).__name__})")
+    finally:
+        response.close()
+    try:
+        record = json.loads(bytes(body))
+        named = (isinstance(record, dict)
+                 and hashlib.sha256(_canonical(record)).hexdigest() == session_id)
+    except (ValueError, TypeError, RecursionError):
+        # Nested past what Python reads, too: a record never fails the reply's check.
+        raise PrivacyError("RedPill's record could not be read")
+    if not named:
+        raise PrivacyError("the record api.redpill.ai sent is not the one the receipt names")
+    claims = record.get("claims") if isinstance(record.get("claims"), dict) else {}
+    extra = claims.get("extra") if isinstance(claims.get("extra"), dict) else {}
+    gpus = claims.get("gpu_attested") if isinstance(claims.get("gpu_attested"), dict) else {}
+    found = _Record(
+        name=unsealed_words(record.get("upstream_name") or "", 60),
+        verifier=unsealed_words(record.get("verifier_id") or "", 80),
+        scope=unsealed_words(extra.get("evidence_scope") or extra.get("trust_boundary")
+                             or "", 40),
+        gpus=unsealed_words(gpus.get("status") or "", 20),
+        established=_int(record.get("established_at")) or 0,
+        expires=_int(record.get("expires_at")) or 0)
+    with _records_lock:
+        while len(_records) >= SESSION_RECORDS_KEPT:
+            _records.pop(next(iter(_records)))
+        _records[session_id] = found
+    return found
 
 
 class TeeClient:
@@ -1262,8 +1426,15 @@ class TeeClient:
             return None
 
     def check_reply(self, response_id, receipt_id=None, body_hash=None, route=None):
-        """Whether this reply was the attested enclave's, as it arrived: VERIFIED,
-        SIGNED, FAILED or UNCHECKED, with a sentence saying why.
+        """(state, sentence): check()'s, nothing more looked up."""
+        found = self.check(response_id, receipt_id=receipt_id, body_hash=body_hash,
+                           route=route)
+        return found.state, found.detail
+
+    def check(self, response_id, receipt_id=None, body_hash=None, route=None,
+              name_upstream=False):
+        """Whether this reply was the attested enclave's, as it arrived: a ReplyCheck,
+        VERIFIED, SIGNED, FAILED or UNCHECKED, with a sentence saying why.
 
         nano-gpt's record of a reply (Nov 2026: RedPill's signed receipts), looked up by
         the receipt id its headers named, else by the reply's own id:
@@ -1292,31 +1463,37 @@ class TeeClient:
         held under the attested keys, the only word that the model's own enclave
         answered it.
         Until Nov 2026 only the signer was checked, so "signed" said nothing of the text
-        shown. From SealedLore (Nov 2026)."""
+        shown. From SealedLore (Nov 2026).
+
+        `name_upstream` (Settings > Privacy, "Name the provider behind each TEE reply"):
+        for a reply that checks out with its receipt read under the attested keys, who
+        ran its model too (`upstream`; served_by: a lookup on api.redpill.ai). It never
+        changes the state. From SealedLore (44e145d)."""
         lookup = receipt_id or response_id
         if not lookup:
-            return UNCHECKED, "the reply carried no id to check"
+            return ReplyCheck(UNCHECKED, "the reply carried no id to check")
         if not self.signers or (self.instances and receipt_id is None):
             # The per-instance providers (Chutes) sign no replies: nano-gpt answers
             # "TEE signature is not available for this model". Their instances were each
             # attested instead. Only a reply RedPill's gateway answered names a receipt
             # (nano-gpt, Nov 10 2026).
-            return UNCHECKED, ("this model's provider signs no replies; every instance "
-                               "that could answer was attested before sending")
+            return ReplyCheck(UNCHECKED, ("this model's provider signs no replies; every "
+                                          "instance that could answer was attested "
+                                          "before sending"))
         try:
             body = self._signature(lookup, route, wait=receipt_id is not None)
         except PrivacyError:
             # Live: some TEE/ models' providers keep no record of a reply.
-            return UNCHECKED, "the provider kept no signature for this reply"
+            return ReplyCheck(UNCHECKED, "the provider kept no signature for this reply")
         text, signature = body.get("text"), body.get("signature")
         if not isinstance(text, str) or not isinstance(signature, str):
-            return UNCHECKED, "the signature record held no text or signature"
+            return ReplyCheck(UNCHECKED, "the signature record held no text or signature")
         try:
             signer = recover_personal(text, signature)
         except ValueError:
-            return FAILED, "the signature is not a valid signature"
+            return ReplyCheck(FAILED, "the signature is not a valid signature")
         if signer.lower() not in self.signers:
-            return FAILED, f"signed by {signer}, not {self._attested_keys()}"
+            return ReplyCheck(FAILED, f"signed by {signer}, not {self._attested_keys()}")
         # Named as the attestation named it, where it named this one.
         key = (self.signing_address
                if (self.signing_address or "").lower() == signer.lower() else signer)
@@ -1325,17 +1502,17 @@ class TeeClient:
         rebuilt = str(self.model).strip().lower() in {m.lower() for m in REBUILT_STREAMS}
         compared = bool(body_hash) and not rebuilt
         if compared and f"sha256:{response_hash.lower()}" != body_hash:
-            return FAILED, (f"the attested key {key} signed a record of other bytes than "
-                            f"the reply that came")
+            return ReplyCheck(FAILED, (f"the attested key {key} signed a record of other "
+                                      f"bytes than the reply that came"))
         receipt = body.get("receipt")
         read = isinstance(receipt, dict) and self.keyset is not None
         if read:
             try:
                 holds = self._receipt_holds(receipt, request_hash, response_hash)
             except PrivacyError as e:
-                return UNCHECKED, str(e)
+                return ReplyCheck(UNCHECKED, str(e))
             if not holds:
-                return FAILED, "RedPill's receipt for it does not hold"
+                return ReplyCheck(FAILED, "RedPill's receipt for it does not hold")
         if self.receipt_required and not read:
             # Attested through the gateway alone, the gateway's signature says only that
             # the reply passed through it: its receipt is its word that the model's own
@@ -1344,17 +1521,61 @@ class TeeClient:
             # signed the record. From SealedLore (Nov 11 2026).
             why = ("its receipt could not be read under the attested keys"
                    if isinstance(receipt, dict) else "it came with no receipt")
-            return UNCHECKED, (f"{why}, and through RedPill's gateway alone only a receipt "
-                               f"says the model's own enclave answered it: the gateway's "
-                               f"signature on its record says only that it passed through")
+            return ReplyCheck(UNCHECKED, (f"{why}, and through RedPill's gateway alone only "
+                                          f"a receipt says the model's own enclave answered "
+                                          f"it: the gateway's signature on its record says "
+                                          f"only that it passed through"))
         held = "; RedPill's receipt for it holds" if read else ""
         if compared:
-            return VERIFIED, (f"signed by the attested key {key}, for the exact bytes "
-                              f"that came{held}")
-        why = ("nano-gpt rebuilds this model's stream" if rebuilt
-               else "the reply did not arrive whole")
-        return SIGNED, (f"signed by the attested key {key}{held}; its text was not "
-                        f"compared with the record: {why}")
+            found = ReplyCheck(VERIFIED, (f"signed by the attested key {key}, for the exact "
+                                          f"bytes that came{held}"))
+        else:
+            why = ("nano-gpt rebuilds this model's stream" if rebuilt
+                   else "the reply did not arrive whole")
+            found = ReplyCheck(SIGNED, (f"signed by the attested key {key}{held}; its text "
+                                        f"was not compared with the record: {why}"))
+        if not name_upstream:
+            return found
+        if not read:
+            # A session named by a receipt that was not read under the attested keys is
+            # anyone's word.
+            return ReplyCheck(found.state, found.detail, TeeUpstream(
+                note="its receipt was not read under the attested keys"))
+        try:
+            upstream = self.served_by(receipt)
+        except Exception as e:  # noqa: BLE001 - the lookup never fails the reply's check
+            upstream = TeeUpstream(note=f"its provider could not be looked up "
+                                        f"({type(e).__name__})")
+        return ReplyCheck(found.state, found.detail, upstream)
+
+    def served_by(self, receipt):
+        """Who ran the model of a reply whose receipt held (check), by RedPill's public
+        record of its gateway's session with that machine: named by the receipt, read
+        once a session (_session_record). Not for a model Chutes serves: each of its
+        instances has a session of its own, megabytes each, and its replies spread over
+        them. What the record says is RedPill's word; whatever kept it from being read
+        is a note, never a failure. From SealedLore (44e145d, Nov 11 2026)."""
+        event = next((e for e in receipt.get("event_log") or []
+                      if isinstance(e, dict) and e.get("type") == "upstream.verified"), {})
+        model = unsealed_words(event.get("model_id") or "", 80)
+        if self.instances:
+            return TeeUpstream(model=model, note=(
+                "not looked up for a model Chutes serves: each of its instances has a "
+                "record of its own, megabytes each"))
+        session_id = event.get("session_id")
+        if not (isinstance(session_id, str) and re.fullmatch(r"[0-9a-f]{64}", session_id)):
+            return TeeUpstream(model=model, note="its receipt names no session")
+        try:
+            record = _session_record(self.session, session_id)
+        except PrivacyError as e:
+            return TeeUpstream(model=model, note=str(e))
+        served = _int(receipt.get("served_at"))
+        if served is None or not record.established <= served <= record.expires:
+            return TeeUpstream(model=model,
+                               note="it was served outside the session its receipt names")
+        return TeeUpstream(name=record.name or "an unnamed provider",
+                           verifier=record.verifier, scope=record.scope, gpus=record.gpus,
+                           model=model)
 
     def _attested_keys(self):
         """The keys a reply's record may be signed by, as a sentence names them."""

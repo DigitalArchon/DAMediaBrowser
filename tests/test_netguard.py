@@ -45,7 +45,10 @@ class Server:
                     self.send_header(name, value)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass        # a client that read no more than it would
 
             do_POST = do_GET  # noqa: N815
 
@@ -244,6 +247,75 @@ class TestSession:
             netguard.Session().get(start.url + "/go")
         with pytest.raises(netguard.RequestError):
             netguard.Session().get("http://127.0.0.1:1/")   # nothing listens there
+
+
+class TestTheProviderLookup:
+    """RedPill's session records (Settings → Privacy, "Name the provider behind each TEE
+    reply"): fetched by netguard's Session as every attestation fetch is - https only,
+    no redirect netguard would not follow, the environment's proxy or nothing - read a
+    piece at a time, and with no key (private_ai._session_record)."""
+
+    RECORD = {"api_version": "aci/1", "upstream_name": "phala-244",
+              "verifier_id": "private-ai-verifier/phala/v1",
+              "claims": {"extra": {"evidence_scope": "model_instance"}},
+              "established_at": 1, "expires_at": 2}
+
+    @pytest.fixture(autouse=True)
+    def fresh(self, monkeypatch):
+        from mediabrowser.core import private_ai
+        monkeypatch.setattr(private_ai, "_records", {})
+        for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+            monkeypatch.delenv(name, raising=False)
+            monkeypatch.delenv(name.upper(), raising=False)
+
+    def session_id(self):
+        import hashlib
+
+        from mediabrowser.core import private_ai
+        return hashlib.sha256(private_ai._canonical(self.RECORD)).hexdigest()
+
+    def test_it_is_read_through_netguard_with_no_key(self, server, real_transport,
+                                                     monkeypatch):
+        from mediabrowser.core import private_ai
+        records = server({f"/v1/aci/sessions/{self.session_id()}":
+                          (200, {"Content-Type": "application/json"},
+                           json.dumps(self.RECORD).encode())})
+        monkeypatch.setattr(private_ai, "SESSION_RECORDS", records.url + "/v1/aci/sessions/")
+        found = private_ai._session_record(netguard.Session(), self.session_id())
+        assert (found.name, found.scope, found.expires) == ("phala-244", "model_instance", 2)
+        assert "Authorization" not in records.seen[0]["headers"]
+        assert private_ai.SESSION_RECORDS.startswith(records.url)
+
+    def test_a_redirect_netguard_would_not_follow_names_nobody(self, server, real_transport,
+                                                               monkeypatch):
+        from mediabrowser.core import private_ai
+        moved = server({f"/v1/aci/sessions/{self.session_id()}":
+                        (302, {"Location": "http://api.redpill.ai/v1/aci/sessions/x"}, b"")})
+        monkeypatch.setattr(private_ai, "SESSION_RECORDS", moved.url + "/v1/aci/sessions/")
+        with pytest.raises(private_ai.PrivacyError, match=r"api\.redpill\.ai could not be "
+                                                          r"reached \(RequestError\)"):
+            private_ai._session_record(netguard.Session(), self.session_id())
+        assert len(moved.seen) == 1, "nothing was sent where it pointed"
+        assert private_ai._records == {}
+
+    def test_a_proxy_it_cannot_go_through_sends_nothing(self, monkeypatch, real_transport):
+        from mediabrowser.core import private_ai
+        sent = []
+        monkeypatch.setattr(netguard, "_opener", lambda: sent.append(1))
+        monkeypatch.setenv("ALL_PROXY", "socks5h://127.0.0.1:9050")
+        assert private_ai.SESSION_RECORDS.startswith("https://api.redpill.ai/")
+        with pytest.raises(private_ai.PrivacyError, match="could not be reached"):
+            private_ai._session_record(netguard.Session(), self.session_id())
+        assert sent == []
+
+    def test_a_record_larger_than_is_read_is_left_unread(self, server, real_transport,
+                                                         monkeypatch):
+        from mediabrowser.core import private_ai
+        big = server({f"/v1/aci/sessions/{self.session_id()}":
+                      (200, {}, b" " * (private_ai.SESSION_RECORD_MAX_BYTES + 1))})
+        monkeypatch.setattr(private_ai, "SESSION_RECORDS", big.url + "/v1/aci/sessions/")
+        with pytest.raises(private_ai.PrivacyError, match="KB, more than is read"):
+            private_ai._session_record(netguard.Session(), self.session_id())
 
 
 class TestEveryClientGoesThroughIt:

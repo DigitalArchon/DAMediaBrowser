@@ -427,6 +427,38 @@ class Response:
         """The body as JSON; ValueError when it isn't."""
         return _json.loads(self.content.decode("utf-8", errors="replace"))
 
+    def close(self) -> None:
+        pass
+
+
+class StreamedResponse:
+    """An answer still open, read a piece at a time, as a requests Response
+    asked for with stream=True is (Session.get(..., stream=True)): for a body
+    that may be larger than should be read, RedPill's session records
+    (private_ai._session_record). Its headers are http.client's, looked up in
+    any case."""
+
+    def __init__(self, handle, url: str):
+        self._handle = handle
+        self.status_code = handle.status
+        self.headers = handle.headers
+        self.url = url
+
+    def iter_content(self, chunk_size=65536):
+        """The body, at most `chunk_size` bytes a piece, as it comes; a network
+        that fails part way is a RequestError."""
+        while True:
+            try:
+                chunk = self._handle.read(chunk_size)
+            except (OSError, ValueError, http.client.HTTPException) as exc:
+                raise RequestError(f"{shown(self.url)}: {reason(exc, self.url)}") from exc
+            if not chunk:
+                return
+            yield chunk
+
+    def close(self) -> None:
+        self._handle.close()
+
 
 def _read(handle) -> bytes:
     body = handle.read(MAX_BODY_BYTES + 1)
@@ -441,14 +473,18 @@ class Session:
     one; a refused address, a refused redirect or a network failure raises
     RequestError."""
 
-    def get(self, url, params=None, headers=None, timeout=30) -> Response:
-        return self.request("GET", url, params=params, headers=headers, timeout=timeout)
+    def get(self, url, params=None, headers=None, timeout=30, stream=False):
+        return self.request("GET", url, params=params, headers=headers, timeout=timeout,
+                            stream=stream)
 
     def post(self, url, json=None, headers=None, timeout=30) -> Response:
         return self.request("POST", url, json=json, headers=headers, timeout=timeout)
 
     def request(self, method, url, params=None, json=None, headers=None,
-                timeout=30) -> Response:
+                timeout=30, stream=False):
+        """A Response; with `stream`, a StreamedResponse - the answer still open,
+        for the caller to read as much of as it will and close - unless it is an
+        error status, which comes back read, as ever."""
         if params:
             query = urllib.parse.urlencode(
                 {k: v for k, v in params.items() if v is not None})
@@ -460,7 +496,10 @@ class Session:
             headers.setdefault("Content-Type", "application/json")
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urlopen(request, timeout) as handle:
+            handle = urlopen(request, timeout)
+            if stream:
+                return StreamedResponse(handle, handle.geturl())
+            with handle:
                 return Response(handle.status, handle.headers.items(), _read(handle),
                                 handle.geturl())
         except urllib.error.HTTPError as exc:
