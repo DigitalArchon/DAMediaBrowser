@@ -1511,6 +1511,61 @@ class GatewaysOwnReport(unittest.TestCase):
         with self.assertRaisesRegex(PrivacyError, "nonce the relay chose"):
             alone.tee_client(API_URL, "k", "TEE/deepseek-v3.2").attest()
 
+    def test_through_the_gateway_alone_a_reply_without_a_receipt_is_not_verified(self):
+        """The gateway's signature on a reply's record says only that the reply passed
+        through it; the receipt is its word that the model's own enclave answered. A
+        record with no receipt was "verified" all the same, as for a model attested in
+        its own right. From SealedLore (dd39efc, Nov 11 2026)."""
+        bare = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound")
+        client = bare.tee_client(API_URL, "k", "TEE/deepseek-v3.2")
+        client.attest()
+        self.assertTrue(client.receipt_required)
+        state, detail = self.check(client, bare)
+        self.assertEqual(state, privacy.UNCHECKED, detail)
+        self.assertIn("it came with no receipt, and through RedPill's gateway alone only "
+                      "a receipt says the model's own enclave answered it", detail)
+        # Without the bytes to compare either: still not on the signature alone.
+        self.assertEqual(self.check(client, bare, body_hash=None)[0], privacy.UNCHECKED)
+        # A receipt the attested keys cannot be held to is none either.
+        undated = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound", receipts=True,
+                                not_after=None)
+        client = undated.tee_client(API_URL, "k", "TEE/deepseek-v3.2")
+        client.attest()
+        self.assertIsNone(client.keyset)
+        state, detail = self.check(client, undated)
+        self.assertEqual(state, privacy.UNCHECKED, detail)
+        self.assertIn("its receipt could not be read under the attested keys", detail)
+        # A model attested itself needs none: its own key signed the record.
+        itself = FakeNanoGpt(aci="bound")
+        client = itself.tee_client(API_URL, "k", TEXT)
+        client.attest()
+        self.assertFalse(client.receipt_required)
+        self.assertEqual(self.check(client, itself, receipt_id=None)[0], privacy.VERIFIED)
+
+    def test_the_receipt_rule_goes_once_the_model_attests_in_its_own_right(self):
+        """Set by the gateway standing in, and cleared at the start of every
+        attestation: the model's own report answering again is the model attested."""
+        shape = {"body": RELAYED}
+
+        def respond(nonce):
+            if shape["body"] is RELAYED:
+                return 200, RELAYED
+            report = bytes.fromhex(address_of(KEY).lower()[2:]) + bytes(12) + \
+                bytes.fromhex(nonce)
+            return 200, {"signing_address": address_of(KEY).lower(),
+                         "intel_quote": fake_quote(report),
+                         "nvidia_payload": json.dumps({"nonce": nonce,
+                                                       "evidence_list": []})}
+
+        server = ShapedNanoGpt(respond, aci="bound")
+        client = server.tee_client(API_URL, "k", "TEE/qwen3.6-27b")
+        client.attest()
+        self.assertTrue(client.receipt_required)
+        shape["body"] = None
+        client.attest()
+        self.assertFalse(client.receipt_required)
+        self.assertEqual(self.check(client, server, receipt_id=None)[0], privacy.VERIFIED)
+
     def test_strict_refuses_a_model_attested_through_the_gateway(self):
         server = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound", receipts=True)
         strict = PrivacySession(API_URL, "k", "TEE/deepseek-v3.2",

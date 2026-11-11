@@ -587,6 +587,10 @@ class TeeClient:
         self.signers = frozenset()
         # Attested by its instances (Chutes), whose replies carry no record.
         self.instances = False
+        # Attested through the gateway alone (_attest_gateway_alone): a reply is verified
+        # only with a receipt that holds, the gateway's word that the model's own enclave
+        # answered it. From SealedLore (Nov 11 2026).
+        self.receipt_required = False
         # The gateway's receipt keys, when tied to the attested quote (_take_keyset).
         self.keyset = None
         self.keyset_digest = None
@@ -688,6 +692,8 @@ class TeeClient:
         signatures: a nonce or a verdict that merely comes back in JSON proves nothing,
         since anything can echo a string.
         """
+        # What only the gateway alone stands for, set again if it does this time.
+        self.receipt_required = False
         gateway, unheard = self._attest_gateway()
         try:
             body, nonce = self._fetch_attestation()
@@ -833,7 +839,10 @@ class TeeClient:
         day, a 504 asked again). Its replies are signed by the gateway's bound keys and
         carry its receipts; the model's own enclave and GPUs are then the gateway's word
         in each receipt (`upstream.verified`), not checked here - so it falls short
-        twice over: the gateway, and no GPU evidence. From SealedLore."""
+        twice over: the gateway, and no GPU evidence. And a reply of it is verified only
+        with a receipt that holds under the gateway's keys (check_reply): the gateway's
+        signature on the record says only that the reply passed through it. From
+        SealedLore."""
         check = _Checks(f"{why}: the gateway that answers it is attested instead")
         check.merge(gateway.check)
         check.fall_short("no GPU evidence")
@@ -842,6 +851,7 @@ class TeeClient:
                    "request on to the model's host, and each reply's receipt carries the "
                    "gateway's word that its upstream was verified")
         self.signing_address, self.signers, self.instances = None, gateway.signers, False
+        self.receipt_required = True
         self._take_keyset(gateway.keyset, "the quote binds its receipt keys", check)
         return check.attestation(self.model, "gateway's keys bound to our nonce",
                                  signers=self.signers)
@@ -1199,7 +1209,10 @@ class TeeClient:
         VERIFIED: signed by the attested key, for these exact bytes, its receipt holding
         where it was read. SIGNED: signed by it, the bytes not compared. FAILED: signed
         by another key, or for other bytes, or a receipt that does not hold. UNCHECKED:
-        no record could be read, or the gateway's keys changed since it was attested.
+        no record could be read, the gateway's keys changed since it was attested, or -
+        for a model attested through the gateway alone (receipt_required) - no receipt
+        held under the attested keys, the only word that the model's own enclave
+        answered it.
         Until Nov 2026 only the signer was checked, so "signed" said nothing of the text
         shown. From SealedLore (Nov 2026)."""
         lookup = receipt_id or response_id
@@ -1245,6 +1258,17 @@ class TeeClient:
                 return UNCHECKED, str(e)
             if not holds:
                 return FAILED, "RedPill's receipt for it does not hold"
+        if self.receipt_required and not read:
+            # Attested through the gateway alone, the gateway's signature says only that
+            # the reply passed through it: its receipt is its word that the model's own
+            # enclave answered, and without one that holds under the attested keys, that
+            # much was not checked. A model attested itself needs none: its own key
+            # signed the record. From SealedLore (Nov 11 2026).
+            why = ("its receipt could not be read under the attested keys"
+                   if isinstance(receipt, dict) else "it came with no receipt")
+            return UNCHECKED, (f"{why}, and through RedPill's gateway alone only a receipt "
+                               f"says the model's own enclave answered it: the gateway's "
+                               f"signature on its record says only that it passed through")
         held = "; RedPill's receipt for it holds" if read else ""
         if compared:
             return VERIFIED, (f"signed by the attested key {key}, for the exact bytes "

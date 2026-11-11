@@ -386,6 +386,29 @@ class TestTee:
         ai.chat([], settings, json_reply=False)
         assert ai.session_of(settings).last_receipt().state == private_ai.VERIFIED
 
+    def test_through_the_gateway_alone_a_reply_needs_a_receipt_that_holds(self, tee_stream):
+        """A model attested through RedPill's gateway alone has its own enclave only as
+        the gateway's word, in each reply's receipt: a reply with none is not verified
+        on the gateway's signature alone, and says why. From SealedLore (dd39efc), by
+        way of DA Assistant (9b9743b)."""
+        from tests.test_attestation import RELAYED, ShapedNanoGpt
+        bare = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound")
+        tee_stream(bare)
+        settings = private_settings(model="TEE/deepseek-v3.2", server=bare)
+        assert ai.chat([], settings, json_reply=False) == "Hello there"
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.UNCHECKED
+        assert "it came with no receipt" in receipt.detail
+        assert private_ai.receipt_label(receipt)[0] == "⚠ TEE, not verified"
+        held = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound", receipts=True,
+                             receipt_id="rcpt-1")
+        tee_stream(held)
+        settings = private_settings(model="TEE/deepseek-v3.2", server=held)
+        ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.VERIFIED, receipt.detail
+        assert "RedPill's receipt for it holds" in receipt.detail
+
     def test_strict_attests_again_after_a_reply_less_than_verified(self):
         """Signed by the attested key but not shown to be for the text that came, no
         record to read, or a record of other bytes: less than a verified reply, and
