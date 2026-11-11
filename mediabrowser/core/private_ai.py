@@ -1946,10 +1946,10 @@ class PrivacySession:
                     "when you send, how much, and the cost.")
         if self.kind == TEE:
             return ("nano-gpt's gateway sees what is sent in the clear: the frames, the "
-                    "names, the tracklist. A reply is checked against the record the "
-                    "attested key signed, for the exact bytes that came, where nano-gpt "
-                    "passes its stream on as it was - where the model's provider signs "
-                    "one: Chutes signs none, so its replies read not verified. Not "
+                    "names, the tracklist. A reply of a model whose provider signs them "
+                    "is checked against the record the attested key signed, for the "
+                    "exact bytes that came, where nano-gpt passes its stream on as it "
+                    "was; Chutes signs none, so its replies read not verified. Not "
                     "checked by this app: what was sent - the record hashes the request "
                     "as nano-gpt passed it on, so that it was this app's rests on "
                     "nano-gpt; where nano-gpt has no report of RedPill's gateway's own "
