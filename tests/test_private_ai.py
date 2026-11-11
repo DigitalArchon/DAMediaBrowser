@@ -1063,6 +1063,8 @@ class TestTheRealSealedClient:
                     f"endpoint has moved, put its new address in Settings → AI.") \
                 in str(caught.value)
             assert "Private Mode" not in str(caught.value).split("redirected")[1]
+            assert "Settings → AI. The sealed request was refused unread" in \
+                str(caught.value), "as DA Assistant's says it (b9ce823)"
         client, _ = self.make(lambda r: httpx.Response(
             103, headers={"x-nanogpt-private-mode": "tinfoil"}, content=self.stream_body()))
         with pytest.raises(ai.AIError, match="HTTP 103 instead of a sealed reply"):
@@ -1315,6 +1317,20 @@ class TestTheSdkFetchesThroughNetguard:
         yield state
         for name in [n for n in sys.modules if n == "tinfoil" or n.startswith("tinfoil.")]:
             sys.modules.pop(name, None)
+
+    def test_netguards_session_for_it_follows_none_unless_its_fetch_is_public(self, sdk):
+        """As DA Assistant's netguard.session(follow=...) (b9ce823): none by default, said
+        in redirected()'s words; follow=True - what guard_sdk_requests hands the SDK, whose
+        fetches are public - where netguard's rule allows."""
+        import requests
+        sdk["answers"][self.URL] = "https://objects.example/release"
+        with pytest.raises(requests.RequestException) as caught:
+            netguard.requests_session().get(self.URL)
+        assert str(caught.value) == netguard.redirected(
+            self.URL, "https://objects.example/release", 302)
+        assert sdk["sent"] == [self.URL]
+        assert netguard.requests_session(follow=True).get(self.URL).text == "fine"
+        assert sdk["sent"] == [self.URL, self.URL, "https://objects.example/release"]
 
     def test_guarded_a_redirect_into_the_clear_is_refused(self, sdk):
         import importlib

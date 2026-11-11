@@ -78,7 +78,7 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 from . import dcap, netguard, nras
 from .ethsig import keccak256, recover_personal
@@ -179,10 +179,6 @@ UPSTREAMS_NOTE = (
     "about one small download a model an hour, never more than 1 MB, and never for "
     "models Chutes serves itself, whose records are megabytes each. What it names is "
     "RedPill's word, matched to the receipt the attested gateway signed.")
-# What a redirect from the AI endpoint says to do. Nothing that carries the key or what
-# was sent follows one (netguard.Redirected, sealed's relay), so an endpoint that has
-# moved is the user's to set again. After SealedLore's e947938 (Nov 11 2026).
-ENDPOINT_MOVED = "if the endpoint has moved, put its new address in Settings → AI"
 E2EE_NOTE = ("End-to-end encrypted: every message is sealed on this machine to a key only "
              "the model's attested enclave holds. nano-gpt relays ciphertext; it sees your "
              "account, the model, timing, sizes and cost, never the text.")
@@ -825,9 +821,11 @@ class TeeClient:
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
-        # netguard's: a redirect is followed only where the request could have been
-        # sent in the first place, and never from https to plain http.
-        self.session = session or netguard.Session()
+        # netguard's, following a redirect only where the request could have been sent in
+        # the first place, never from https to plain http: for the public fetches made
+        # with it (Intel's, NVIDIA's, RedPill's records), which carry no key. nano-gpt's
+        # own, which carry the key, follow none (_get).
+        self.session = session or netguard.Session(follow=True)
         self.signing_address = None
         # Who may sign a reply's record: the attested signing key, or every key of the
         # keyset the gateway's quote binds (lower case addresses).
@@ -855,11 +853,23 @@ class TeeClient:
         last, last_status = "", None
         for base in [self._base] if self._base else _bases(self.api_url):
             try:
+                # No redirect is followed with the key: it would re-send the request
+                # wherever it pointed (netguard.redirected).
                 response = self.session.get(f"{base}{path}", params=params,
-                                            headers=headers, timeout=timeout)
+                                            headers=headers, timeout=timeout,
+                                            allow_redirects=False)
             except netguard.RequestError as e:
                 last, last_status = str(e), None
                 continue
+            if 300 <= response.status_code < 400:
+                location = response.headers.get("location")
+                error = PrivacyError(netguard.redirected(
+                    f"{base}{path}", urljoin(f"{base}{path}", location) if location else "",
+                    response.status_code))
+                error.status_code = response.status_code
+                error.reason = ""
+                error.redirected = True
+                raise error
             if response.status_code == 404:
                 last, last_status = f"{base}{path}: 404", 404
                 continue
@@ -1502,7 +1512,9 @@ class TeeClient:
                                           "before sending"))
         try:
             body = self._signature(lookup, route, wait=receipt_id is not None)
-        except PrivacyError:
+        except PrivacyError as e:
+            if getattr(e, "redirected", False):
+                return ReplyCheck(UNCHECKED, str(e))
             # Live: some TEE/ models' providers keep no record of a reply.
             return ReplyCheck(UNCHECKED, "the provider kept no signature for this reply")
         text, signature = body.get("text"), body.get("signature")

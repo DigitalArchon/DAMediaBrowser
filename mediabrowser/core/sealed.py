@@ -56,7 +56,6 @@ from . import netguard
 from .dcap import since_boot
 from .private_ai import (
     E2EE,
-    ENDPOINT_MOVED,
     Attestation,
     ModelRetired,
     PrivacyError,
@@ -200,15 +199,25 @@ def _hardware(document):
     return kind
 
 
+def _redirected(url, response):
+    """What one of Private Mode's relay paths answered with a redirect says
+    (netguard.redirected): where it pointed, without a password. Neither is followed."""
+    location = response.headers.get("location")
+    target = urljoin(url, location) if location else ""
+    return netguard.redirected(url, target, response.status_code)
+
+
 class _GuardedRequests(types.ModuleType):
     """requests, as Tinfoil's SDK is given it: its functions each send through a session
-    of netguard's (netguard.requests_session()), and Session is that session's class;
-    everything else - its exceptions, Response, the rest - is requests' own."""
+    of netguard's (netguard.requests_session(follow=True): what it fetches is public -
+    releases, certificates, the enclave's report - and carries no key), and Session is
+    that session's class; everything else - its exceptions, Response, the rest - is
+    requests' own."""
 
     def __init__(self, real):
         super().__init__(real.__name__, real.__doc__)
         self._real = real
-        with netguard.requests_session() as made:
+        with netguard.requests_session(follow=True) as made:
             self.Session = type(made)
 
     def __getattr__(self, name):
@@ -217,7 +226,7 @@ class _GuardedRequests(types.ModuleType):
         return getattr(self._real, name)
 
     def request(self, method, url, **kwargs):
-        with netguard.requests_session() as session:
+        with netguard.requests_session(follow=True) as session:
             return session.request(method=method, url=url, **kwargs)
 
     def get(self, url, params=None, **kwargs):
@@ -556,6 +565,9 @@ class PrivateModeClient:
         finally:
             if self._preflight_client is None:
                 client.close()
+        if 300 <= response.status_code < 400:
+            # It carries the key: never followed (follow_redirects=False), and said.
+            raise PrivacyError(_redirected(self.enclave.relay + "/preflight", response))
         if response.status_code >= 400:
             # Every path's backstop - a model retired part way through a run, the connection
             # test: say why, not just that it was refused.
@@ -563,8 +575,6 @@ class PrivateModeClient:
             raise PrivacyError(f"nano-gpt refused the Private Mode request "
                                f"(HTTP {response.status_code}; its relay said: "
                                f"{_error_text(response)})")
-        if response.status_code >= 300:
-            raise _redirected(self.enclave.relay + "/preflight", response)
         try:
             data = response.json()
         except ValueError as e:
@@ -644,11 +654,6 @@ class PrivateModeClient:
                     continue
                 raise PrivacyError(f"HTTP {response.status_code}; nano-gpt's relay said "
                                    f"(unauthenticated, not the model): {text}")
-            if 300 <= response.status_code < 400:
-                # Not followed (follow_redirects=False): it would carry the key and the
-                # sealed body to wherever it points. Said, with where to.
-                response.close()
-                raise _redirected(self.endpoint, response)
             if not 200 <= response.status_code < 300:
                 # Only a 2xx reply is opened. EHBP hands on any other that carries no
                 # response nonce just as it came, unsealed (ehbp's
@@ -656,6 +661,10 @@ class PrivateModeClient:
                 # plaintext stream in it would have been read, and shown, as a sealed
                 # reply.
                 response.close()
+                if 300 <= response.status_code < 400:
+                    # Not followed (follow_redirects=False): said, and where it pointed.
+                    raise PrivacyError(_redirected(self.endpoint, response) + " The "
+                                       "sealed request was refused unread")
                 raise PrivacyError(f"nano-gpt's relay answered HTTP "
                                    f"{response.status_code} instead of a sealed reply, "
                                    f"which was refused unread")
@@ -687,17 +696,6 @@ class PrivateModeClient:
         if not (finish_reason and saw_done):
             # The proxy's private_stream_incomplete: whatever came may be partial.
             raise PrivacyError("the encrypted reply ended before it was complete")
-
-
-def _redirected(url, response):
-    """A redirect from nano-gpt's relay, as the error to raise: the client follows none
-    (each request carries the key, and a sealed one what was sent), so where it pointed
-    is said, without a password, and where a moved endpoint's address goes. As
-    netguard.Redirected says it for the app's other requests."""
-    location = response.headers.get("location")
-    target = urljoin(url, location) if location else None
-    return PrivacyError(netguard.redirect_said(url, response.status_code, target,
-                                               ENDPOINT_MOVED))
 
 
 def _error_text(response):

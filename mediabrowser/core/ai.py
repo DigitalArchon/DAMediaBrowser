@@ -203,8 +203,7 @@ def _session(settings: dict) -> private_ai.PrivacySession:
 def _tee_client(api_url, api_key, model) -> private_ai.TeeClient:
     """A TEE/ model's client, its requests through netguard as ever, and the one of
     them that goes somewhere of its own listed on What Was Sent (_ListedLookups)."""
-    return private_ai.TeeClient(api_url, api_key, model,
-                                session=_ListedLookups(endpoint=api_url))
+    return private_ai.TeeClient(api_url, api_key, model, session=_ListedLookups())
 
 
 class _ListedLookups(netguard.Session):
@@ -219,22 +218,14 @@ class _ListedLookups(netguard.Session):
     HOW = ("Asked RedPill's api.redpill.ai directly, not through Nano-GPT: it sees this "
            "computer's internet address, or the proxy's")
 
-    def __init__(self, endpoint=None):
-        self.endpoint = endpoint
+    def __init__(self):
+        # TeeClient's own: its public fetches follow a redirect where netguard allows,
+        # and nano-gpt's, with the key, none (TeeClient._get).
+        super().__init__(follow=True)
 
     def request(self, method, url, *args, **kwargs):
         if not str(url).startswith(private_ai.SESSION_RECORDS):
-            try:
-                return super().request(method, url, *args, **kwargs)
-            except netguard.RequestError as exc:
-                moved = exc.__cause__
-                if isinstance(moved, netguard.Redirected) and self.endpoint and \
-                        urlparse(str(url)).netloc == urlparse(self.endpoint).netloc:
-                    # nano-gpt's TEE checks carry the key, so none follows a redirect,
-                    # and the endpoint is the user's to set: said as the AI's are.
-                    raise netguard.RequestError(
-                        moved.said(private_ai.ENDPOINT_MOVED)) from moved
-                raise
+            return super().request(method, url, *args, **kwargs)
         try:
             response = super().request(method, url, *args, **kwargs)
         except netguard.RequestError as exc:
@@ -490,7 +481,7 @@ def _failed(exc: Exception, url: str) -> AIError:
     redirect is followed by none of the AI's requests: it says where the
     endpoint pointed, and where to put its new address if it has moved."""
     if isinstance(exc, netguard.Redirected):
-        return AIError(exc.said(private_ai.ENDPOINT_MOVED))
+        return AIError(netguard.redirected(exc.source, exc.target, exc.code))
     if isinstance(exc, urllib.error.HTTPError):
         return AIError(_http_error_message(exc))
     if isinstance(exc, netguard.REFUSALS):

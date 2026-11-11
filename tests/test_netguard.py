@@ -272,7 +272,7 @@ class TestSession:
             netguard.Session().get("http://intel.example/")
         start = server({"/go": (302, {"Location": "http://pcs.example/"}, b"")})
         with pytest.raises(netguard.RequestError, match="not followed"):
-            netguard.Session().get(start.url + "/go")
+            netguard.Session(follow=True).get(start.url + "/go")
         with pytest.raises(netguard.RequestError):
             netguard.Session().get("http://127.0.0.1:1/")   # nothing listens there
 
@@ -283,13 +283,34 @@ class TestSession:
         start = server({"/attest": (307, {"Location": other.url + "/landed"}, b""),
                         "/nras": (302, {"Location": other.url + "/landed"}, b"")})
         with pytest.raises(netguard.RequestError) as caught:
-            netguard.Session().get(start.url + "/attest",
-                                   headers={"Authorization": "Bearer sk-1"})
+            netguard.Session(follow=True).get(start.url + "/attest",
+                                              headers={"Authorization": "Bearer sk-1"})
         assert str(caught.value) == (f"{start.url}/attest redirected (HTTP 307) to "
                                      f"{other.url}/landed. Nothing was sent there.")
         with pytest.raises(netguard.RequestError, match=r"redirected \(HTTP 302\)"):
-            netguard.Session().post(start.url + "/nras", json={"evidence": "a GPU's"})
+            netguard.Session(follow=True).post(start.url + "/nras",
+                                               json={"evidence": "a GPU's"})
         assert other.seen == []
+
+    def test_a_session_follows_none_unless_its_fetch_is_public(self, server,
+                                                               real_transport):
+        """As DA Assistant's netguard.session() (b9ce823): none by default; follow=True
+        for a public fetch, where netguard's rule allows; and a request's
+        allow_redirects=False has the 3xx come back as the Response it is."""
+        other = server({"/landed": (200, {}, b"{}")}, host="127.0.0.2")
+        start = server({"/go": (302, {"Location": other.url + "/landed"}, b"")})
+        with pytest.raises(netguard.RequestError) as caught:
+            netguard.Session().get(start.url + "/go")
+        assert str(caught.value) == (f"{start.url}/go redirected (HTTP 302) to "
+                                     f"{other.url}/landed. Nothing was sent there.")
+        assert other.seen == []
+        assert netguard.Session(follow=True).get(start.url + "/go").status_code == 200
+        assert len(other.seen) == 1
+        answer = netguard.Session(follow=True).get(start.url + "/go", allow_redirects=False)
+        assert answer.status_code == 302
+        assert answer.headers.get("location") == answer.headers["LOCATION"] == \
+            other.url + "/landed"
+        assert len(other.seen) == 1
 
 
 class Everywhere(dict):
@@ -347,16 +368,32 @@ class TestNothingThatCarriesWhatWasSentFollowsARedirect:
             f"{other.url}/v1/chat/completions. {self.MOVED}")
         assert other.seen == []
 
-    def test_privacy_modes_tee_checks_which_carry_the_key(self, moved, real_transport):
+    def test_privacy_modes_tee_checks_which_carry_the_key(self, moved, server,
+                                                         real_transport):
+        """TeeClient._get asks with allow_redirects=False, as DA Assistant's does
+        (b9ce823): a redirect is said at once, where it pointed, and a reply's record
+        that was redirected reads unchecked in those words. A public fetch on the same
+        session still follows one, where netguard's rule allows."""
         from mediabrowser.core import private_ai
         start, other = moved(308)
         client = ai._tee_client(start.url + "/v1", "sk-1", "TEE/glm-5.3")
         with pytest.raises(private_ai.PrivacyError) as caught:
             client._get("/tee/attestation", {"model": "TEE/glm-5.3"})
-        assert f"redirected (HTTP 308) to {other.url}/" in str(caught.value)
-        assert self.MOVED in str(caught.value)
-        assert other.seen == [] and all(
-            seen["headers"].get("Authorization") == "Bearer sk-1" for seen in start.seen)
+        assert str(caught.value) == (f"{start.url}/v1/tee/attestation redirected (HTTP "
+                                     f"308) to {other.url}/v1/tee/attestation?model="
+                                     f"TEE%2Fglm-5.3. {self.MOVED}")
+        assert len(start.seen) == 1 and start.seen[0]["headers"].get(
+            "Authorization") == "Bearer sk-1"
+        client.signers = frozenset({"0xab"})
+        state, detail = client.check_reply("chatcmpl-1")
+        assert state == private_ai.UNCHECKED and "redirected (HTTP 308)" in detail
+        assert self.MOVED in detail
+        assert len(start.seen) == 2, "the record's lookup was not followed"
+        assert other.seen == []
+        intel = server({"/tcb": (200, {}, b"{}")}, host="127.0.0.3")
+        public = server({"/tcb": (302, {"Location": intel.url + "/tcb"}, b"")})
+        assert client.session.get(public.url + "/tcb").status_code == 200
+        assert len(intel.seen) == 1
 
     def test_a_musicbrainz_search_and_setlist_fm(self, moved, real_transport, monkeypatch):
         start, other = moved(301)
@@ -409,7 +446,8 @@ class TestTheProviderLookup:
                           (200, {"Content-Type": "application/json"},
                            json.dumps(self.RECORD).encode())})
         monkeypatch.setattr(private_ai, "SESSION_RECORDS", records.url + "/v1/aci/sessions/")
-        found = private_ai._session_record(netguard.Session(), self.session_id())
+        found = private_ai._session_record(netguard.Session(follow=True),
+                                       self.session_id())
         assert (found.name, found.scope, found.expires) == ("phala-244", "model_instance", 2)
         assert "Authorization" not in records.seen[0]["headers"]
         assert private_ai.SESSION_RECORDS.startswith(records.url)
@@ -422,7 +460,8 @@ class TestTheProviderLookup:
         monkeypatch.setattr(private_ai, "SESSION_RECORDS", moved.url + "/v1/aci/sessions/")
         with pytest.raises(private_ai.PrivacyError, match=r"api\.redpill\.ai could not be "
                                                           r"reached \(RequestError\)"):
-            private_ai._session_record(netguard.Session(), self.session_id())
+            private_ai._session_record(netguard.Session(follow=True),
+                                       self.session_id())
         assert len(moved.seen) == 1, "nothing was sent where it pointed"
         assert private_ai._records == {}
 
@@ -433,7 +472,8 @@ class TestTheProviderLookup:
         monkeypatch.setenv("ALL_PROXY", "socks5h://127.0.0.1:9050")
         assert private_ai.SESSION_RECORDS.startswith("https://api.redpill.ai/")
         with pytest.raises(private_ai.PrivacyError, match="could not be reached"):
-            private_ai._session_record(netguard.Session(), self.session_id())
+            private_ai._session_record(netguard.Session(follow=True),
+                                       self.session_id())
         assert sent == []
 
     def test_a_record_larger_than_is_read_is_left_unread(self, server, real_transport,
@@ -443,7 +483,8 @@ class TestTheProviderLookup:
                       (200, {}, b" " * (private_ai.SESSION_RECORD_MAX_BYTES + 1))})
         monkeypatch.setattr(private_ai, "SESSION_RECORDS", big.url + "/v1/aci/sessions/")
         with pytest.raises(private_ai.PrivacyError, match="KB, more than is read"):
-            private_ai._session_record(netguard.Session(), self.session_id())
+            private_ai._session_record(netguard.Session(follow=True),
+                                       self.session_id())
 
 
 class TestEveryClientGoesThroughIt:

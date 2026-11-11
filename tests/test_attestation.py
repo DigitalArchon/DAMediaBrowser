@@ -305,7 +305,8 @@ class FakeNanoGpt:
         return TeeClient(url, key, model, session=self, intel=self.intel_verify,
                          nvidia=self.nvidia_verify)
 
-    def get(self, url, params=None, headers=None, timeout=None, stream=False):
+    def get(self, url, params=None, headers=None, timeout=None, stream=False,
+            allow_redirects=True):
         if url.startswith(privacy.SESSION_RECORDS):
             self.records_asked.append({"url": url, "headers": dict(headers or {}),
                                        "stream": stream, "timeout": timeout})
@@ -610,7 +611,7 @@ class FixtureSession:
     def close(self):
         self.closed = True
 
-    def get(self, url, params=None, headers=None, timeout=None):
+    def get(self, url, params=None, headers=None, timeout=None, **_kwargs):
         if "/tee/attestation" in url:
             return FakeResponse(200, {
                 "signing_address": self.fixture["signing_address"],
@@ -643,7 +644,7 @@ class KeysOutOfReach(FakeNanoGpt):
         super().__init__(**kwargs)
         self.fixture = fixture
 
-    def get(self, url, params=None, headers=None, timeout=None):
+    def get(self, url, params=None, headers=None, timeout=None, **_kwargs):
         if url == nras.JWKS_URL:
             self.gets.append(url)
             return FakeResponse(503, {})
@@ -1262,7 +1263,8 @@ class ShapedNanoGpt(FakeNanoGpt):
         self.respond = respond
         self.nras_nonces = []
 
-    def get(self, url, params=None, headers=None, timeout=None, stream=False):
+    def get(self, url, params=None, headers=None, timeout=None, stream=False,
+            allow_redirects=True):
         if "/tee/attestation" in url and (params.get("report") != "aci"
                                           or self.aci in (None, "ignored")):
             self.asked(url, params, headers, timeout)
@@ -1271,7 +1273,7 @@ class ShapedNanoGpt(FakeNanoGpt):
                                                    "models served through RedPill"})
             status, body = self.respond(params["nonce"])
             return FakeResponse(status, body)
-        return super().get(url, params, headers, timeout, stream)
+        return super().get(url, params, headers, timeout, stream, allow_redirects)
 
     def post(self, url, json=None, **kwargs):
         if url.startswith(privacy.NRAS_URL):

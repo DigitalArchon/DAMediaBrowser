@@ -43,7 +43,9 @@ server pointed, without a password (Redirected), and nothing is sent
 there. A public fetch with none of those - a cover, Intel's certificates,
 RedPill's session records - follows one only to an address that could have
 been used in the first place: never from https to plain http, and never
-from a server out there to one on this machine's own network.
+from a server out there to one on this machine's own network. Session and
+requests_session, as DA Assistant's session() (b9ce823), follow none
+unless made for public fetches (follow=True).
 
 A server on this machine or its own network is reached directly, whatever
 the environment's proxy says: plain http to it through a proxy elsewhere
@@ -113,6 +115,19 @@ class Redirected(urllib.error.URLError):
         """The error in words (redirect_said); `moved`, what to do if the address has
         moved."""
         return redirect_said(self.source, self.code, self.target, moved)
+
+
+# What a redirect from the AI endpoint says to do: the address is the user's to set, and
+# nothing that carries the key or what was sent follows one (redirected).
+ENDPOINT_MOVED = "if the endpoint has moved, put its new address in Settings → AI"
+
+
+def redirected(source, target, status) -> str:
+    """What a request to the AI endpoint answered with a redirect it did not follow says:
+    where it pointed, without a password, that nothing was sent there, and where a moved
+    endpoint's address goes. DA Assistant's name and order of arguments, which its
+    privacy.py and sealed.py call (b9ce823), in this app's words (redirect_said)."""
+    return redirect_said(source, status, target or None, ENDPOINT_MOVED)
 
 
 def redirect_said(source, code, target, moved="") -> str:
@@ -325,6 +340,8 @@ class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         newurl = urljoin(req.full_url, newurl)
+        if getattr(req, "allow_redirects", True) is False:
+            return None         # the 3xx itself is the answer (Session's allow_redirects)
         if not follows_redirects(req):
             fp.close()
             raise Redirected(req.full_url, code, newurl)
@@ -459,13 +476,33 @@ def _has_userinfo(url) -> bool:
 # --- a small Session, for the attestation checks ---------------------------
 
 
+class Headers(dict):
+    """A response's headers, looked up in any case, as requests' are: a redirect's
+    "location" is the server's "Location"."""
+
+    def _key(self, name):
+        if dict.__contains__(self, name):
+            return name
+        lowered = str(name).lower()
+        return next((key for key in self if str(key).lower() == lowered), name)
+
+    def get(self, name, default=None):
+        return dict.get(self, self._key(name), default)
+
+    def __getitem__(self, name):
+        return dict.__getitem__(self, self._key(name))
+
+    def __contains__(self, name):
+        return dict.__contains__(self, self._key(name))
+
+
 class Response:
     """Just enough of a requests Response for what the attestation checks
     read: the status, the headers, the body."""
 
     def __init__(self, status_code: int, headers, content: bytes, url: str):
         self.status_code = status_code
-        self.headers = dict(headers or {})
+        self.headers = Headers(headers or {})
         self.content = content
         self.url = url
 
@@ -521,17 +558,29 @@ class Session:
     """GET and POST as requests has them, over this module's urlopen: an
     answer with an error status comes back as a Response, as requests gives
     one; a refused address, a refused redirect or a network failure raises
-    RequestError."""
+    RequestError.
 
-    def get(self, url, params=None, headers=None, timeout=30, stream=False):
+    It follows no redirect: one is a RequestError saying where it pointed
+    (Redirected), as DA Assistant's netguard.session() has it. `follow`: for a
+    public fetch - Intel's and NVIDIA's evidence, RedPill's session records -
+    which may follow one where redirect_problem allows, unless the request
+    carries a key or a body after all (follows_redirects). With a request's
+    `allow_redirects` False, as requests has it, a 3xx comes back as the
+    Response it is, for the caller to say."""
+
+    def __init__(self, follow=False):
+        self.follow = follow
+
+    def get(self, url, params=None, headers=None, timeout=30, stream=False,
+            allow_redirects=True):
         return self.request("GET", url, params=params, headers=headers, timeout=timeout,
-                            stream=stream)
+                            stream=stream, allow_redirects=allow_redirects)
 
     def post(self, url, json=None, headers=None, timeout=30) -> Response:
         return self.request("POST", url, json=json, headers=headers, timeout=timeout)
 
     def request(self, method, url, params=None, json=None, headers=None,
-                timeout=30, stream=False):
+                timeout=30, stream=False, allow_redirects=True):
         """A Response; with `stream`, a StreamedResponse - the answer still open,
         for the caller to read as much of as it will and close - unless it is an
         error status, which comes back read, as ever."""
@@ -545,8 +594,10 @@ class Session:
             data = _json.dumps(json).encode("utf-8")
             headers.setdefault("Content-Type", "application/json")
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        if not allow_redirects:
+            request.allow_redirects = False
         try:
-            handle = urlopen(request, timeout)
+            handle = urlopen(request, timeout, follow_redirects=self.follow)
             if stream:
                 return StreamedResponse(handle, handle.geturl())
             with handle:
@@ -594,14 +645,16 @@ def env_proxy_for(url) -> str | None:
 # --- requests, as Tinfoil's SDK is given it ---------------------------------
 
 
-def requests_session():
+def requests_session(follow=False):
     """A requests Session held to this module's rules - for Tinfoil's SDK,
     which fetches with requests, and is the only part of the app that does
     (see sealed.guard_sdk_requests). requests follows a redirect anywhere,
-    https to plain http included; this follows one only where the request
-    could have gone in the first place, and reaches a server on this
-    machine's own network directly. Raises ImportError without requests,
-    which only the SDK brings."""
+    https to plain http included; this follows none (RedirectRefused-like
+    InvalidRedirect, in redirected()'s words), or with `follow` - for public
+    fetches, as the SDK's are - one only where the request could have gone in
+    the first place; and it reaches a server on this machine's own network
+    directly. DA Assistant's netguard.session(follow=...). Raises ImportError
+    without requests, which only the SDK brings."""
     import requests
 
     class InvalidRedirect(requests.exceptions.InvalidURL):
@@ -611,8 +664,14 @@ def requests_session():
         def get_redirect_target(self, response):
             target = super().get_redirect_target(response)
             if target:
-                found = redirect_problem(response.url, urljoin(response.url, target))
+                absolute = urljoin(response.url, target)
+                found = (redirect_problem(response.url, absolute) if follow
+                         else redirected(response.url, absolute, response.status_code))
                 if found:
+                    try:
+                        response.close()        # its connection, back to the pool
+                    except Exception:  # noqa: BLE001
+                        pass
                     raise InvalidRedirect(found, response=response)
             return target
 
