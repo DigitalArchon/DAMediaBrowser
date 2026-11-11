@@ -9,6 +9,7 @@ import pytest
 
 from mediabrowser.core import ai, outbound, privacy, sealed, store
 from tests.test_chapters_dialog import dialog_for, file_video
+from tests.test_private_ai import tee_stream  # noqa: F401 - a fixture
 
 
 @pytest.fixture(autouse=True)
@@ -234,6 +235,63 @@ class TestTheWindow:
                         outbound.CLEAR, "Over https")
         window.show_what_was_sent()
         assert window._sent_dialog is dialog and dialog.tree.topLevelItemCount() == 1
+
+    def test_a_tee_replys_marks_land_on_their_own_rows_with_the_window_open(
+            self, window, tee_stream, monkeypatch):
+        """DA Assistant's lab run found its chat window marking what was sent before the
+        answer had replaced its placeholder, so the answer took the question's place
+        (8490f19); its tests' fakes had answered before the page was drawn. Here What
+        Was Sent's entry for the request is written once, after its reply's check, and a
+        row is only ever added: reproduced the way it happens in the real window - the
+        window open and drawn first, the request made on a worker thread as a job's is,
+        its stream read seven bytes at a time while the window redraws, the attestation
+        and the request each told across threads - and every row is its own entry, in
+        order, the request's with its mark and its reply's, the provider named."""
+        import time
+
+        from PySide6.QtWidgets import QApplication
+
+        from mediabrowser.core import private_ai
+        from tests.test_attestation import TINFOIL, FakeNanoGpt
+        from tests.test_private_ai import private_settings
+        monkeypatch.setattr(private_ai, "RECEIPT_RETRY_SECONDS", 0)
+        monkeypatch.setattr(private_ai, "_records", {})
+        window.show_what_was_sent()
+        dialog = window._sent_dialog
+        QApplication.processEvents()
+        assert dialog.tree.topLevelItemCount() == 0
+        server = FakeNanoGpt(aci="bound", receipts=True, receipt_id="rcpt-1", record=TINFOIL)
+        tee_stream(server)
+        save(**{ai.SETTING_NAME_UPSTREAMS: True})
+        settings = private_settings(server=server, **{ai.SETTING_NAME_UPSTREAMS: True})
+        answered = []
+        job = threading.Thread(target=lambda: answered.append(ai.chat(
+            [{"role": "user", "content": "Glass Harbor?"}], settings, json_reply=False)))
+        job.start()
+        while job.is_alive():
+            QApplication.processEvents()        # the window drawing as the reply comes
+            time.sleep(0.005)
+        job.join()
+        QApplication.processEvents()
+        assert answered, "the reply came"
+        entries = outbound.entries()
+        assert [entry.protection for entry in entries] == [outbound.CHECK, outbound.TEE]
+        assert dialog.tree.topLevelItemCount() == len(entries)
+        for row, entry in enumerate(entries):
+            item = dialog.tree.topLevelItem(row)
+            assert (item.text(1), item.text(2), item.toolTip(3)) == (
+                entry.service, entry.what, entry.how), row
+        request = dialog.tree.topLevelItem(1)
+        assert "received by the attested TEE" in request.toolTip(3)
+        dialog.tree.setCurrentItem(request)
+        assert "Glass Harbor?" in dialog.details.toPlainText()
+        assert "reply: ✓ TEE, verified · run by Tinfoil" in dialog.details.toPlainText()
+        # Drawn again from the list, it is the same rows.
+        dialog.close()
+        window.show_what_was_sent()
+        assert [dialog.tree.topLevelItem(row).toolTip(3)
+                for row in range(dialog.tree.topLevelItemCount())] == [
+            entry.how for entry in entries]
 
 
 class TestAskAi:
