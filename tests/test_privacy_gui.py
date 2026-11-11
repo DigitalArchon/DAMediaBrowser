@@ -72,6 +72,37 @@ class TestSettings:
         assert dialog.where_label.text() == "Nothing is sent to the AI."
         assert not dialog.privacy_mode_check.isEnabled()
 
+    def test_check_attestation_leads_with_what_was_attested(self, app, window,
+                                                            monkeypatch):
+        """RedPill's gateway is what is attested for a model it serves, not the machine
+        that runs it: the result says so first, then the checks that held (SealedLore
+        9af15c1, by way of DA Assistant's 98e939a)."""
+        from mediabrowser.core import private_ai
+        from tests.test_attestation import FakeNanoGpt
+        from tests.test_chapters_dialog import pump
+
+        def attested(settings):
+            session = private_ai.PrivacySession(
+                settings[ai.SETTING_BASE_URL], "k", settings[ai.SETTING_PRIVATE_MODEL],
+                tee_factory=FakeNanoGpt(aci="bound").tee_client)
+            session.ensure()
+            return session
+
+        monkeypatch.setattr(ai, "check_attestation", attested)
+        save(**{privacy.AI: True, ai.SETTING_PRIVACY_MODE: True,
+                ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"})
+        dialog = settings_dialog(window)
+        dialog.check_attestation()
+        assert pump(app, lambda: dialog.attest_status.text().startswith("TEE gateway"))
+        said = dialog.attest_status.text()
+        assert said.startswith("TEE gateway attested (RedPill's gateway, not the model's "
+                               "host, GPUs not tied to the quote)"), said
+        assert ". Attested: RedPill's TEE gateway, which passes this model's requests on " \
+            "to the machine that runs it." in said
+        assert "That machine is not attested by this app" in said
+        assert said.index("Attested: RedPill's") < said.index("the gateway's quote binds")
+        assert dialog.attest_status.property("tone") == "warning"
+
     def test_without_tinfoils_client_the_model_line_says_how_to_get_it(self, window,
                                                                       monkeypatch):
         monkeypatch.setattr(sealed, "_known", (False, sealed.INSTALL_HINT))

@@ -44,7 +44,7 @@ EMPTY = "Nothing has been sent since the app started."
 
 HOW = {
     outbound.SEALED: "sealed end to end",
-    outbound.TEE: "to an attested enclave",
+    outbound.TEE: "to a TEE model, attested first",
     outbound.CLEAR: "over https",
     outbound.CHECK: "an attestation",
 }
@@ -70,7 +70,7 @@ def summary(entries) -> str:
     parts = []
     for protection, one, many in (
         (outbound.SEALED, "sealed end to end", "sealed end to end"),
-        (outbound.TEE, "to an attested enclave", "to attested enclaves"),
+        (outbound.TEE, "to a TEE model, attested first", "to TEE models, attested first"),
         (outbound.CLEAR, "over https", "over https"),
         (outbound.CHECK, "attestation", "attestations"),
     ):

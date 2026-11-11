@@ -126,7 +126,8 @@ def status_text(found: dict[str, Service]) -> str:
         if service.choice == privacy.AI and service.where.startswith("sealed"):
             names.append("AI, sealed end to end")
         elif service.choice == privacy.AI and "attested" in service.where:
-            names.append("AI, attested enclave")
+            # Not "enclave": most TEE/ models are attested as RedPill's gateway.
+            names.append("AI, TEE attested first")
         else:
             names.append(service.short)
     return "Online: " + " · ".join(names)

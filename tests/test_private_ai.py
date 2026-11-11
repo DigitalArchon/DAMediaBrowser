@@ -239,6 +239,10 @@ class TestTee:
         check, listed = outbound.entries()
         assert (check.protection, check.outcome) == (outbound.CHECK, outbound.SENT)
         assert "nothing about your videos" in check.how
+        # What was attested leads, before the checks that held.
+        assert "Attested: the enclave whose key signs this model's replies" in check.detail
+        assert check.detail.index("Attested: the enclave") < check.detail.index(
+            "the Intel TDX quote binds")
         assert listed.protection == outbound.TEE and "can read it" in listed.how
         assert "reply: ✓ TEE, verified" in listed.detail
 
@@ -620,8 +624,15 @@ class TestWhereItGoesInWords:
         assert protection == outbound.SEALED and "only ciphertext" in text
         text, protection = where(private_settings(model=TEE_MODEL))
         assert protection == outbound.TEE and "gateway can read" in text
+        # What is attested for most TEE/ models is RedPill's gateway, not "its enclave".
+        assert "attested first - most TEE/ models as RedPill's TEE gateway" in text
+        assert "its enclave" not in text and "runs in a trusted enclave" not in text
         assert ai.protection_label(private_settings(model=SEALED_MODEL)) == (
             "Privacy Mode: end-to-end encrypted")
+        tee = private_settings(model=TEE_MODEL, server=FakeNanoGpt(aci="bound"))
+        assert ai.protection_label(tee) == "Privacy Mode: TEE, attested first"
+        ai.session_of(tee).ensure()
+        assert ai.protection_label(tee) == "Privacy Mode: TEE gateway attested"
 
 
 class TestTheModelsOnOffer:

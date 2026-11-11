@@ -54,7 +54,7 @@ def test_the_status_bar_names_each_and_how_the_ai_travels(monkeypatch):
     assert reach.status_text(found) == "Online: MusicBrainz · Covers · AI, sealed end to end"
     assert "Never in Privacy Mode" in found[privacy.WEB_SEARCH].off
     tee = dict(private, **{ai.SETTING_PRIVATE_MODEL: "TEE/kimi-k3"})
-    assert reach.status_text(reach.services(tee)).endswith("AI, attested enclave")
+    assert reach.status_text(reach.services(tee)).endswith("AI, TEE attested first")
 
 
 def test_web_search_is_nano_gpts_own(monkeypatch):

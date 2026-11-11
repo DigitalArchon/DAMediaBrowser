@@ -6,8 +6,8 @@ Settings → Privacy says what each service may be sent; this says what it
 was sent. Every request that carries anything about the library - a
 MusicBrainz search, a cover asked for, a setlist looked up, a question for
 the AI - goes on this list as it is made: which service, which address, what
-it carried in words, how it travelled (in the clear over https, to an
-attested enclave, sealed end to end), and whether it went. An attestation
+it carried in words, how it travelled (in the clear over https, to a TEE
+model attested first, sealed end to end), and whether it went. An attestation
 is listed too, though it carries nothing about the videos: it is where
 Privacy Mode's checks went.
 
@@ -33,7 +33,7 @@ MAX_CONTENT = 20_000
 
 # How a request travelled.
 CLEAR = "clear"         # https: the service, and whoever it passes it to, can read it
-TEE = "tee"             # to an attested enclave, through a gateway that can read it
+TEE = "tee"             # to a TEE model attested first, through a gateway that can read it
 SEALED = "sealed"       # sealed end to end: only the attested enclave can read it
 CHECK = "check"         # an attestation: nothing about the videos
 

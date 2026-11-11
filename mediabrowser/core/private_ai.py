@@ -6,15 +6,17 @@ nano-gpt offers two kinds, and this module is the one place that tells them
 apart:
 
   TEE/*      Run inside a trusted execution environment. Before anything is
-             sent, the enclave is attested (below), and every reply is
-             checked against the record of it that the attested key signed.
-             The text still passes nano-gpt's gateway in the clear:
-             attestation proves where the model runs, not that nano-gpt
-             cannot read it. And most of them (all but Chutes' own, in Nov
-             2026) are attested as RedPill's gateway, which passes requests
-             on to the model's host: that attestation is partial, since it
-             does not show the model's own enclave
-             (TeeClient._attest_signing_key, _attest_gateway).
+             sent, the enclave is attested (below), and every reply of a
+             provider that signs them is checked against the record of it
+             that the attested key signed (Chutes signs none). The text
+             still passes nano-gpt's gateway in the clear: attestation
+             proves where the model runs, not that nano-gpt cannot read it.
+             And most of them (all but Chutes' own, in Nov 2026) are
+             attested as RedPill's gateway, which passes requests on to the
+             model's host: that attestation is partial, since it does not
+             show the model's own enclave (TeeClient._attest_signing_key,
+             _attest_gateway), and says so (Attestation.attested,
+             what_was_attested).
   private/*  nano-gpt's Private Mode: end-to-end encrypted. The body - the
              frames, the file and folder names, the tracklist - is sealed on
              this machine to a key only the attested enclave holds, and the
@@ -129,8 +131,10 @@ FAILED = "failed"            # TEE: another key signed it, other bytes, or its r
 UNCHECKED = "unchecked"      # TEE: no record could be read, or it could not be judged
 SEALED = "sealed"            # E2EE: it came back sealed by the attested enclave
 
-TEE_NOTE = ("TEE: the model runs in an attested enclave and its replies are signed, but "
-            "the text passes nano-gpt's gateway in the clear.")
+TEE_NOTE = ("TEE: attested before anything is sent to it - most as RedPill's gateway, "
+            "which passes each request on to the machine that runs the model - and each "
+            "reply checked against the record the attested key signs for it, where its "
+            "provider signs one. The text passes nano-gpt's gateway in the clear.")
 E2EE_NOTE = ("End-to-end encrypted: every message is sealed on this machine to a key only "
              "the model's attested enclave holds. nano-gpt relays ciphertext; it sees your "
              "account, the model, timing, sizes and cost, never the text.")
@@ -310,6 +314,11 @@ class Attestation:
     gpu_ok: object = None           # True once NVIDIA's signed verdict held, else None
     gpus: int = 0
     tcb_status: str = ""            # Intel's, when its collateral could be checked
+    # What a TEE/ model's check attested (what_was_attested): "gateway", RedPill's
+    # gateway, which passes the model's requests on to the machine that runs it;
+    # "instances", each instance the provider listed (Chutes); "enclave", the one whose
+    # key signs the replies, not shown to be either. "" for an end-to-end encrypted one.
+    attested: str = ""
     # E2EE
     enclave: str = ""
     hardware: str = ""
@@ -324,9 +333,12 @@ class Attestation:
     def headline(self):
         if self.kind == E2EE:
             return "End-to-end encrypted"
+        # What was attested, not only that something was: RedPill's gateway is not the
+        # machine that runs the model (what_was_attested). From SealedLore (Nov 11 2026).
+        what = "TEE gateway attested" if self.attested == "gateway" else "TEE attested"
         if not self.shortfalls:
-            return "TEE attested"
-        return f"TEE attested ({', '.join(self.shortfalls)})"
+            return what
+        return f"{what} ({', '.join(self.shortfalls)})"
 
     @property
     def fell_short(self):
@@ -343,6 +355,46 @@ class Attestation:
         if self.level != "full" and not found:
             found.append("not everything could be checked")
         return found
+
+
+def what_was_attested(attestation, clear=True):
+    """What a TEE/ attestation that held was of, and what it leaves to someone's word,
+    said plainly: by Settings' Check Attestation, in the details of a session
+    (PrivacySession.details) and on Help → What Was Sent, and after an answer in Detect
+    Chapters. SealedLore's author, Nov 11 2026: "always make clear to the user what is
+    actually happening and if it is properly attested or not". Live that day, every model
+    RedPill serves was attested as its gateway, which passes each request on to the
+    model's own provider (Phala, Fortanix, NEAR AI, 0G, Tinfoil's router or Chutes, by
+    RedPill's session records), and a model Chutes serves itself as its instances.
+
+    `clear`: and that the text passes nano-gpt in the clear on the way, for where nothing
+    nearby says so. "" for an end-to-end encrypted enclave - the one that opens the
+    request - and for an attestation that names nothing (attested ""). From SealedLore
+    (9af15c1)."""
+    if attestation is None or attestation.kind != TEE:
+        return ""
+    tail = (" Your text passes nano-gpt's servers in the clear on the way; a private/ "
+            "model is end-to-end encrypted instead." if clear else "")
+    if attestation.attested == "gateway":
+        return ("Attested: RedPill's TEE gateway, which passes this model's requests on "
+                "to the machine that runs it. That machine is not attested by this app: "
+                "that it is a verified TEE is the gateway's word, in each reply's signed "
+                "receipt." + tail)
+    if attestation.attested == "instances":
+        count = attestation.instances
+        listed = f"each of the {count} instances" if count > 1 else "the instance"
+        said = (f"Attested: {listed} this model's provider listed. They sign no replies, "
+                f"so nothing shows which machine answered a request: nano-gpt routes each "
+                f"one, and a model may be served elsewhere when its provider is busy.")
+        if attestation.signers:
+            said += (" RedPill's gateway, attested too, answers it now and then and passes "
+                     "the request on to a host of its own: such a reply is checked against "
+                     "the gateway's keys, and that host is the gateway's word.")
+        return said + tail
+    if attestation.attested == "enclave":
+        return ("Attested: the enclave whose key signs this model's replies. Whether that "
+                "machine runs the model itself or passes requests on is not shown." + tail)
+    return ""
 
 
 @dataclass
@@ -547,7 +599,8 @@ class _Checks:
         self.gpus += other.gpus
         self.summary_gpu |= other.summary_gpu
 
-    def attestation(self, model, bound, signing_address="", signers=(), instances=0):
+    def attestation(self, model, bound, signing_address="", signers=(), instances=0,
+                    attested="enclave"):
         if self.quotes:
             summary = [f"Intel quote{'s' if self.quotes != 1 else ''} verified, "
                        f"TCB {self.status or 'unchecked'}"]
@@ -564,7 +617,7 @@ class _Checks:
                            signing_address=signing_address,
                            signers=tuple(sorted(signers)), instances=instances,
                            gpu_ok=True if self.gpus else None, gpus=self.gpus,
-                           tcb_status=self.status)
+                           tcb_status=self.status, attested=attested)
 
 
 @dataclass(frozen=True)
@@ -861,7 +914,7 @@ class TeeClient:
         self.receipt_required = True
         self._take_keyset(gateway.keyset, "the quote binds its receipt keys", check)
         return check.attestation(self.model, "gateway's keys bound to our nonce",
-                                 signers=self.signers)
+                                 signers=self.signers, attested="gateway")
 
     def _attest_signing_key(self, body, nonce, gateway=None):
         """One enclave, its reply-signing key and our nonce in its quote.
@@ -909,6 +962,10 @@ class TeeClient:
         holds = keyset is not None and _holds_key(keyset, address)
         signers = frozenset({address.lower()})
         through_gateway = False
+        # The machine whose key signs the replies: RedPill's gateway where the key is one
+        # of the gateway's own (its keyset) or the report says it is RedPill's gateway,
+        # else not known to be (what_was_attested).
+        attested = "enclave"
         if report_data[:20] == bytes.fromhex(address[2:]) and not any(report_data[20:32]) \
                 and report_data[32:] == bytes.fromhex(nonce):
             check = _Checks("the Intel TDX quote binds the signing key to our nonce")
@@ -934,6 +991,7 @@ class TeeClient:
                             "among them, to our nonce")
             tie = "the quote binds its receipt keys"
             loose, bound = False, "gateway's keys bound to our nonce"
+            attested = "gateway"
         else:
             raise PrivacyError(f"{self.model}'s attestation did not bind its signing key "
                                f"to our nonce")
@@ -945,6 +1003,7 @@ class TeeClient:
             check.note("this is RedPill's gateway, which passes each request on to the "
                        "model's host: the gateway's quote and the GPUs' evidence are "
                        "checked, not that the model itself runs in an enclave")
+            attested = "gateway"
         if loose:
             check.fall_short(RECEIPT_KEYS_LOOSE)
             check.note("the quote binds the key that signs each reply's record, not the "
@@ -971,7 +1030,7 @@ class TeeClient:
         self.signing_address, self.signers, self.instances = address, signers, False
         self._take_keyset(keyset if tie else None, tie, check)
         return check.attestation(self.model, bound, signing_address=address,
-                                 signers=signers)
+                                 signers=signers, attested=attested)
 
     def _take_keyset(self, keyset, tie, check):
         """The gateway's receipt-signing keys (RedPill's aci/1 workload_keyset), kept
@@ -1054,7 +1113,8 @@ class TeeClient:
                            f"({unheard}): a reply it answered could not be checked")
             self.signers = frozenset()
             self._take_keyset(None, "", check)
-            attestation = check.attestation(self.model, summary, instances=len(instances))
+            attestation = check.attestation(self.model, summary, instances=len(instances),
+                                            attested="instances")
             attestation.detail += ("; this provider signs no replies, so answers show as "
                                    "unsigned")
             return attestation
@@ -1068,7 +1128,7 @@ class TeeClient:
                                           "checked against its attested keys", check)
         attestation = check.attestation(self.model, summary + ", and RedPill's gateway's "
                                         "keys", signers=self.signers,
-                                        instances=len(instances))
+                                        instances=len(instances), attested="instances")
         attestation.detail += ("; the instances sign no replies, so their answers show as "
                                "unsigned")
         return attestation
@@ -1634,13 +1694,16 @@ class PrivacySession:
             return ("nano-gpt's gateway sees what is sent in the clear: the frames, the "
                     "names, the tracklist. A reply is checked against the record the "
                     "attested key signed, for the exact bytes that came, where nano-gpt "
-                    "passes its stream on as it was. Not checked by this app: what was "
-                    "sent - the record hashes the request as nano-gpt passed it on, so "
-                    "that it was this app's rests on nano-gpt; where nano-gpt has no "
-                    "report of RedPill's gateway's own for a model, that the gateway's "
-                    "receipt keys are in the quote; where the gateway answers, that the "
-                    "model's own host is an enclave - each reply's receipt says so, in "
-                    "the gateway's word; and which software the enclave runs - its quote "
+                    "passes its stream on as it was - where the model's provider signs "
+                    "one: Chutes signs none, so its replies read not verified. Not "
+                    "checked by this app: what was sent - the record hashes the request "
+                    "as nano-gpt passed it on, so that it was this app's rests on "
+                    "nano-gpt; where nano-gpt has no report of RedPill's gateway's own "
+                    "for a model, that the gateway's receipt keys are in the quote; where "
+                    "the gateway answers, that the model's own host is an enclave - each "
+                    "reply's receipt says so, in the gateway's word; that the GPUs NVIDIA "
+                    "vouched for are the attested machine's - its quote does not commit "
+                    "to their evidence; and which software the enclave runs - its quote "
                     "shows genuine, current hardware holding a live key bound to this "
                     "app's nonce, and no measurement in it is compared with a published "
                     "one.")
@@ -1656,6 +1719,11 @@ class PrivacySession:
         else:
             when = time.strftime("%H:%M:%S", time.localtime(attestation.checked_at))
             lines.append(f"    {attestation.headline}, checked at {when}")
+            # What was attested first, and what it leaves to someone's word; the
+            # model's description below says the text passes in the clear.
+            what = what_was_attested(attestation, clear=False)
+            if what:
+                lines.append(f"    {what}")
             if attestation.fell_short:
                 lines.append(f"    less than it could prove: "
                              f"{', '.join(attestation.fell_short)}")

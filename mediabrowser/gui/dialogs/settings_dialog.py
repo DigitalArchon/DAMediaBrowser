@@ -78,9 +78,10 @@ PRIVACY_MODE_NOTE = (
     "Everything for the AI goes only to the private model below, and only after its "
     "enclave has proved what it is, with the hardware maker's signatures. A private/ model is "
     "end-to-end encrypted: Nano-GPT relays only ciphertext, and sees your account, the "
-    "model, when and how much. A TEE/ model is attested too, but Nano-GPT's gateway "
-    "can read what is sent. Nothing falls back to the ordinary model, and there's no "
-    "web search."
+    "model, when and how much. A TEE/ model is attested too - most as RedPill's TEE "
+    "gateway, which passes each request on to the machine that runs the model, so that "
+    "machine is the gateway's word - and Nano-GPT's gateway can read what is sent. "
+    "Nothing falls back to the ordinary model, and there's no web search."
 )
 STRICT_LABEL = "Strict: refuse an enclave that proves less than it could"
 STRICT_NOTE = (
@@ -97,8 +98,10 @@ ATTEST_E2EE = (
     "videos is sent, and it costs nothing."
 )
 ATTEST_TEE = (
-    "Asks nano-gpt for the enclave's report, and checks it with Intel's and NVIDIA's "
-    "attestation services. Nothing about your videos is sent, and it costs nothing."
+    "Asks nano-gpt for the model's report and RedPill's gateway's, checks them with "
+    "Intel's and NVIDIA's attestation services, and says what was attested: RedPill's "
+    "gateway, the provider's instances, or one enclave. Nothing about your videos is "
+    "sent, and it costs nothing."
 )
 KEY_NOTE = (
     "The key is kept in the system keyring (GNOME Keyring or KWallet), not in "
@@ -734,7 +737,11 @@ class SettingsDialog(QDialog):
     def _attested(self, session) -> None:
         self._update_privacy()      # the button, as the form has it now
         text, tone = private_ai.attestation_label(session.attestation)
-        self._tone(self.attest_status, f"{text}. {session.attestation.detail}", tone)
+        # What was attested first, and what it leaves to someone's word.
+        what = private_ai.what_was_attested(session.attestation)
+        self._tone(self.attest_status,
+                   " ".join(part for part in (f"{text}.", what, session.attestation.detail)
+                            if part), tone)
 
     def _attestation_failed(self, message: str) -> None:
         self._update_privacy()

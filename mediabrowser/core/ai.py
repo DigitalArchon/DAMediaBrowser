@@ -299,9 +299,11 @@ def destination(settings: dict, online: bool = False) -> tuple[str, str]:
         if private_ai.kind_of(model) == private_ai.E2EE:
             return (f"sealed end to end to {short}'s enclave, once it has been "
                     f"attested: Nano-GPT relays only ciphertext", outbound.SEALED)
-        return (f"to {short}, once its enclave has been attested: it runs in a trusted "
-                f"enclave, but Nano-GPT's gateway can read what is sent on the way",
-                outbound.TEE)
+        # Not "its enclave": most TEE/ models are attested as RedPill's gateway, and
+        # the machine that runs the model is the gateway's word (what_was_attested).
+        return (f"to {short}, attested first - most TEE/ models as RedPill's TEE "
+                f"gateway, which passes the request on to the machine that runs the "
+                f"model - and Nano-GPT's gateway can read it on the way", outbound.TEE)
     url = settings[SETTING_BASE_URL]
     service = _service(url)
     search = may_search(settings) and online
@@ -309,8 +311,8 @@ def destination(settings: dict, online: bool = False) -> tuple[str, str]:
         where = (f"to {short} through Nano-GPT, which passes it on to whoever runs the "
                  f"model: both can read it")
         if private_ai.kind_of(model) == private_ai.TEE:
-            where = (f"to {model} through Nano-GPT, which can read it: the model runs in "
-                     f"an enclave, but outside Privacy Mode it isn't attested first")
+            where = (f"to {model} through Nano-GPT, which can read it: a TEE model, but "
+                     f"outside Privacy Mode it isn't attested first")
         if search:
             where += (f", and {SEARCH_PROVIDERS.get(settings[SETTING_SEARCH], 'a search')} "
                       f"is sent a search about the show")
@@ -323,11 +325,18 @@ def destination(settings: dict, online: bool = False) -> tuple[str, str]:
 
 def protection_label(settings: dict) -> str:
     """A few words for where the AI's requests go: "Privacy Mode: end-to-end
-    encrypted", "Privacy Mode: attested TEE", or "Nano-GPT"."""
+    encrypted"; for a TEE/ model what its newest attestation was of, where the
+    operation has one - "Privacy Mode: TEE gateway attested" for RedPill's
+    gateway, which is not the machine that runs the model (what_was_attested) -
+    else "Privacy Mode: TEE, attested first"; or "Nano-GPT"."""
     if in_privacy_mode(settings):
         if private_ai.kind_of(active_model(settings)) == private_ai.E2EE:
             return "Privacy Mode: end-to-end encrypted"
-        return "Privacy Mode: attested TEE"
+        session = session_of(settings)
+        attestation = session.attestation if session is not None else None
+        if attestation is not None and attestation.kind == private_ai.TEE:
+            return f"Privacy Mode: {attestation.headline.split(' (', 1)[0]}"
+        return "Privacy Mode: TEE, attested first"
     return _service(settings[SETTING_BASE_URL])
 
 
@@ -655,10 +664,12 @@ def _attestation_listener(session: private_ai.PrivacySession):
     def heard(event, detail):
         if event == "attested":
             text, tone = private_ai.attestation_label(detail)
+            # What was attested first, and what it leaves to someone's word.
+            what = private_ai.what_was_attested(detail)
             outbound.record(
                 "Nano-GPT", session.api_url, f"an attestation of {session.model}'s enclave",
                 outbound.CHECK, _checked_with(session), outbound.SENT,
-                f"{text}. {detail.detail}")
+                " ".join(part for part in (f"{text}.", what, detail.detail) if part))
         elif event == "refused":
             outbound.record(
                 "Nano-GPT", session.api_url, f"an attestation of {session.model}'s enclave",
@@ -673,7 +684,7 @@ def _checked_with(session) -> str:
                 "AMD's or Intel's certificates (through Tinfoil's proxy, for AMD's) and "
                 "Tinfoil's release record on Sigstore: a fresh nonce, nothing about "
                 "your videos")
-    return ("Asked nano-gpt for the enclave's report and RedPill's gateway's, and "
+    return ("Asked nano-gpt for the model's own report and RedPill's gateway's, and "
             "checked them with Intel's and NVIDIA's attestation services: a fresh nonce "
             "for each, nothing about your videos")
 
@@ -933,7 +944,7 @@ PRIVATE_RECOMMENDED = {
 }
 # What nano-gpt charges for a private/ model over its TEE/ twin (Nov 2026).
 PRIVATE_MODE_MARKUP = 1.05
-TEE_NOTE = "runs in an enclave, attested only in Privacy Mode"
+TEE_NOTE = "a TEE model: attested before anything is sent only in Privacy Mode"
 
 
 def list_models(settings: dict, vision_only: bool = True) -> list[dict]:
@@ -1021,7 +1032,8 @@ def list_private_models(settings: dict) -> list[dict]:
         models.append({
             "id": entry["id"], "name": entry.get("name") or entry["id"], "vision": True,
             "price": _price(entry.get("pricing")), "kind": private_ai.TEE,
-            "note": "TEE: attested, but Nano-GPT's gateway can read what is sent",
+            "note": "TEE: attested first - most as RedPill's gateway - but Nano-GPT's "
+                    "gateway can read what is sent",
         })
     order = list(PRIVATE_RECOMMENDED)
     models.sort(key=lambda m: (m["kind"] != private_ai.E2EE,

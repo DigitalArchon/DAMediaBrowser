@@ -396,6 +396,11 @@ class TeeAttestation(unittest.TestCase):
                       "another machine's", attestation.detail)
         self.assertEqual(attestation.headline, "TEE attested (receipt keys not in the "
                                                "quote, GPUs not tied to the quote)")
+        # No gateway's report and no mark of RedPill's: the machine whose key signs, not
+        # known to be a gateway.
+        self.assertEqual(attestation.attested, "enclave")
+        self.assertIn("Whether that machine runs the model itself or passes requests on "
+                      "is not shown", privacy.what_was_attested(attestation))
 
     def test_one_whose_quote_binds_the_gateways_keys_itself_falls_short_of_its_gpus(self):
         """RedPill's own statement in the report data: the keyset, its signing key
@@ -404,7 +409,10 @@ class TeeAttestation(unittest.TestCase):
         attestation = client.attest()
         self.assertEqual(attestation.level, "partial")
         self.assertEqual(attestation.shortfalls, [privacy.GPUS_LOOSE])
-        self.assertEqual(attestation.headline, "TEE attested (GPUs not tied to the quote)")
+        # The keyset is the gateway's: what was attested is RedPill's gateway.
+        self.assertEqual(attestation.attested, "gateway")
+        self.assertEqual(attestation.headline,
+                         "TEE gateway attested (GPUs not tied to the quote)")
         self.assertIn("binds the gateway's keys, its signing key among them, to our "
                       "nonce", attestation.detail)
         self.assertIsNotNone(client.keyset)
@@ -1765,6 +1773,104 @@ class GatewaysOwnReport(unittest.TestCase):
                                  tee_factory=server.tee_client)
         session.ensure()
         self.assertIn(f"signing key {address_of(KEY).lower()}", session.details())
+
+
+@unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+class WhatWasAttested(unittest.TestCase):
+    """SealedLore's author, Nov 11 2026: "always make clear to the user what is actually
+    happening and if it is properly attested or not". RedPill's gateway is not the
+    machine that runs the model; Chutes' instances sign no replies. Every attestation
+    says which it was, and what that leaves to someone's word (9af15c1). Ported from DA
+    Assistant's tests (98e939a)."""
+
+    MARKS = {key: GATEWAY[key] for key in ("api_version", "service_capabilities")}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.instances = InstanceEvidence()
+
+    def attest(self, server, model="TEE/x"):
+        return server.tee_client(API_URL, "k", model).attest()
+
+    def test_redpills_gateway_is_named_as_what_was_attested(self):
+        for what, server in (
+                ("its own report", FakeNanoGpt(aci="bound")),
+                ("its marks, no report of its own",
+                 FakeNanoGpt(aci="400", tied="e2ee", attestation_extra=self.MARKS)),
+                ("RedPill's own statement", FakeNanoGpt(tied="statement")),
+                ("standing in alone",
+                 ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound"))):
+            attestation = self.attest(server)
+            self.assertEqual(attestation.attested, "gateway", what)
+            self.assertTrue(attestation.headline.startswith("TEE gateway attested ("),
+                            what)
+            said = privacy.what_was_attested(attestation)
+            self.assertTrue(said.startswith("Attested: RedPill's TEE gateway, which passes "
+                                            "this model's requests on to the machine that "
+                                            "runs it."), what)
+            self.assertIn("That machine is not attested by this app: that it is a "
+                          "verified TEE is the gateway's word, in each reply's signed "
+                          "receipt.", said)
+            self.assertIn("Your text passes nano-gpt's servers in the clear on the way",
+                          said)
+            self.assertNotIn("in the clear", privacy.what_was_attested(attestation,
+                                                                       clear=False))
+
+    def test_chutes_instances_are_named_and_that_they_sign_no_replies(self):
+        alone = self.attest(ShapedNanoGpt(lambda nonce: (200, self.instances.body(nonce))),
+                            "TEE/kimi-k3")
+        self.assertEqual((alone.attested, alone.headline), ("instances", "TEE attested"))
+        said = privacy.what_was_attested(alone)
+        self.assertIn("Attested: each of the 2 instances this model's provider listed. "
+                      "They sign no replies, so nothing shows which machine answered a "
+                      "request", said)
+        self.assertNotIn("RedPill's gateway", said)
+        first = self.attest(ShapedNanoGpt(lambda nonce: (200, self.instances.body(nonce)),
+                                          aci="bound"), "TEE/glm-5.1")
+        self.assertEqual(first.attested, "instances")
+        self.assertIn("RedPill's gateway, attested too, answers it now and then",
+                      privacy.what_was_attested(first))
+
+    def test_one_enclave_not_known_to_be_a_gateway_is_said_as_such(self):
+        attestation = self.attest(FakeNanoGpt())
+        self.assertEqual(attestation.attested, "enclave")
+        self.assertEqual(attestation.headline, "TEE attested (receipt keys not in the "
+                                               "quote, GPUs not tied to the quote)")
+        self.assertTrue(privacy.what_was_attested(attestation).startswith(
+            "Attested: the enclave whose key signs this model's replies."))
+
+    def test_an_end_to_end_encrypted_enclave_or_an_unnamed_one_says_nothing_of_it(self):
+        sealed_one = privacy.Attestation(model="private/glm-5-3", kind=privacy.E2EE)
+        self.assertEqual(privacy.what_was_attested(sealed_one), "")
+        self.assertEqual(sealed_one.headline, "End-to-end encrypted")
+        unnamed = privacy.Attestation(model="TEE/x", kind=privacy.TEE)
+        self.assertEqual((privacy.what_was_attested(unnamed), unnamed.headline),
+                         ("", "TEE attested"))
+        self.assertEqual(privacy.what_was_attested(None), "")
+
+    def test_the_details_lead_with_what_was_attested(self):
+        server = FakeNanoGpt(aci="bound")
+        session = PrivacySession(API_URL, "k", TEXT, tee_factory=server.tee_client)
+        session.ensure()
+        details = session.details()
+        headline, what = details.splitlines()[1:3]
+        self.assertTrue(headline.strip().startswith("TEE gateway attested ("))
+        self.assertTrue(what.strip().startswith("Attested: RedPill's TEE gateway"))
+        self.assertIn("the gateway's quote binds its receipt keys", details)
+        chutes = ShapedNanoGpt(lambda nonce: (200, self.instances.body(nonce)))
+        session = PrivacySession(API_URL, "k", "TEE/kimi-k3", tee_factory=chutes.tee_client)
+        session.ensure()
+        self.assertIn("They sign no replies", session.details())
+
+    def test_nothing_says_every_tee_reply_is_signed(self):
+        """Chutes signs none: a TEE/ model's description and the caveats said each was
+        signed, or checked against a record."""
+        said = privacy.describe(TEXT)[1]
+        self.assertNotIn("replies are signed", said)
+        self.assertIn("where its provider signs one", said)
+        tee = PrivacySession(API_URL, "k", TEXT).caveats()
+        self.assertIn("Chutes signs none, so its replies read not verified", tee)
+        self.assertIn("that the GPUs NVIDIA vouched for are the attested machine's", tee)
 
 
 # ---- each reply's record and receipt (Nov 2026) ---------------------------------------
