@@ -559,6 +559,10 @@ class FixtureSession:
         self.fixture = fixture
         self.intel_status = intel_status
         self.jwks = fixture["jwks"] if jwks is None else jwks
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def get(self, url, params=None, headers=None, timeout=None):
         if "/tee/attestation" in url:
@@ -727,9 +731,8 @@ class RealEvidence(unittest.TestCase):
             dcap._cache.clear()
             forged = json.loads(json.dumps(self.fixture))
             forged["collateral"][index]["headers"][header] = url_quote(pck_chain)
-            with self.assertRaisesRegex(dcap.DcapError, f"Intel's {key} is signed by "
-                                                        f"Intel SGX PCK Certificate, not "
-                                                        f"by its TCB signing certificate"):
+            with self.assertRaisesRegex(dcap.DcapError, f"Intel's {key} isn't signed by "
+                                                        f"Intel's TCB signing certificate"):
                 self.intel(session=FixtureSession(forged))
 
     def test_collateral_out_of_reach_is_reported_not_passed(self):
@@ -737,6 +740,47 @@ class RealEvidence(unittest.TestCase):
         self.assertFalse(result.collateral)
         self.assertEqual(result.status, "")
         self.assertIn("could not be fetched", result.notes[-1])
+
+    def test_collateral_that_arrived_but_cannot_be_read_is_refused(self):
+        """Out of reach is "unchecked", a partial attestation. What did arrive and
+        cannot be read was taken for the same - a CRL that is no CRL, an issuer chain or
+        a signed document left out, JSON that does not parse - so that an answer shaped
+        to fail parsing, by whatever answered at Intel's address, bought a pass as
+        "unchecked" for a revoked platform. It is refused now, as a bad signature is.
+        From DA Vibe Manager's copy of this module (Nov 2026)."""
+        def forged(index, body=None, drop_header=None):
+            copy = json.loads(json.dumps(self.fixture))
+            if body is not None:
+                copy["collateral"][index]["body"] = base64.b64encode(body).decode()
+            if drop_header:
+                del copy["collateral"][index]["headers"][drop_header]
+            return FixtureSession(copy)
+
+        for session, refusal in (
+                (forged(0, b"<html>not a CRL</html>"), "a CRL from Intel could not be read"),
+                (forged(1, b"<html>not a CRL</html>"), "a CRL from Intel could not be read"),
+                (forged(2, drop_header="TCB-Info-Issuer-Chain"),
+                 "Intel's response had no TCB-Info-Issuer-Chain"),
+                (forged(3, drop_header="SGX-Enclave-Identity-Issuer-Chain"),
+                 "Intel's response had no SGX-Enclave-Identity-Issuer-Chain"),
+                (forged(2, b'{"signature": "00"}'), "Intel's tcbInfo was missing"),
+                (forged(3, b'{"enclaveIdentity": {"id": "TD_QE"'),
+                 "Intel's collateral could not be read")):
+            dcap._cache.clear()
+            with self.subTest(refusal), self.assertRaisesRegex(dcap.DcapError, refusal):
+                self.intel(session=session)
+
+    def test_an_attestation_whose_collateral_cannot_be_read_is_refused_not_partial(self):
+        copy = json.loads(json.dumps(self.fixture))
+        copy["collateral"][0]["body"] = base64.b64encode(b"<html>maintenance</html>").decode()
+        client = TeeClient(API_URL, "k", self.fixture["model"], session=FixtureSession(copy),
+                           intel=lambda raw, s: dcap.verify(raw, s, now=self.when),
+                           nvidia=lambda a, n, s: nras.verify(a, n, s, now=self.now))
+        with mock.patch.object(privacy.secrets, "token_hex",
+                               return_value=self.fixture["nonce"]), \
+                self.assertRaisesRegex(PrivacyError, "failed verification: a CRL from "
+                                                     "Intel could not be read"):
+            client.attest()
 
     def test_the_quoting_enclave_is_intels_whether_or_not_its_collateral_can_be_had(self):
         """It is what makes the attestation key the QE's, not any enclave's the platform
@@ -884,6 +928,7 @@ class RealEvidence(unittest.TestCase):
             self.assertNotIn("import requests", inspect.getsource(module))
         with mock.patch.object(netguard, "Session", return_value=self.session) as made:
             self.assertEqual(dcap.verify(self.quote, now=self.when).status, "UpToDate")
+            self.assertTrue(self.session.closed, "dcap.verify left its own session open")
             self.assertEqual(nras.verify(self.fixture["nras_answer"], self.fixture["nonce"],
                                          now=self.now), 8)
             self.assertIs(TeeClient(API_URL, "k", TEXT).session, self.session)
@@ -978,31 +1023,51 @@ class IntelsChainRules(unittest.TestCase):
                                                     "a key not meant for that"):
             dcap.verify_chain([leaf, ca], root, self.NOW)
 
-    def signed_tcb_info(self, signer_name):
+    def signed_tcb_info(self, signer_name, through_ca=False):
         """Intel's TCB info as its service sends it, signed by a certificate named
-        `signer_name` that the root issued."""
+        `signer_name` that the root issued - or, `through_ca`, that a CA under the root
+        issued."""
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
         from cryptography.hazmat.primitives.serialization import Encoding
         root = self.root()
-        signer = self.under(root, "root", signer_name, "leaf", ca=False, cert_sign=False)
+        issuers = [root]
+        if through_ca:
+            issuers.insert(0, self.under(root, "root", "Intel SGX PCK Platform CA", "ca",
+                                         ca=True, path_length=0, cert_sign=True))
+        signer = self.under(issuers[0], "ca" if through_ca else "root", signer_name,
+                            "leaf", ca=False, cert_sign=False)
         raw = json.dumps({"id": "TDX", "fmspc": "20a06f000000"}, separators=(",", ":"))
         r, s = decode_dss_signature(self.keys["leaf"].sign(raw.encode(),
                                                            ec.ECDSA(hashes.SHA256())))
         signature = (r.to_bytes(32, "big") + s.to_bytes(32, "big")).hex()
         content = f'{{"tcbInfo":{raw},"signature":"{signature}"}}'.encode()
-        chain = (signer.public_bytes(Encoding.PEM) + root.public_bytes(Encoding.PEM))
+        chain = b"".join(cert.public_bytes(Encoding.PEM) for cert in [signer] + issuers)
         return dcap._signed_json(content, "tcbInfo", chain.decode(), root, self.NOW)
 
     def test_tcb_info_signed_by_any_but_the_tcb_signing_certificate_is_refused(self):
         info, signer = self.signed_tcb_info("Intel SGX TCB Signing")
         self.assertEqual(info["fmspc"], "20a06f000000")
         for name in ("Intel SGX PCK Certificate", "Intel SGX TCB Signing 2"):
-            with self.assertRaisesRegex(dcap.DcapError, f"Intel's tcbInfo is signed by "
-                                                        f"{name}, not by its TCB signing "
-                                                        f"certificate"):
+            with self.assertRaisesRegex(dcap.DcapError, "Intel's tcbInfo isn't signed by "
+                                                        "Intel's TCB signing certificate"):
                 self.signed_tcb_info(name)
+
+    def test_the_tcb_signing_certificate_must_be_the_roots_own(self):
+        """Named as Intel's TCB signing certificate, but issued by a CA under the root:
+        its chain verifies, a CA allowed to issue and all, and its name was all that was
+        asked of it. Now it must be the only certificate between the signature and the
+        root, as in the other apps' copies of this module (Nov 2026)."""
+        root = self.root()
+        ca = self.under(root, "root", "Intel SGX PCK Platform CA", "ca", ca=True,
+                        path_length=0, cert_sign=True)
+        signer = self.under(ca, "ca", "Intel SGX TCB Signing", "leaf", ca=False,
+                            cert_sign=False)
+        dcap.verify_chain([signer, ca], root, self.NOW)             # a chain that holds
+        with self.assertRaisesRegex(dcap.DcapError, "Intel's tcbInfo isn't signed by "
+                                                    "Intel's TCB signing certificate"):
+            self.signed_tcb_info("Intel SGX TCB Signing", through_ca=True)
 
 
 @unittest.skipUnless(hasattr(time, "CLOCK_BOOTTIME"), "no CLOCK_BOOTTIME here")

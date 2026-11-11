@@ -27,14 +27,23 @@ does, from the quote's bytes and Intel's published collateral:
   5. The TCB: Intel's signed TCB info for the platform's FMSPC gives a status for its
      microcode and firmware (from the PCK certificate) and its TDX module (from the TD
      report); Intel's signed QE identity checks the quoting enclave and gives it a
-     status too. Both must be signed by Intel's TCB signing certificate, chained to the
-     same root - not by just any certificate that chains there.
+     status too. Both must be signed by Intel's TCB signing certificate, issued by the
+     root itself - not by just any certificate that chains there.
   6. The TD is not a debug TD, whose memory the host can read.
 
-A failure of 1-4 or 6, or a TCB that is Revoked or older than any Intel lists, is a quote
-that must not be trusted: DcapError, and nothing is sent. Collateral that cannot be
-fetched (5, and the CRLs) is reported as that, not as a pass: the caller shows the
-attestation as partial. So is any TCB status but UpToDate, named as Intel names it.
+A failure of 1-4 or 6, or a TCB that is Revoked (the platform's, the module's or the
+QE's, whatever status sits beside it) or older than any Intel lists, is a quote that must
+not be trusted: DcapError, and nothing is sent. Collateral that cannot be fetched (5, and
+the CRLs: Intel's service unreachable or answering with an error) is reported as that,
+not as a pass: the caller shows the attestation as partial. So is any TCB status but
+UpToDate, named as Intel names it. Collateral that did arrive but cannot be read (a CRL
+or signed document that does not parse, a missing issuer chain) is not an outage: it
+refuses like a bad signature would, since an answer shaped to fail parsing must not buy
+a pass as "unchecked".
+
+The same checks are in each of the author's apps that attest TEE models (DA Vibe
+Manager, DA Private Coder, DA Toolkit, SealedLore), kept alike since Nov 2026; DA
+Assistant's is the copy they were first ported from, with requests where they have httpx.
 
 Checked live against TEE/glm-5.3-flash's quote (Sept 2026): version 4, ECDSA-256
 attestation key, TDX; PCK Platform CA; FMSPC 20a06f000000; TDX module TDX_03; every
@@ -55,6 +64,8 @@ from datetime import datetime, timezone
 from urllib.parse import unquote
 
 from . import netguard
+
+UTC = timezone.utc          # datetime.UTC is Python 3.11's; this app runs on 3.10 too
 
 # Intel SGX Root CA, as Intel publishes it at
 # https://certificates.trustedservices.intel.com/Intel_SGX_Provisioning_Certification_RootCA.cer
@@ -78,9 +89,6 @@ AiEA4J0lrHoMs+Xo5o/sX6O9QWxHRAvZUGOdRQ7cvqRXaqI=
 -----END CERTIFICATE-----
 """
 INTEL_ROOT_SHA256 = "44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3"
-# The subject CN of the certificate Intel signs TCB info and QE identities with, as its
-# TCB-Info-Issuer-Chain and SGX-Enclave-Identity-Issuer-Chain carry it.
-TCB_SIGNING_NAME = "Intel SGX TCB Signing"
 
 PCS = "https://api.trustedservices.intel.com"
 TCB_INFO_URL = PCS + "/tdx/certification/v4/tcb"
@@ -112,7 +120,8 @@ class DcapError(Exception):
 
 
 class CollateralUnavailable(Exception):
-    """Intel's collateral could not be fetched or was not usable."""
+    """Intel's collateral could not be fetched: the service out of reach, or an error
+    status. What arrives and cannot be read is a DcapError instead."""
 
 
 # ---- the quote ----------------------------------------------------------------------
@@ -278,7 +287,7 @@ def _key_from_xy(xy):
 def _utc(cert, name):
     value = getattr(cert, f"{name}_utc", None)
     if value is None:                       # cryptography < 42
-        value = getattr(cert, name).replace(tzinfo=timezone.utc)
+        value = getattr(cert, name).replace(tzinfo=UTC)
     return value
 
 
@@ -323,7 +332,7 @@ def verify_chain(certs, root, now):
     every one that signed another a certificate authority allowed to (_may_issue)."""
     _x509, InvalidSignature, _hashes, ec, _encode = _crypto()
     chain = list(certs) + [root]
-    for below, (cert, issuer) in enumerate(zip(chain, chain[1:])):
+    for below, (cert, issuer) in enumerate(zip(chain, chain[1:], strict=False)):
         subject = cert.subject.rfc4514_string()
         if cert.issuer != issuer.subject:
             raise DcapError(f"{subject} was not issued by {issuer.subject.rfc4514_string()}")
@@ -394,7 +403,7 @@ def _header(headers, name):
     for key, value in headers.items():
         if key.lower() == name.lower():
             return unquote(value)
-    raise CollateralUnavailable(f"Intel's response had no {name}")
+    raise DcapError(f"Intel's response had no {name}")
 
 
 def _load_crl(data):
@@ -405,14 +414,14 @@ def _load_crl(data):
         try:
             return x509.load_pem_x509_crl(data)
         except ValueError:
-            raise CollateralUnavailable("a CRL from Intel could not be read")
+            raise DcapError("a CRL from Intel could not be read")
 
 
 def _check_crl(crl, issuer, now, *certs):
     if not crl.is_signature_valid(issuer.public_key()):
         raise DcapError(f"{_common_name(issuer)}'s CRL is not signed by it")
     update = getattr(crl, "next_update_utc", None) or (
-        crl.next_update.replace(tzinfo=timezone.utc) if crl.next_update else None)
+        crl.next_update.replace(tzinfo=UTC) if crl.next_update else None)
     for cert in certs:
         if crl.get_revoked_certificate_by_serial_number(cert.serial_number) is not None:
             raise DcapError(f"{cert.subject.rfc4514_string()} has been revoked by Intel")
@@ -422,14 +431,16 @@ def _check_crl(crl, issuer, now, *certs):
 def _signed_json(content, key, chain_pem, root, now):
     """The object under `key`, once Intel's signature over its exact bytes verifies.
 
-    The signer must be Intel's TCB signing certificate, not merely one that chains to
-    Intel's root: a PCK certificate chains there too, and one whose key a compromised
-    platform gave up could otherwise sign that platform's own TCB as UpToDate."""
+    The signer must be Intel's TCB signing certificate, issued by the root itself, the
+    only certificate between them: not merely one that chains to Intel's root. A PCK
+    certificate chains there too, and one whose key a compromised platform gave up could
+    otherwise sign that platform's own TCB as UpToDate; and a certificate named as the
+    TCB signing one, under any CA of Intel's but the root, would pass by its name."""
     x509 = _crypto()[0]
     text = content.decode("utf-8")
     start = text.find(f'"{key}"')
     if start < 0:
-        raise CollateralUnavailable(f"Intel's {key} was missing")
+        raise DcapError(f"Intel's {key} was missing from its reply")
     start = text.index("{", start)
     depth, in_string, escaped = 0, False, False
     for end in range(start, len(text)):
@@ -452,11 +463,10 @@ def _signed_json(content, key, chain_pem, root, now):
     raw = text[start:end + 1]
     document = json.loads(text)
     signer = x509.load_pem_x509_certificates(chain_pem.encode())
-    verify_chain(signer[:-1] if len(signer) > 1 else signer, root, now)
-    if _common_name(signer[0]) != TCB_SIGNING_NAME:
-        raise DcapError(f"Intel's {key} is signed by "
-                        f"{_common_name(signer[0]) or 'a certificate with no name'}, not by "
-                        f"its TCB signing certificate")
+    leaf = signer[:-1] if len(signer) > 1 else signer
+    if len(leaf) != 1 or _common_name(leaf[0]) != "Intel SGX TCB Signing":
+        raise DcapError(f"Intel's {key} isn't signed by Intel's TCB signing certificate")
+    verify_chain(leaf, root, now)
     if not _raw_verify(signer[0].public_key(), bytes.fromhex(document["signature"]),
                        raw.encode("utf-8")):
         raise DcapError(f"Intel's signature on its {key} does not verify")
@@ -468,7 +478,7 @@ def _stale(document, now):
         update = datetime.strptime(document["nextUpdate"], "%Y-%m-%dT%H:%M:%SZ")
     except (KeyError, ValueError):
         return True
-    return update.replace(tzinfo=timezone.utc) < now
+    return update.replace(tzinfo=UTC) < now
 
 
 # ---- the TCB ------------------------------------------------------------------------
@@ -490,7 +500,7 @@ def platform_level(tcb_info, sgx, tee_tcb_svn):
     for level in tcb_info.get("tcbLevels", []):
         tcb = level["tcb"]
         wanted = [c["svn"] for c in tcb["sgxtcbcomponents"]]
-        if any(have < want for have, want in zip(sgx["cpusvn"], wanted)):
+        if any(have < want for have, want in zip(sgx["cpusvn"], wanted, strict=False)):
             continue
         if sgx["pcesvn"] < tcb["pcesvn"]:
             continue
@@ -502,7 +512,7 @@ def platform_level(tcb_info, sgx, tee_tcb_svn):
 
 
 def _masked(value, mask):
-    return bytes(a & b for a, b in zip(value, mask))
+    return bytes(a & b for a, b in zip(value, mask, strict=False))
 
 
 def module_status(tcb_info, quote):
@@ -598,9 +608,19 @@ def verify(raw, session=None, now=None):
     Raises ImportError when the `cryptography` package is not available: nothing can
     be verified then, and the caller must say so rather than pass it.
     """
-    x509 = _crypto()[0]
+    _crypto()                   # ImportError here, before anything is claimed
+    own = session is None
     session = session or netguard.Session()
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
+    try:
+        return _verify(raw, session, now)
+    finally:
+        if own:
+            session.close()
+
+
+def _verify(raw, session, now):
+    x509 = _crypto()[0]
     quote = parse_quote(raw)
 
     if quote.td_attributes[0] & 0x01:
@@ -652,10 +672,8 @@ def verify(raw, session=None, now=None):
                             f"fetched ({e}), so revocation and the TCB were not checked")
         return result
     except (ValueError, KeyError, TypeError) as e:
-        result.collateral = False
-        result.notes.append(f"Intel's collateral could not be read ({e}), so revocation "
-                            f"and the TCB were not checked")
-        return result
+        # Fetched, but not what Intel publishes: refused, never "unchecked".
+        raise DcapError(f"Intel's collateral could not be read ({e})")
 
     level = platform_level(tcb_info, sgx, quote.tee_tcb_svn)
     if level is None:
