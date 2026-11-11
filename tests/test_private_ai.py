@@ -186,12 +186,14 @@ class TestTee:
         assert any("/tee/attestation" in g for g in server.gets)
         assert any("/tee/signature/chatcmpl-42" in g for g in server.gets)
         session = ai.session_of(settings)
+        # Sent whole, not streamed: no bytes of it to compare with the record.
         assert session.last_receipt().state == private_ai.SIGNED
+        assert "the reply did not arrive whole" in session.last_receipt().detail
         check, sent = outbound.entries()
         assert (check.protection, check.outcome) == (outbound.CHECK, outbound.SENT)
         assert "nothing about your videos" in check.how
         assert sent.protection == outbound.TEE and "can read it" in sent.how
-        assert "signed by the attested enclave" in sent.detail
+        assert "reply: TEE, signed, text not compared" in sent.detail
 
     def test_an_enclave_that_isnt_attested_is_sent_nothing(self, endpoint):
         settings = private_settings(server=FakeNanoGpt(nonce_bound=False))
@@ -203,11 +205,16 @@ class TestTee:
         assert "Glass Harbor" in refused.content, "the list says what would have gone"
 
     def test_strict_refuses_an_attestation_that_proved_less_than_it_could(self, endpoint):
-        lacking = FakeNanoGpt(evidence=False)
-        with pytest.raises(ai.Refused, match="proved less than it could .no GPU evidence"):
-            ai.chat([], private_settings(server=lacking, strict=True))
-        assert endpoint == []
-        settings = private_settings(server=FakeNanoGpt(evidence=False))
+        # On an enclave whose quote binds the gateway's keys itself, which proves all
+        # else there is to prove; and as nano-gpt serves them, whose quote binds the
+        # key that signs each reply's record but not the receipt keys beside it.
+        for lacking, lacked in ((FakeNanoGpt(tied="statement", evidence=False),
+                                 "no GPU evidence"),
+                                (FakeNanoGpt(), private_ai.RECEIPT_KEYS_LOOSE)):
+            with pytest.raises(ai.Refused, match=f"proved less than it could .{lacked}."):
+                ai.chat([], private_settings(server=lacking, strict=True))
+            assert endpoint == []
+        settings = private_settings(server=FakeNanoGpt(tied="statement", evidence=False))
         ai.chat([], settings)
         assert len(endpoint) == 1
         assert "less than it could prove: no GPU evidence" in outbound.entries()[-1].detail
@@ -239,17 +246,42 @@ class TestTee:
         settings = private_settings(model="TEE/glm-5.1", server=chutes)
         named.clear()
         ai.chat([], settings)
-        assert ai.session_of(settings).last_receipt().state == private_ai.UNSIGNED
+        assert ai.session_of(settings).last_receipt().state == private_ai.UNCHECKED
         assert chutes.lookups == [], "Chutes answered: nothing to look up"
         named["X-Receipt-Id"] = "rcpt-8"
         ai.chat([], settings)
         assert ai.session_of(settings).last_receipt().state == private_ai.SIGNED
 
+    def test_strict_attests_again_after_a_reply_less_than_verified(self):
+        """Signed by the attested key but not shown to be for the text that came, no
+        record to read, or a record of other bytes: less than a verified reply, and
+        Strict has the model attested again before anything more is sent to it. A
+        verified one, or any reply without Strict, is not. From DA Assistant's tests
+        (Nov 2026)."""
+        from tests.test_attestation import stream_hash
+
+        def replies(server, strict=True, **record):
+            session = PrivacySession(BASE, "sk-1", TEE_MODEL, strict=strict,
+                                     tee_factory=server.tee_client)
+            session.ensure()
+            state = session.check_reply("chatcmpl-1", **record).state
+            session.ensure()
+            return state, len(server.plain_reports())
+
+        came = {"body_hash": stream_hash(FakeNanoGpt().stream())}
+        assert replies(FakeNanoGpt(tied="statement")) == (private_ai.SIGNED, 2)
+        assert replies(FakeNanoGpt(tied="statement", signature_status=500),
+                       **came) == (private_ai.UNCHECKED, 2)
+        assert replies(FakeNanoGpt(tied="statement", signed_bytes=b"data: [DONE]\n\n"),
+                       **came) == (private_ai.FAILED, 2)
+        assert replies(FakeNanoGpt(tied="statement"), **came) == (private_ai.VERIFIED, 1)
+        assert replies(FakeNanoGpt(tied="statement"), strict=False) == (private_ai.SIGNED, 1)
+
     def test_strict_attests_again_after_a_signature_by_another_key(self, endpoint):
-        server = FakeNanoGpt(signer=0x1234)
+        server = FakeNanoGpt(tied="statement", signer=0x1234)
         settings = private_settings(server=server, strict=True)
         ai.chat([], settings)
-        assert ai.session_of(settings).last_receipt().state == private_ai.MISMATCH
+        assert ai.session_of(settings).last_receipt().state == private_ai.FAILED
         ai.chat([], settings)
         assert len(server.plain_reports()) == 2
 

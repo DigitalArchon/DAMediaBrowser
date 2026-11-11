@@ -7,7 +7,7 @@ apart:
 
   TEE/*      Run inside a trusted execution environment. Before anything is
              sent, the enclave is attested (below), and every reply is
-             checked to be signed by the key that attestation vouched for.
+             checked against the record of it that the attested key signed.
              The text still passes nano-gpt's gateway in the clear:
              attestation proves where the model runs, not that nano-gpt
              cannot read it. And most of them (all but Chutes' own, in Nov
@@ -41,20 +41,28 @@ What matters here:
 - `GET {base}/tee/signature/{receipt or completion id}` returns a text and
   an EIP-191 signature; the signer recovered from them (ethsig.py) must be
   a key the attestation bound: the attested address, or a key of the
-  keyset the gateway's quote binds. That proves the attested key signed a
-  record for this reply, not that the record matches the reply's content:
-  a reply is "signed", never "verified". (Each request is sent whole, not
-  streamed, and nano-gpt rebuilds a whole TEE reply, so its bytes would not
-  match the record's hash unless asked for in its exact mode,
-  `X-NanoGPT-TEE-Response: exact`; nothing here compares them.)
+  keyset the gateway's quote binds. Since Nov 2026 (RedPill's signed
+  receipts, and nano-gpt's lookup by the receipt id a reply's headers name)
+  the text's response hash is that of the exact bytes the stream carried,
+  so a reply is "verified" for the text that came, and RedPill's receipt
+  beside it is held to the same hashes (TeeClient.check_reply). Neither hash
+  is of what this app sent: the request is hashed as nano-gpt passed it on.
+  (Each request here is still sent whole, not streamed, and nano-gpt
+  rebuilds a whole TEE reply, so there are no bytes of it to compare: such a
+  reply is "signed, text not compared".)
+
+What attestation proves is genuine, current Intel hardware (and NVIDIA GPUs,
+where their evidence is offered) holding a live key bound to this request's
+nonce. Not which software runs there: no measurement in the quote is
+compared with a published one.
 
 An operation's privacy is decided once, when it starts (ai.settings_from
 makes its PrivacySession), and never relaxed: its model is copied then, so
 switching Privacy Mode off, or choosing another model, leaves a run already
 going exactly as it was. So is whether its attestation is strict: an
 attestation that proved less than it could is then refused rather than
-used, and a TEE reply whose signature does not hold has its model attested
-again before anything more is sent to it.
+used, and a TEE reply that proved less than a verified one has its model
+attested again before anything more is sent to it.
 """
 
 import base64
@@ -89,15 +97,28 @@ E2EE = "e2ee"
 # What an attestation of RedPill's gateway lacks (TeeClient._attest_signing_key,
 # _attest_gateway): it is shown in amber, and Strict refuses it.
 GATEWAY_SHORTFALL = "RedPill's gateway, not the model's host"
+# And what one lacks whose quote binds the key that signs each reply's record but not
+# the gateway's receipt keys beside it: one nano-gpt has no report of the gateway's own
+# for, or whose keys that report does not include the signing key among.
+RECEIPT_KEYS_LOOSE = "receipt keys not in the quote"
 # And what one of a model Chutes serves lacks when nano-gpt gave no report of RedPill's
 # gateway for it, for any reason but that RedPill does not serve it (a 400): whether the
 # gateway answers it instead now and then, unattested, is not known (_attest_instances).
 GATEWAY_UNCHECKED = "RedPill's gateway unchecked"
 
-# What one reply's check found. See Receipt.
-SIGNED = "signed"            # TEE: the attested key signed this reply's record
-MISMATCH = "mismatch"        # TEE: a different key did
-UNSIGNED = "unsigned"        # TEE: no signature was kept, or it could not be fetched
+# A stream's receipt is complete just after the stream ends (nano-gpt's own example
+# waits up to about 20 seconds): a reply that names one is looked up again meanwhile.
+RECEIPT_WAIT_SECONDS = 20
+RECEIPT_RETRY_SECONDS = 2
+# Models whose streams nano-gpt rebuilds from the upstream's, so that their bytes never
+# match the record's hash (nano-gpt, Nov 2026).
+REBUILT_STREAMS = frozenset({"TEE/gemma-4-31b-it"})
+
+# What one reply's check found (TeeClient.check_reply). See Receipt.
+VERIFIED = "verified"        # TEE: the attested key signed its record, for these bytes
+SIGNED = "signed"            # TEE: the attested key signed its record; bytes not compared
+FAILED = "failed"            # TEE: another key signed it, other bytes, or its receipt fails
+UNCHECKED = "unchecked"      # TEE: no record could be read, or it could not be judged
 SEALED = "sealed"            # E2EE: it came back sealed by the attested enclave
 
 TEE_NOTE = ("TEE: the model runs in an attested enclave and its replies are signed, but "
@@ -329,7 +350,7 @@ def _json(value):
 
 def _canonical(value):
     """RFC 8785 JSON, which is this simple for documents of ASCII keys, strings and
-    integers (RedPill's keysets)."""
+    integers (RedPill's keysets and receipts)."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False).encode()
 
@@ -344,6 +365,13 @@ def _hex(value):
     return bytes.fromhex(value.removeprefix("0x"))
 
 
+def _keyset_of(body):
+    """RedPill's aci/1 `workload_keyset`, as nano-gpt relays it, or None."""
+    report = body.get("attestation")
+    keyset = report.get("workload_keyset") if isinstance(report, dict) else None
+    return keyset if isinstance(keyset, dict) else None
+
+
 def _statement(keyset, nonce):
     """The report data RedPill's quote holds for a keyset and a nonce: the SHA-256 of
     its attestation statement, zero padded (its verifier's computeReportData, read Nov
@@ -351,6 +379,14 @@ def _statement(keyset, nonce):
     statement = (f'{{"keyset_digest":"{_digest(_canonical(keyset))}","nonce":"{nonce}",'
                  f'"purpose":"aci.report_data.v1"}}').encode()
     return hashlib.sha256(statement).digest() + bytes(32)
+
+
+def _holds_key(keyset, address):
+    """Whether the keyset lists the secp256k1 key whose address is `address`: the
+    gateway's e2ee key is the one it signs reply records with (live, Nov 2026)."""
+    return any(_address_of_public(entry.get("public_key")) == address.lower()
+               for entry in keyset.get("e2ee_public_keys") or []
+               if isinstance(entry, dict))
 
 
 def _address_of_public(value):
@@ -542,6 +578,9 @@ class TeeClient:
         self.signers = frozenset()
         # Attested by its instances (Chutes), whose replies carry no record.
         self.instances = False
+        # The gateway's receipt keys, when tied to the attested quote (_take_keyset).
+        self.keyset = None
+        self.keyset_digest = None
         self._base = None
         # The two verifiers, replaceable so tests can stand in for Intel and NVIDIA.
         self._intel = intel or dcap.verify
@@ -553,16 +592,16 @@ class TeeClient:
             # nano-gpt names a route on a reply now and then: the lookup of its record
             # names it too (check_reply). Not the attestation: see attest().
             headers["X-TEE-Verification-Route"] = route
-        last = ""
+        last, last_status = "", None
         for base in [self._base] if self._base else _bases(self.api_url):
             try:
                 response = self.session.get(f"{base}{path}", params=params,
                                             headers=headers, timeout=timeout)
             except netguard.RequestError as e:
-                last = str(e)
+                last, last_status = str(e), None
                 continue
             if response.status_code == 404:
-                last = f"{base}{path}: 404"
+                last, last_status = f"{base}{path}: 404", 404
                 continue
             if response.status_code >= 400:
                 # nano-gpt's own words, when it gives any: "Unable to reach RedPill
@@ -581,7 +620,10 @@ class TeeClient:
                 raise PrivacyError(f"{base}{path} returned {type(body).__name__}")
             self._base = base
             return body
-        raise PrivacyError(f"no TEE endpoint answered ({last})")
+        error = PrivacyError(f"no TEE endpoint answered ({last})")
+        error.status_code = last_status         # 404 when that was the last answer
+        error.reason = ""
+        raise error
 
     def attest(self):
         """Check the enclave now, with a fresh nonce.
@@ -611,13 +653,13 @@ class TeeClient:
 
         Beside the model's own report, RedPill's gateway's is asked for, with a nonce of
         its own (_attest_gateway, Nov 10 2026). Where it binds the gateway's keys to that
-        nonce, they are the ones a reply's record is checked against: a signing key
-        among them is checked with them; a model whose own report is relayed for a nonce
-        not ours, or timed out twice over, is attested through the gateway that answers
-        it (_attest_gateway_alone); and a reply RedPill answers for a model Chutes serves
-        first is checked against them. One in RedPill's shape for another nonce refuses
-        the model; none - Chutes or Tinfoil alone, an outage - leaves things as they
-        were, but for a model Chutes serves (GATEWAY_UNCHECKED).
+        nonce, they are the ones a reply's record and receipt are checked against: a
+        signing key among them binds the receipt keys too; a model whose own report is
+        relayed for a nonce not ours, or timed out twice over, is attested through the
+        gateway that answers it (_attest_gateway_alone); and a reply RedPill answers for
+        a model Chutes serves first is checked against them. One in RedPill's shape for
+        another nonce refuses the model; none - Chutes or Tinfoil alone, an outage -
+        leaves things as they were, but for a model Chutes serves (GATEWAY_UNCHECKED).
 
         Stricter than SealedLore, the gateway stands in only in those two cases: the
         model's own report relayed by RedPill for a nonce not ours, or a 504 still a 504
@@ -725,10 +767,11 @@ class TeeClient:
         Its body is aci/1: `attestation.workload_keyset`, and the TDX quote in
         `attestation.evidence.quote`. The quote's report data, read from its own bytes,
         is the SHA-256 of RedPill's attestation statement of that keyset and our nonce,
-        zero padded (_statement): the hardware binds the keys that sign each reply's
-        record, all of them, which nano-gpt's other report does not (it binds one).
-        Every model RedPill serves is answered by the same gateway image (SealedLore,
-        live: 14 of 14 quotes alike, plain and aci). It carries no GPU evidence.
+        zero padded (_statement): the hardware binds the receipt key and the keys that
+        sign each reply's record, which nano-gpt's other report does not (it binds one
+        signing key, the keyset published beside it). Every model RedPill serves is
+        answered by the same gateway image (SealedLore, live: 14 of 14 quotes alike,
+        plain and aci). It carries no GPU evidence.
 
         Refuses - PrivacyError - a report in RedPill's shape that does not bind our
         nonce, whose quote Intel does not vouch for, or whose keys are past their time.
@@ -753,7 +796,8 @@ class TeeClient:
                                f"read ({e})")
         # From the quote's own bytes, never nano-gpt's copy (`report_data`).
         if quote.report_data != _statement(keyset, nonce):
-            raise PrivacyError(f"{self.model}'s gateway did not bind its keys to our nonce")
+            raise PrivacyError(f"{self.model}'s gateway did not bind its keys to our "
+                               f"nonce")
         self._refuse_expired(keyset)
         check = _Checks("the gateway's Intel TDX quote binds its keys to our nonce")
         check.fall_short(GATEWAY_SHORTFALL)
@@ -765,7 +809,8 @@ class TeeClient:
 
     def _refuse_expired(self, keyset):
         """Keys RedPill attests only until a time now past are refused: what was
-        attested is keys no longer in force."""
+        attested is keys no longer in force. A keyset that names no such time is not
+        used for the receipts, and falls short (_take_keyset)."""
         expires = keyset.get("not_after") if isinstance(keyset, dict) else None
         if isinstance(expires, (int, float)) and not isinstance(expires, bool) \
                 and expires < time.time():
@@ -776,10 +821,10 @@ class TeeClient:
         """The gateway, attested for our nonce, stands for a model RedPill answers whose
         own attestation cannot be had or checked (live, Nov 10 2026: TEE/deepseek-v3.2
         and TEE/qwen3.6-27b, relayed for a nonce not ours; TEE/qwen3.6-27b earlier that
-        day, a 504 asked again). Its replies are signed by the gateway's bound keys; the
-        model's own enclave and GPUs are then the gateway's word in each reply's
-        receipt, not checked here - so it falls short twice over: the gateway, and no
-        GPU evidence. From SealedLore."""
+        day, a 504 asked again). Its replies are signed by the gateway's bound keys and
+        carry its receipts; the model's own enclave and GPUs are then the gateway's word
+        in each receipt (`upstream.verified`), not checked here - so it falls short
+        twice over: the gateway, and no GPU evidence. From SealedLore."""
         check = _Checks(f"{why}: the gateway that answers it is attested instead")
         check.merge(gateway.check)
         check.fall_short("no GPU evidence")
@@ -788,6 +833,7 @@ class TeeClient:
                    "request on to the model's host, and each reply's receipt carries the "
                    "gateway's word that its upstream was verified")
         self.signing_address, self.signers, self.instances = None, gateway.signers, False
+        self._take_keyset(gateway.keyset, "the quote binds its receipt keys", check)
         return check.attestation(self.model, "gateway's keys bound to our nonce",
                                  signers=self.signers)
 
@@ -799,16 +845,27 @@ class TeeClient:
         key for all), which passes each request on to the model's host. Its quote is the
         gateway's; the GPU evidence is the upstream node's, made with our nonce but not
         bound to that quote; that the model itself runs in an enclave is not in it -
-        RedPill says that per reply, in a signed receipt this app does not read. So
-        such an attestation is partial (GATEWAY_SHORTFALL), and Strict refuses it: a
-        private/ model is sealed end to end, to an enclave that is attested itself.
-        Keys RedPill attests that have expired are refused. From DA Vibe Manager
-        (Nov 2026).
+        RedPill says that per reply, in a signed receipt, which check_reply reads where
+        nano-gpt passes it on. So such an attestation is partial (GATEWAY_SHORTFALL),
+        and Strict refuses it: a private/ model is sealed end to end, to an enclave that
+        is attested itself. Keys RedPill attests that have expired are refused. From DA
+        Vibe Manager (Nov 2026).
 
-        Where the gateway's own report (`gateway`, _attest_gateway) binds a keyset the
-        signing key is in, a reply's record is checked against every key that keyset
-        holds (live, Nov 10 2026: every signing key was one of the gateway's two). A
-        gateway whose keys do not hold the signing key counts for nothing here.
+        The quote's report data binds the signing key in one of two ways: as nano-gpt
+        serves it, the signing address, zero padding and our nonce; or as RedPill's own
+        statement does, the gateway's keyset - the signing key among its keys - and our
+        nonce (_statement). The first binds the key that signs each reply's record and
+        not the receipt keys beside it, which are only published with it: it is
+        partial for that too (RECEIPT_KEYS_LOOSE), keyset or none, so that leaving the
+        keyset out never reads better than sending it loose. The keyset is kept for the
+        replies' receipts either way it is tied (_take_keyset). From SealedLore (Nov
+        2026).
+
+        Unless the gateway's own report (`gateway`, _attest_gateway) binds a keyset the
+        signing key is in: the receipt keys are then the hardware's too, and a reply's
+        record is checked against every key that keyset holds (live, Nov 10 2026: every
+        signing key was one of the gateway's two). A gateway whose keys do not hold the
+        signing key counts for nothing here.
         """
         address = body.get("signing_address")
         address = address if isinstance(address, str) and address.startswith("0x") else None
@@ -820,28 +877,41 @@ class TeeClient:
         except (ValueError, dcap.DcapError) as e:
             raise PrivacyError(f"{self.model}'s Intel TDX quote could not be read ({e})")
         # Read from the quote's own bytes - the part Intel's chain signs - rather than
-        # from nano-gpt's JSON copy of it: the signing address, zero padding, our nonce.
+        # from nano-gpt's JSON copy of it.
         report_data = quote.report_data
-        if report_data[:20] != bytes.fromhex(address[2:]) or any(report_data[20:32]) \
-                or report_data[32:] != bytes.fromhex(nonce):
+        keyset = _keyset_of(body)
+        holds = keyset is not None and _holds_key(keyset, address)
+        signers = frozenset({address.lower()})
+        through_gateway = False
+        if report_data[:20] == bytes.fromhex(address[2:]) and not any(report_data[20:32]) \
+                and report_data[32:] == bytes.fromhex(nonce):
+            check = _Checks("the Intel TDX quote binds the signing key to our nonce")
+            bound = "signing key bound to our nonce"
+            if gateway is not None and address.lower() in gateway.signers:
+                # The gateway's report binds the keyset this key is in: the receipt key
+                # is the hardware's too, and its other keys sign records as this one does.
+                check.merge(gateway.check)
+                self._refuse_expired(keyset)        # the one published beside it, too
+                keyset, signers, through_gateway = gateway.keyset, gateway.signers, True
+                tie = ("the gateway's quote binds its receipt keys, the signing key among "
+                       "them")
+                loose, bound = False, "signing key and gateway's keys bound to our nonce"
+            else:
+                tie = ("its receipt keys are published beside the attested signing key"
+                       if holds else "")
+                loose = True
+                if gateway is not None:
+                    check.note("the gateway's attested keys do not include the signing "
+                               "key")
+        elif holds and report_data == _statement(keyset, nonce):
+            check = _Checks("the Intel TDX quote binds the gateway's keys, its signing key "
+                            "among them, to our nonce")
+            tie = "the quote binds its receipt keys"
+            loose, bound = False, "gateway's keys bound to our nonce"
+        else:
             raise PrivacyError(f"{self.model}'s attestation did not bind its signing key "
                                f"to our nonce")
-
-        check = _Checks("the Intel TDX quote binds the signing key to our nonce")
-        bound = "signing key bound to our nonce"
-        attested = body.get("attestation")
-        keyset = attested.get("workload_keyset") if isinstance(attested, dict) else None
         self._refuse_expired(keyset)
-        signers = frozenset({address.lower()})
-        through_gateway = gateway is not None and address.lower() in gateway.signers
-        if through_gateway:
-            # The gateway's report binds the keyset this key is in: its other keys sign
-            # records as this one does.
-            check.merge(gateway.check)
-            check.note("the gateway's quote binds its keys, the signing key among them")
-            signers, bound = gateway.signers, "signing key and gateway's keys bound to our nonce"
-        elif gateway is not None:
-            check.note("the gateway's attested keys do not include the signing key")
         serving = body.get("service_capabilities")
         if through_gateway or body.get("api_version") == "aci/1" or (
                 isinstance(serving, dict) and serving.get("serving") == "aggregator"):
@@ -849,6 +919,10 @@ class TeeClient:
             check.note("this is RedPill's gateway, which passes each request on to the "
                        "model's host: the gateway's quote and the GPUs' evidence are "
                        "checked, not that the model itself runs in an enclave")
+        if loose:
+            check.fall_short(RECEIPT_KEYS_LOOSE)
+            check.note("the quote binds the key that signs each reply's record, not the "
+                       "gateway's receipt keys")
         self._check_quote(raw, check)
         payload = _json(body.get("nvidia_payload"))
         if isinstance(payload, dict):
@@ -861,8 +935,27 @@ class TeeClient:
             payload = None
         self._check_gpus(payload, nonce, check, "this request's nonce")
         self.signing_address, self.signers, self.instances = address, signers, False
+        self._take_keyset(keyset if tie else None, tie, check)
         return check.attestation(self.model, bound, signing_address=address,
                                  signers=signers)
+
+    def _take_keyset(self, keyset, tie, check):
+        """The gateway's receipt-signing keys (RedPill's aci/1 workload_keyset), kept
+        for the replies' receipts (check_reply) only when tied to the quote: it commits
+        to them (RedPill's statement, or the gateway's own report), or they are
+        published with the signing key it binds (nano-gpt's other report, Nov 2026),
+        the weaker tie. A keyset tied neither way, or past its time, is not used, and
+        receipts go unread. From SealedLore (Nov 2026)."""
+        self.keyset = self.keyset_digest = None
+        if keyset is None:
+            return
+        not_after = keyset.get("not_after")
+        if not isinstance(not_after, int) or not_after <= time.time():
+            check.note("its receipt keys have expired, so receipts are not checked")
+            check.fall_short("receipt keys expired")
+            return
+        self.keyset, self.keyset_digest = keyset, _digest(_canonical(keyset))
+        check.note(tie)
 
     def _attest_instances(self, body, nonce, gateway=None, unheard=""):
         """Per instance: each quote binds an instance key, which signed our nonce.
@@ -926,6 +1019,7 @@ class TeeClient:
                            f"some models Chutes serves first now and then, just now "
                            f"({unheard}): a reply it answered could not be checked")
             self.signers = frozenset()
+            self._take_keyset(None, "", check)
             attestation = check.attestation(self.model, summary, instances=len(instances))
             attestation.detail += ("; this provider signs no replies, so answers show as "
                                    "unsigned")
@@ -936,6 +1030,8 @@ class TeeClient:
                    "gateway's attested keys, and its host is the gateway's word, not "
                    "attested here")
         self.signers = gateway.signers
+        self._take_keyset(gateway.keyset, "a reply RedPill's gateway answers instead is "
+                                          "checked against its attested keys", check)
         attestation = check.attestation(self.model, summary + ", and RedPill's gateway's "
                                         "keys", signers=self.signers,
                                         instances=len(instances))
@@ -1068,46 +1164,86 @@ class TeeClient:
         except ValueError:
             return None
 
-    def check_reply(self, response_id, receipt_id=None, route=None):
-        """SIGNED, MISMATCH or UNSIGNED, with a sentence saying why.
+    def check_reply(self, response_id, receipt_id=None, body_hash=None, route=None):
+        """Whether this reply was the attested enclave's, as it arrived: VERIFIED,
+        SIGNED, FAILED or UNCHECKED, with a sentence saying why.
 
-        The reply's record is looked up by the receipt id its headers named, else by
-        its own id, with the route they named (X-TEE-Verification-Route), and must be
-        signed by a key the attestation bound - any of `signers`: the attested signing
-        key, or the keys of the keyset the gateway's quote binds (Nov 10 2026), of
-        which a model attested through the gateway alone has no other. A model
-        attested by its instances (Chutes) signs no replies, and one that names no
-        receipt is not looked up: only a reply RedPill's gateway answered instead names
-        one, and is checked against the gateway's keys, where those were attested."""
+        nano-gpt's record of a reply (Nov 2026: RedPill's signed receipts), looked up by
+        the receipt id its headers named, else by the reply's own id:
+          - `text`, "sha256(request):sha256(response)" as the gateway hashed them,
+            signed (EIP-191) by the key the attestation bound;
+          - the response's hash, that of the exact bytes the stream carried
+            (`body_hash`, "sha256:...", hashed by ai.py as they were read) - but for a
+            model whose stream nano-gpt rebuilds (REBUILT_STREAMS), and a stream that
+            did not arrive whole (no `body_hash`), whose bytes are not compared;
+          - RedPill's receipt, signed (Ed25519) by a key of the keyset kept at
+            attestation (_take_keyset), for the same two hashes, saying its upstream was
+            verified, as nano-gpt requires (_receipt_holds).
+
+        "The key the attestation bound" is any of `signers`: the attested signing key,
+        or the keys of the keyset the gateway's quote binds (Nov 10 2026), of which a
+        model attested through the gateway alone has no other. A model attested by its
+        instances (Chutes) signs no replies, and one that names no receipt is not looked
+        up: only a reply RedPill's gateway answered instead names one, and is checked
+        against the gateway's keys, where those were attested.
+
+        VERIFIED: signed by the attested key, for these exact bytes, its receipt holding
+        where it was read. SIGNED: signed by it, the bytes not compared. FAILED: signed
+        by another key, or for other bytes, or a receipt that does not hold. UNCHECKED:
+        no record could be read, or the gateway's keys changed since it was attested.
+        Until Nov 2026 only the signer was checked, so "signed" said nothing of the text
+        shown. From SealedLore (Nov 2026)."""
         lookup = receipt_id or response_id
         if not lookup:
-            return UNSIGNED, "the reply carried no id to check"
+            return UNCHECKED, "the reply carried no id to check"
         if not self.signers or (self.instances and receipt_id is None):
             # The per-instance providers (Chutes) sign no replies: nano-gpt answers
             # "TEE signature is not available for this model". Their instances were each
             # attested instead. Only a reply RedPill's gateway answered names a receipt
             # (nano-gpt, Nov 10 2026).
-            return UNSIGNED, ("this model's provider signs no replies; every instance "
-                              "that could answer was attested before sending")
+            return UNCHECKED, ("this model's provider signs no replies; every instance "
+                               "that could answer was attested before sending")
         try:
-            body = self._get(f"/tee/signature/{quote(lookup, safe='')}",
-                             {"model": self.model, "signing_algo": "ecdsa"}, route=route)
+            body = self._signature(lookup, route, wait=receipt_id is not None)
         except PrivacyError:
-            # Live: some TEE/ models' providers keep no signature for a reply.
-            return UNSIGNED, "the provider kept no signature for this reply"
+            # Live: some TEE/ models' providers keep no record of a reply.
+            return UNCHECKED, "the provider kept no signature for this reply"
         text, signature = body.get("text"), body.get("signature")
         if not isinstance(text, str) or not isinstance(signature, str):
-            return UNSIGNED, "the signature record held no text or signature"
+            return UNCHECKED, "the signature record held no text or signature"
         try:
             signer = recover_personal(text, signature)
         except ValueError:
-            return MISMATCH, "the signature is not a valid signature"
+            return FAILED, "the signature is not a valid signature"
         if signer.lower() not in self.signers:
-            return MISMATCH, f"signed by {signer}, not {self._attested_keys()}"
+            return FAILED, f"signed by {signer}, not {self._attested_keys()}"
         # Named as the attestation named it, where it named this one.
         key = (self.signing_address
                if (self.signing_address or "").lower() == signer.lower() else signer)
-        return SIGNED, f"signed by the attested key {key}"
+        request_hash, _colon, response_hash = text.partition(":")
+        # However the model is written, as is_tee reads it.
+        rebuilt = str(self.model).strip().lower() in {m.lower() for m in REBUILT_STREAMS}
+        compared = bool(body_hash) and not rebuilt
+        if compared and f"sha256:{response_hash.lower()}" != body_hash:
+            return FAILED, (f"the attested key {key} signed a record of other bytes than "
+                            f"the reply that came")
+        receipt = body.get("receipt")
+        read = isinstance(receipt, dict) and self.keyset is not None
+        if read:
+            try:
+                holds = self._receipt_holds(receipt, request_hash, response_hash)
+            except PrivacyError as e:
+                return UNCHECKED, str(e)
+            if not holds:
+                return FAILED, "RedPill's receipt for it does not hold"
+        held = "; RedPill's receipt for it holds" if read else ""
+        if compared:
+            return VERIFIED, (f"signed by the attested key {key}, for the exact bytes "
+                              f"that came{held}")
+        why = ("nano-gpt rebuilds this model's stream" if rebuilt
+               else "the reply did not arrive whole")
+        return SIGNED, (f"signed by the attested key {key}{held}; its text was not "
+                        f"compared with the record: {why}")
 
     def _attested_keys(self):
         """The keys a reply's record may be signed by, as a sentence names them."""
@@ -1115,6 +1251,59 @@ class TeeClient:
             return f"the attested {self.signing_address}"
         return "any key the attestation bound (" + ", ".join(sorted(self.signers)) + ")"
 
+    def _signature(self, lookup, route, wait):
+        """The reply's record, or PrivacyError. For a reply that named its receipt, asked
+        again while it is not ready (404, 502, 503), for RECEIPT_WAIT_SECONDS: a stream's
+        receipt is complete just after it ends. One that named none is asked once:
+        live, replies that named none had no record to wait for."""
+        path = f"/tee/signature/{quote(lookup, safe='')}"
+        deadline = time.monotonic() + (RECEIPT_WAIT_SECONDS if wait else 0)
+        while True:
+            try:
+                return self._get(path, {"model": self.model}, route=route)
+            except PrivacyError as e:
+                ready_later = getattr(e, "status_code", None) in (404, 502, 503)
+                if not ready_later or time.monotonic() >= deadline:
+                    raise
+            time.sleep(RECEIPT_RETRY_SECONDS)
+
+    def _receipt_holds(self, receipt, request_hash, response_hash):
+        """Whether the receipt was signed by a key of the attested keyset, under that
+        keyset, for this exchange - the hashes the attested key signed - and says its
+        upstream was verified, as nano-gpt requires. PrivacyError when the gateway's
+        keys have changed since: not a reply that failed, one that cannot be judged."""
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        if receipt.get("workload_keyset_digest") != self.keyset_digest:
+            # The gateway renews its keys now and then.
+            raise PrivacyError("the gateway's keys changed since it was attested")
+        served = receipt.get("served_at")
+        if receipt.get("api_version") != "aci/1" or not isinstance(served, int):
+            return False
+        if served >= self.keyset.get("not_after", 0):
+            return False
+        named = receipt.get("key_id")
+        entry = next((key for key in self.keyset.get("receipt_signing_keys") or []
+                      if isinstance(key, dict) and key.get("key_id") == named), None)
+        if entry is None or entry.get("algo") != "ed25519":
+            return False
+        unsigned = {key: value for key, value in receipt.items() if key != "signature"}
+        try:
+            Ed25519PublicKey.from_public_bytes(_hex(entry.get("public_key"))).verify(
+                _hex(receipt.get("signature")), _canonical(unsigned))
+        except (InvalidSignature, ValueError, TypeError):
+            return False
+        events = {}
+        for event in receipt.get("event_log") or []:
+            if isinstance(event, dict):
+                events.setdefault(str(event.get("type")), event)
+        hashes = (events.get("request.received", {}).get("body_hash"),
+                  events.get("response.returned", {}).get("body_hash"))
+        if hashes != (f"sha256:{request_hash.lower()}", f"sha256:{response_hash.lower()}"):
+            return False
+        upstream = events.get("upstream.verified", {})
+        return upstream.get("result") == "verified" and upstream.get("required") is True
 
 
 
@@ -1158,8 +1347,8 @@ class PrivacySession:
     clock, which runs on while the machine sleeps, unless a test gives another.
 
     `strict`: refuse an attestation that proved less than it could
-    (Attestation.fell_short), and attest a TEE model again after a reply whose
-    signature did not hold. Fixed for the operation, like its model.
+    (Attestation.fell_short), and attest a TEE model again after a reply that
+    proved less than a verified one. Fixed for the operation, like its model.
     """
 
     def __init__(self, api_url, api_key, model, request_timeout=240,
@@ -1347,29 +1536,33 @@ class PrivacySession:
         self._accept(attestation, self._clock(),
                      known is None or known.detail != attestation.detail)
 
-    def check_reply(self, response_id, receipt_id=None, route=None):
-        """Record and return what can be said about one reply. `receipt_id` and
-        `route` are what a TEE reply's headers named (TeeClient.check_reply).
+    def check_reply(self, response_id, receipt_id=None, body_hash=None, route=None):
+        """Record and return what can be said about one reply. `receipt_id`,
+        `body_hash` and `route` are what a TEE reply's stream said of itself: the
+        receipt id and route nano-gpt's headers named, and the hash of every byte
+        it carried (TeeClient.check_reply).
 
-        With strict attestation, a TEE reply whose signature does not hold -
-        signed by another key, or by none when it was one the attested keys
-        were to sign (_signs) - has its model attested again before anything
-        more is sent to it."""
+        With strict attestation, a TEE reply that proved less than a verified
+        one - a check that failed, or, one the attested keys were to sign
+        (_signs), a record that could not be read or whose text could not be
+        compared - has its model attested again before anything more is sent to
+        it."""
         if self.kind == E2EE:
             receipt = Receipt(self.model, E2EE, SEALED,
                               "decrypted here; only the attested enclave could have "
                               "sealed it")
         elif self._tee is None:
-            receipt = Receipt(self.model, TEE, UNSIGNED, "the enclave had not been attested")
+            receipt = Receipt(self.model, TEE, UNCHECKED,
+                              "the enclave had not been attested")
         else:
             state, detail = self._tee.check_reply(response_id, receipt_id=receipt_id,
-                                                  route=route)
+                                                  body_hash=body_hash, route=route)
             receipt = Receipt(self.model, TEE, state, detail)
         with self._lock:
             self._receipts.append(receipt)
             signs = _signs(self.attestation, receipt_id)
-            if self.strict and (receipt.state == MISMATCH
-                                or (receipt.state == UNSIGNED and signs)):
+            if self.strict and (receipt.state == FAILED
+                                or (receipt.state in (UNCHECKED, SIGNED) and signs)):
                 self._doubted = True
         self._emit("receipt", receipt)
         return receipt
@@ -1444,13 +1637,18 @@ def attestation_label(attestation):
 
 
 def receipt_label(receipt):
-    """(text, tone) for one reply, from its receipt."""
+    """(text, tone) for one reply, from its receipt: what its check found, as DA
+    Assistant's receipt_badge says it (Nov 2026). "Verified" only for a reply whose
+    exact bytes the attested key's record names; one signed but not compared, or
+    with no record to read, is amber, and one whose check failed is red."""
     if receipt is None:
         return "", OK
     if receipt.state == SEALED:
         return "✓ end-to-end encrypted", OK
+    if receipt.state == VERIFIED:
+        return "✓ TEE, verified", OK
     if receipt.state == SIGNED:
-        return "✓ TEE, signed by the attested enclave", OK
-    if receipt.state == MISMATCH:
-        return "⚠ TEE, signature mismatch", BAD
-    return "TEE, signature unavailable", WARN
+        return "TEE, signed, text not compared", WARN
+    if receipt.state == FAILED:
+        return "⚠ TEE, check failed", BAD
+    return "⚠ TEE, not verified", WARN

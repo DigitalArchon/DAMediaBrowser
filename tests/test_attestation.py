@@ -69,7 +69,9 @@ class FakeResponse:
         self._body = body
         self._lines = list(lines)
         self.text = json.dumps(body) if body is not None else ""
-        self.content = content if content is not None else self.text.encode()
+        if content is None:
+            content = stream_bytes(self._lines) if self._lines else self.text.encode()
+        self.content = content
         self.headers = headers or {}
         self.closed = False
 
@@ -94,8 +96,13 @@ def sse_lines(reply, response_id="chatcmpl-42"):
             for piece in pieces] + [b"data: [DONE]"]
 
 
-UP_TO_DATE = dcap.Result(status="UpToDate", platform="UpToDate", qe="UpToDate",
-                         notes=["Intel's certificate chain verifies"])
+def stream_bytes(lines):
+    """The bytes a stream of `lines` carried: each an event, and a blank line after."""
+    return b"".join(line + b"\n\n" for line in lines)
+
+
+def stream_hash(data):
+    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def e2ee_public_key(private_key):
@@ -106,36 +113,58 @@ def e2ee_public_key(private_key):
     return "04" + point[0].to_bytes(32, "big").hex() + point[1].to_bytes(32, "big").hex()
 
 
+UP_TO_DATE = dcap.Result(status="UpToDate", platform="UpToDate", qe="UpToDate",
+                         notes=["Intel's certificate chain verifies"])
+
+
 def canonical(value):
-    """JSON as RedPill digests its keysets (RFC 8785, which for these is sorted keys and
-    no spaces)."""
+    """JSON as RedPill signs and digests its keysets and receipts (RFC 8785, which for
+    these is sorted keys and no spaces)."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False).encode()
 
 
 class FakeNanoGpt:
-    """A requests.Session standing in for nano-gpt: TEE attestation and signatures, NRAS,
-    and the chat endpoint. Records every request so a test can say none was made.
+    """A requests.Session standing in for nano-gpt: TEE attestation and the records of
+    replies, NRAS, and the chat endpoint. Records every request so a test can say none
+    was made.
 
     Intel's and NVIDIA's verification are stood in for by `intel` (a dcap.Result to
     return, or an exception to raise) and `nvidia` (a GPU count, or an exception); the
     real ones are tested against real evidence in RealEvidence below.
 
+    As nano-gpt is live (Nov 2026): the quote binds the signing address and our nonce,
+    and the record of a reply, signed by `signer`, hashes the exact bytes its stream
+    carried - or `signed_bytes`. `tied` adds RedPill's keyset to the attestation:
+    listing the signing key as its e2ee key ("e2ee", as nano-gpt relays it), bound by
+    the quote itself in RedPill's statement ("statement"), or neither ("none"). With it,
+    `receipts` puts the gateway's receipt in each record: its upstream `upstream`,
+    signed by the keyset's key or `receipt_key`, under the keyset's digest or `digest`.
+    `receipt_id` and `route` are the headers a reply names them in, and the first
+    `not_ready` lookups of a record find none yet. The stream carries `tail` after its
+    [DONE], or, `cut`, ends before it.
+
     `aci` is what `report=aci` answers (Nov 10 2026, gateway_report): RedPill's
-    gateway's own report binding its keyset - `gateway_keys` its e2ee keys, held until
-    `not_after` - to our nonce ("bound") or to another ("unbound"), a 400 as for a model
-    only Chutes or Tinfoil serves ("400"), nano-gpt's rate limit ("429"), or, None, the
-    plain report, as before nano-gpt offered the gateway's. Every attestation asked for
-    is in `reports` (its params, headers and timeout), and the headers of every lookup
-    of a reply's record in `lookups`."""
+    gateway's own report binding the keyset `tied` makes ("e2ee" when not given) to our
+    nonce ("bound") or to another ("unbound"), a 400 as for a model only Chutes or
+    Tinfoil serves ("400"), nano-gpt's rate limit ("429"), or, None, the plain report, as
+    before nano-gpt offered the gateway's. Every attestation asked for is in `reports`:
+    its params, headers and timeout.
+
+    From DA Assistant's tests (Nov 2026). This app's chat endpoint is netguard's
+    transport, which tests/test_private_ai.py fakes with `stream()` and the headers
+    `receipt_id` and `route` name (its tee_stream fixture)."""
 
     def __init__(self, nonce_bound=True, gpu=True, evidence=True, signer=KEY,
                  attestation_status=200, signature_status=200, reply="Hello there",
                  intel=UP_TO_DATE, nvidia=8, nras_status=200, attestation_extra=None,
-                 aci=None, gateway_keys=(KEY,), not_after=4_000_000_000):
-        self.aci, self.gateway_keys, self.not_after = aci, gateway_keys, not_after
+                 signed_bytes=None, tied=None, receipts=False, upstream="verified",
+                 receipt_key=None, digest=None, not_after=4_000_000_000, receipt_id=None,
+                 route=None, not_ready=0, tail=b"", cut=False, aci=None):
+        if aci is not None and tied is None:
+            tied = "e2ee"
+        self.aci = aci
         self.reports = []
-        self.lookups = []
         self.nonce_bound = nonce_bound
         # More of the attestation's body: what RedPill's gateway adds, say.
         self.attestation_extra = attestation_extra or {}
@@ -148,34 +177,54 @@ class FakeNanoGpt:
         self.intel = intel
         self.nvidia = nvidia if gpu else nras.NrasError("NVIDIA rejected the GPU evidence")
         self.nras_status = nras_status
+        self.signed_bytes = signed_bytes
+        self.tied, self.receipts, self.upstream = tied, receipts, upstream
+        self.receipt_key, self.digest, self.not_after = receipt_key, digest, not_after
+        self.receipt_id, self.route, self.not_ready = receipt_id, route, not_ready
+        self.tail, self.cut = tail, cut
+        self._keyset = None
         self.gets = []
         self.posts = []
+        self.lookups = []           # the headers of each lookup of a reply's record
 
-    def intel_verify(self, raw, session):
-        if isinstance(self.intel, BaseException):
-            raise self.intel
-        return self.intel
+    def lines(self):
+        lines = sse_lines(self.reply)
+        return lines[:-1] if self.cut else lines
 
-    def nvidia_verify(self, answer, nonce, session):
-        if isinstance(self.nvidia, BaseException):
-            raise self.nvidia
-        return self.nvidia
-
-    def tee_client(self, url, key, model):
-        return TeeClient(url, key, model, session=self, intel=self.intel_verify,
-                         nvidia=self.nvidia_verify)
+    def stream(self):
+        """The bytes the chat endpoint's stream carries."""
+        return stream_bytes(self.lines()) + self.tail
 
     @property
     def keyset(self):
-        """RedPill's workload keyset, as the gateway's report binds it."""
-        return {"subject": None, "not_after": self.not_after,
+        """RedPill's workload keyset, as `tied` has it - made once, its Ed25519 key with
+        it - or None."""
+        if self.tied is None:
+            return None
+        if self._keyset is None:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+            self.gateway = Ed25519PrivateKey.generate()
+            public = self.gateway.public_key().public_bytes_raw().hex()
+            self._keyset = {
+                "subject": None, "not_after": self.not_after,
                 "receipt_signing_keys": [{"key_id": "dstack-kms-receipt-ed25519-v1",
-                                          "algo": "ed25519", "public_key": "00" * 32}],
-                "e2ee_public_keys": [{"key_id": f"dstack-kms-e2ee-v{i + 1}",
+                                          "algo": "ed25519", "public_key": public}],
+                "e2ee_public_keys": [{"key_id": "dstack-kms-e2ee-v1",
                                       "algo": "secp256k1-aes-256-gcm-hkdf-sha256",
-                                      "public_key": e2ee_public_key(key)}
-                                     for i, key in enumerate(self.gateway_keys)],
+                                      "public_key": e2ee_public_key(
+                                          KEY if self.tied != "none" else 7)}],
                 "tls_public_keys": []}
+        return self._keyset
+
+    def report(self, nonce):
+        """The quote's report data: the signing address, zero padding and `nonce`, or
+        RedPill's statement of the keyset and `nonce`, as its verifier computes it."""
+        if self.tied == "statement":
+            digest = "sha256:" + hashlib.sha256(canonical(self.keyset)).hexdigest()
+            statement = (f'{{"keyset_digest":"{digest}","nonce":"{nonce}",'
+                         f'"purpose":"aci.report_data.v1"}}')
+            return hashlib.sha256(statement.encode()).digest() + bytes(32)
+        return bytes.fromhex(address_of(KEY).lower()[2:]) + bytes(12) + bytes.fromhex(nonce)
 
     def gateway_report(self, nonce):
         """What `report=aci` answers, as `aci` has it (nano-gpt, Nov 10 2026)."""
@@ -206,6 +255,37 @@ class FakeNanoGpt:
         """The model's own attestations asked for, not the gateway's."""
         return [r for r in self.reports if r["params"].get("report") != "aci"]
 
+    def receipt(self, request_hash, response_hash):
+        """RedPill's receipt for one exchange, as nano-gpt's lookup carries it."""
+        keyset = self.keyset
+        receipt = {
+            "api_version": "aci/1", "receipt_id": "rcpt-1",
+            "key_id": "dstack-kms-receipt-ed25519-v1", "served_at": 1_800_000_000,
+            "workload_keyset_digest": (self.digest or "sha256:"
+                                       + hashlib.sha256(canonical(keyset)).hexdigest()),
+            "event_log": [
+                {"type": "request.received", "body_hash": f"sha256:{request_hash}"},
+                {"type": "upstream.verified", "result": self.upstream, "required": True,
+                 "session_id": "s", "model_id": "m"},
+                {"type": "response.returned", "body_hash": f"sha256:{response_hash}"}]}
+        receipt["signature"] = (self.receipt_key or self.gateway).sign(
+            canonical(receipt)).hex()
+        return receipt
+
+    def intel_verify(self, raw, session):
+        if isinstance(self.intel, BaseException):
+            raise self.intel
+        return self.intel
+
+    def nvidia_verify(self, answer, nonce, session):
+        if isinstance(self.nvidia, BaseException):
+            raise self.nvidia
+        return self.nvidia
+
+    def tee_client(self, url, key, model):
+        return TeeClient(url, key, model, session=self, intel=self.intel_verify,
+                         nvidia=self.nvidia_verify)
+
     def get(self, url, params=None, headers=None, timeout=None):
         if "/tee/attestation" in url:
             self.asked(url, params, headers, timeout)
@@ -214,12 +294,13 @@ class FakeNanoGpt:
             if self.attestation_status != 200:
                 return FakeResponse(self.attestation_status, {"error": "no"})
             nonce = params["nonce"]
-            address = address_of(KEY).lower()
-            report = bytes.fromhex(address[2:]) + bytes(12) + (
-                bytes.fromhex(nonce) if self.nonce_bound else bytes(32))
+            report = self.report(nonce if self.nonce_bound else "00" * 32)
+            attestation = {"report_data": report.hex()}
+            if self.keyset is not None:
+                attestation["workload_keyset"] = self.keyset
             return FakeResponse(200, {
-                "signing_address": address,
-                "attestation": {"report_data": report.hex()},
+                "signing_address": address_of(KEY).lower(),
+                "attestation": attestation,
                 "intel_quote": fake_quote(report),
                 "nvidia_payload": json.dumps(
                     {"nonce": nonce,
@@ -229,15 +310,25 @@ class FakeNanoGpt:
         self.gets.append(url)
         if "/tee/signature/" in url:
             self.lookups.append(dict(headers or {}))
+            if self.not_ready:
+                self.not_ready -= 1
+                return FakeResponse(404, {"error": "not yet"})
             if self.signature_status != 200:
                 return FakeResponse(self.signature_status, {"error": "none kept"})
-            text = "aa:bb"
-            signature = sign(personal_hash(text.encode()), self.signer, 12345).hex()
-            return FakeResponse(200, {"text": text, "signature": signature})
+            request_hash = hashlib.sha256(b"the request as nano-gpt passed it on").hexdigest()
+            response_hash = hashlib.sha256(self.stream() if self.signed_bytes is None
+                                           else self.signed_bytes).hexdigest()
+            text = f"{request_hash}:{response_hash}"
+            record = {"text": text,
+                      "signature": sign(personal_hash(text.encode()), self.signer,
+                                        12345).hex()}
+            if self.receipts:
+                record["receipt"] = self.receipt(request_hash, response_hash)
+            return FakeResponse(200, record)
         return FakeResponse(404, {})
 
     def post(self, url, json=None, headers=None, data=None, stream=False, timeout=None):
-        self.posts.append({"url": url, "data": data, "json": json})
+        self.posts.append({"url": url, "data": data, "json": json, "headers": headers})
         if url.startswith(privacy.NRAS_URL):
             # As NVIDIA's tokens are: for the nonce it was sent, and current.
             now = int(time.time())
@@ -247,7 +338,9 @@ class FakeNanoGpt:
                                               "nbf": now - 60, "exp": now + 3600})],
                                  {}])
         if url == API_URL:
-            return FakeResponse(200, None, sse_lines(self.reply))
+            named = {"X-Receipt-Id": self.receipt_id, "X-TEE-Verification-Route": self.route}
+            return FakeResponse(200, None, self.lines(), content=self.stream(),
+                                headers={key: value for key, value in named.items() if value})
         return FakeResponse(404, {})
 
     @property
@@ -284,16 +377,31 @@ class TeeAttestation(unittest.TestCase):
     def client(self, **server):
         return FakeNanoGpt(**server).tee_client(API_URL, "k", TEXT)
 
-    def test_a_bound_quote_intel_and_nvidia_vouch_for_is_fully_attested(self):
+    def test_a_bound_quote_intel_and_nvidia_vouch_for_is_attested_its_receipt_keys_named(self):
+        """The quote binds the key that signs each reply's record, as nano-gpt serves
+        it (Nov 2026), and not the gateway's receipt keys: said, keyset or none."""
         attestation = self.client().attest()
-        self.assertEqual(attestation.level, "full")
+        self.assertEqual(attestation.level, "partial")
+        self.assertEqual(attestation.shortfalls, [privacy.RECEIPT_KEYS_LOOSE])
         self.assertTrue(attestation.gpu_ok)
         self.assertEqual(attestation.gpus, 8)
         self.assertEqual(attestation.tcb_status, "UpToDate")
         self.assertEqual(attestation.signing_address, address_of(KEY).lower())
         self.assertIn("binds the signing key to our nonce", attestation.detail)
         self.assertIn("vouches for 8 GPUs", attestation.detail)
+        self.assertEqual(attestation.headline, "TEE attested (receipt keys not in the quote)")
+
+    def test_one_whose_quote_binds_the_gateways_keys_itself_is_fully_attested(self):
+        """RedPill's own statement in the report data: the keyset, its signing key
+        among them, and our nonce."""
+        client = self.client(tied="statement")
+        attestation = client.attest()
+        self.assertEqual(attestation.level, "full")
         self.assertEqual(attestation.headline, "TEE attested")
+        self.assertIn("binds the gateway's keys, its signing key among them, to our "
+                      "nonce", attestation.detail)
+        self.assertIsNotNone(client.keyset)
+        self.assertEqual(attestation.signing_address, address_of(KEY).lower())
 
     def test_no_gpu_evidence_is_partial_and_says_so(self):
         attestation = self.client(evidence=False).attest()
@@ -370,19 +478,32 @@ class TeeAttestation(unittest.TestCase):
         with self.assertRaisesRegex(PrivacyError, "offers no attestation"):
             self.client(attestation_status=400).attest()
 
-    def test_reply_signatures(self):
-        client = self.client()
+    def test_reply_records(self):
+        """Only the signer was checked, so "signed" said nothing of the text shown: the
+        record's response hash must be the hash of the exact bytes that came now. From
+        SealedLore (Nov 2026)."""
+        server = FakeNanoGpt()
+        client = server.tee_client(API_URL, "k", TEXT)
         client.attest()
-        self.assertEqual(client.check_reply("chatcmpl-1")[0], privacy.SIGNED)
+        came = stream_hash(server.stream())
+        self.assertEqual(client.check_reply("chatcmpl-1", body_hash=came)[0],
+                         privacy.VERIFIED)
+        self.assertEqual(client.check_reply("chatcmpl-1")[0], privacy.SIGNED,
+                         "no bytes to compare")
+        state, detail = client.check_reply("chatcmpl-1",
+                                           body_hash=stream_hash(b"data: [DONE]\n\n"))
+        self.assertEqual(state, privacy.FAILED)
+        self.assertIn("other bytes than the reply that came", detail)
 
         other = self.client(signer=1)
         other.attest()
-        self.assertEqual(other.check_reply("chatcmpl-1")[0], privacy.MISMATCH)
+        self.assertEqual(other.check_reply("chatcmpl-1", body_hash=came)[0], privacy.FAILED)
 
         none_kept = self.client(signature_status=500)
         none_kept.attest()
-        self.assertEqual(none_kept.check_reply("chatcmpl-1")[0], privacy.UNSIGNED)
-        self.assertEqual(client.check_reply(None)[0], privacy.UNSIGNED)
+        self.assertEqual(none_kept.check_reply("chatcmpl-1", body_hash=came)[0],
+                         privacy.UNCHECKED)
+        self.assertEqual(client.check_reply(None)[0], privacy.UNCHECKED)
 
 
 # ---- real evidence -------------------------------------------------------------------
@@ -770,7 +891,9 @@ class RealEvidence(unittest.TestCase):
 
     # together
 
-    def test_the_whole_attestation_is_full(self):
+    def test_the_whole_attestation_holds_with_only_its_receipt_keys_short(self):
+        """Sept 2026's capture has no keyset: no receipts, and nothing binds them
+        either. Everything else is proved."""
         client = TeeClient(API_URL, "k", self.fixture["model"], session=self.session,
                            intel=lambda raw, s: dcap.verify(raw, s, now=self.when),
                            nvidia=lambda a, n, s: nras.verify(a, n, s, now=self.now))
@@ -780,10 +903,11 @@ class RealEvidence(unittest.TestCase):
             attestation = client.attest()
         finally:
             privacy.secrets.token_hex = original
-        self.assertEqual(attestation.headline, "TEE attested")
-        self.assertEqual(attestation.level, "full")
+        self.assertEqual(attestation.headline, "TEE attested (receipt keys not in the quote)")
+        self.assertEqual(attestation.shortfalls, [privacy.RECEIPT_KEYS_LOOSE])
         self.assertEqual((attestation.gpus, attestation.tcb_status), (8, "UpToDate"))
         self.assertEqual(attestation.signing_address, self.fixture["signing_address"])
+        self.assertIsNone(client.keyset)
 
 
 @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
@@ -1068,7 +1192,7 @@ class PerInstanceAttestation(unittest.TestCase):
         self.assertEqual(server.nras_nonces, [self.instances.gpu_nonce] * 2)
         self.assertEqual(server.verified_nonces, [self.instances.gpu_nonce] * 2)
         state, detail = client.check_reply("chatcmpl-1")
-        self.assertEqual(state, privacy.UNSIGNED)
+        self.assertEqual(state, privacy.UNCHECKED)
         self.assertIn("signs no replies", detail)
 
     def test_a_body_for_another_nonce_is_refused(self):
@@ -1137,6 +1261,66 @@ class AttestationShapesAndOutages(unittest.TestCase):
 
 
 
+# ---- RedPill's gateway, as nano-gpt relays it -----------------------------------------
+
+GATEWAY = {"api_version": "aci/1", "service_capabilities": {"serving": "aggregator"},
+           "attestation": {"workload_keyset": {"not_after": 4_000_000_000}}}
+
+
+class GatewayAttestation(unittest.TestCase):
+    """What nano-gpt relays for its TEE/ models is RedPill's gateway, which passes each
+    request on to the model's host: its quote is the gateway's, and the model's own
+    enclave is not shown. Ported from DA Assistant's tests (Nov 2026), from DA Vibe
+    Manager's."""
+
+    def attest(self, extra=GATEWAY):
+        return FakeNanoGpt(attestation_extra=extra).tee_client(API_URL, "k", TEXT).attest()
+
+    def test_the_gateways_attestation_is_partial_and_says_why(self):
+        attestation = self.attest()
+        self.assertEqual(attestation.level, "partial")
+        self.assertIn(privacy.GATEWAY_SHORTFALL, attestation.headline)
+        self.assertEqual(attestation.fell_short,
+                         [privacy.GATEWAY_SHORTFALL, privacy.RECEIPT_KEYS_LOOSE])
+        self.assertIn("not that the model itself runs in an enclave", attestation.detail)
+        self.assertEqual((attestation.gpus, attestation.tcb_status), (8, "UpToDate"),
+                         "every other check stands")
+
+    def test_either_of_its_marks_is_the_gateway(self):
+        for extra in ({"api_version": "aci/1"},
+                      {"service_capabilities": {"serving": "aggregator"}}):
+            self.assertEqual(self.attest(extra).fell_short,
+                             [privacy.GATEWAY_SHORTFALL, privacy.RECEIPT_KEYS_LOOSE])
+        self.assertEqual(self.attest({}).fell_short, [privacy.RECEIPT_KEYS_LOOSE])
+
+    @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+    def test_bound_by_its_own_statement_it_is_still_the_gateway(self):
+        """RedPill's statement ties its receipt keys to the quote; the quote is still
+        the gateway's, not the model's host's."""
+        server = FakeNanoGpt(tied="statement", attestation_extra={
+            key: GATEWAY[key] for key in ("api_version", "service_capabilities")})
+        attestation = server.tee_client(API_URL, "k", TEXT).attest()
+        self.assertEqual(attestation.fell_short, [privacy.GATEWAY_SHORTFALL])
+
+    def test_keys_it_attests_that_have_expired_are_refused(self):
+        expired = dict(GATEWAY, attestation={"workload_keyset": {"not_after": 1700000000}})
+        with self.assertRaisesRegex(PrivacyError, "attested keys expired on 2023-11-14"):
+            self.attest(expired)
+
+    def test_strict_refuses_it_and_says_where_to_turn(self):
+        server = FakeNanoGpt(attestation_extra=GATEWAY)
+        strict = PrivacySession(API_URL, "k", TEXT, tee_factory=server.tee_client,
+                                strict=True)
+        with self.assertRaisesRegex(PrivacyError, "RedPill's gateway, not the model's "
+                                                  "host.*strict attestation is on.*choose "
+                                                  "a private/ model.*nothing was sent"):
+            strict.ensure()
+        self.assertEqual(server.chat_posts, [])
+        relaxed = PrivacySession(API_URL, "k", TEXT, tee_factory=FakeNanoGpt(
+            attestation_extra=GATEWAY).tee_client)
+        self.assertEqual(relaxed.ensure().level, "partial")
+
+
 # ---- the gateway's own report (report=aci, nano-gpt, Nov 10 2026) --------------------
 
 # What a model's own attestation is when nano-gpt relays Chutes' for the relay's own
@@ -1150,84 +1334,126 @@ TIMED_OUT = {"error": "RedPill attestation service took too long to respond. Ple
 @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
 class GatewaysOwnReport(unittest.TestCase):
     """report=aci (nano-gpt, Nov 10 2026): RedPill's gateway's own report, whose quote
-    binds the gateway's whole keyset - the keys that sign each reply's record among
-    them - to a nonce of ours. Asked for beside the model's own report, each with its
-    own nonce. Ported from DA Assistant's tests (Nov 10 2026), from SealedLore's."""
+    binds the gateway's whole keyset - the receipt key and the keys that sign each
+    reply's record - to a nonce of ours. Asked for beside the model's own report, each
+    with its own nonce. Ported from DA Assistant's tests (Nov 2026), from SealedLore's;
+    the gateway stays partial here, as it is wherever it answers (GATEWAY_SHORTFALL)."""
 
     @classmethod
     def setUpClass(cls):
         cls.instances = InstanceEvidence()
 
-    def test_the_gateways_report_binds_the_signing_key_with_its_others(self):
-        server = FakeNanoGpt(aci="bound", gateway_keys=(KEY, 9))
+    def check(self, client, server, receipt_id="rcpt-1", **record):
+        record.setdefault("body_hash", stream_hash(server.stream()))
+        return client.check_reply("chatcmpl-42", receipt_id=receipt_id, **record)
+
+    def test_the_gateways_report_binds_the_receipt_keys(self):
+        server = FakeNanoGpt(aci="bound", receipts=True)
         client = server.tee_client(API_URL, "k", TEXT)
         attestation = client.attest()
         self.assertEqual(attestation.shortfalls, [privacy.GATEWAY_SHORTFALL])
-        self.assertIn("the gateway's quote binds its keys, the signing key among them",
-                      attestation.detail)
+        self.assertIn("the gateway's quote binds its receipt keys, the signing key among "
+                      "them", attestation.detail)
         self.assertIn("not that the model itself runs in an enclave", attestation.detail)
         self.assertEqual((attestation.gpus, attestation.tcb_status), (8, "UpToDate"),
                          "the model's own report is checked as ever")
         self.assertEqual(attestation.signing_address, address_of(KEY).lower())
-        self.assertEqual(len(attestation.signers), 2)
-        self.assertEqual(client.check_reply("chatcmpl-42")[0], privacy.SIGNED)
-        server.signer = 9           # the gateway's other key
-        state, detail = client.check_reply("chatcmpl-42")
-        self.assertEqual(state, privacy.SIGNED, detail)
-        self.assertIn(address_of(9), detail)
-        server.signer = 1
-        state, detail = client.check_reply("chatcmpl-42")
-        self.assertEqual(state, privacy.MISMATCH)
-        self.assertIn("not any key the attestation bound", detail)
+        self.assertEqual(attestation.signers, (address_of(KEY).lower(),))
+        self.assertIsNotNone(client.keyset)
+        state, detail = self.check(client, server)
+        self.assertEqual(state, privacy.VERIFIED, detail)
+        self.assertIn("RedPill's receipt for it holds", detail)
         nonces = [r["params"]["nonce"] for r in server.reports]
+        self.assertEqual(len(nonces), 2)
         self.assertEqual(len(set(nonces)), 2, "a fresh nonce for each")
-        self.assertTrue(all(len(n) == 64 and n == n.lower() for n in nonces))
-        self.assertEqual(len([r for r in server.reports
-                              if r["params"].get("report") == "aci"]), 1)
+        self.assertTrue(all(len(n) == 64 and n == n.lower() and int(n, 16) >= 0
+                            for n in nonces))
+        aci = [r for r in server.reports if r["params"].get("report") == "aci"]
+        self.assertEqual(len(aci), 1)
         self.assertTrue(all(r["timeout"] == privacy.ATTESTATION_TIMEOUT_SECONDS == 90
                             for r in server.reports), "Chutes' evidence can take a minute")
 
+    def test_a_record_signed_by_another_of_the_gateways_bound_keys_holds(self):
+        """Live, every model's signing key was one of the gateway's two e2ee keys."""
+        server = FakeNanoGpt(aci="bound", receipts=True)
+        server.keyset["e2ee_public_keys"].append(
+            {"key_id": "dstack-kms-e2ee-v2", "algo": "secp256k1-aes-256-gcm-hkdf-sha256",
+             "public_key": e2ee_public_key(9)})
+        client = server.tee_client(API_URL, "k", TEXT)
+        self.assertEqual(len(client.attest().signers), 2)
+        server.signer = 9
+        state, detail = self.check(client, server)
+        self.assertEqual(state, privacy.VERIFIED, detail)
+        self.assertIn(address_of(9), detail)
+        server.signer = 1
+        state, detail = self.check(client, server)
+        self.assertEqual(state, privacy.FAILED)
+        self.assertIn("not any key the attestation bound", detail)
+
     def test_a_gateway_report_for_another_nonce_is_refused(self):
+        server = FakeNanoGpt(aci="unbound")
         with self.assertRaisesRegex(PrivacyError, "gateway did not bind its keys to our "
                                                   "nonce"):
-            FakeNanoGpt(aci="unbound").tee_client(API_URL, "k", TEXT).attest()
+            server.tee_client(API_URL, "k", TEXT).attest()
+        session = session_for(FakeNanoGpt(aci="unbound"))
+        with self.assertRaisesRegex(PrivacyError, "nothing was sent"):
+            session.ensure()
 
     def test_its_keys_past_their_time_are_refused(self):
+        server = FakeNanoGpt(aci="bound", not_after=1_700_000_000)
         with self.assertRaisesRegex(PrivacyError, "attested keys expired on 2023-11-14"):
-            FakeNanoGpt(aci="bound", not_after=1_700_000_000).tee_client(
-                API_URL, "k", TEXT).attest()
+            server.tee_client(API_URL, "k", TEXT).attest()
 
-    def test_without_the_gateways_report_things_are_as_they_were(self):
-        for server in (FakeNanoGpt(aci="400"), FakeNanoGpt(aci="429"), FakeNanoGpt()):
+    def test_without_the_gateways_report_the_receipt_keys_are_named_short(self):
+        # A 400 (Chutes or Tinfoil alone), nano-gpt's rate limit, and the plain report
+        # given for report=aci, as before nano-gpt offered the gateway's.
+        for server in (FakeNanoGpt(aci="400", tied="e2ee"), FakeNanoGpt(aci="429"),
+                       FakeNanoGpt(tied="e2ee"),
+                       FakeNanoGpt(tied="e2ee", attestation_extra=GATEWAY)):
             attestation = server.tee_client(API_URL, "k", TEXT).attest()
-            self.assertEqual((attestation.level, attestation.signers),
-                             ("full", (address_of(KEY).lower(),)))
+            self.assertIn(privacy.RECEIPT_KEYS_LOOSE, attestation.shortfalls)
+            self.assertEqual(attestation.signers, (address_of(KEY).lower(),))
 
     def test_a_gateway_whose_keys_do_not_hold_the_signing_key_counts_for_nothing(self):
-        attestation = FakeNanoGpt(aci="bound", gateway_keys=(7,)).tee_client(
-            API_URL, "k", TEXT).attest()
-        self.assertEqual(attestation.shortfalls, [])
+        server = FakeNanoGpt(aci="bound", tied="none")
+        client = server.tee_client(API_URL, "k", TEXT)
+        attestation = client.attest()
+        self.assertEqual(attestation.shortfalls, [privacy.RECEIPT_KEYS_LOOSE])
         self.assertIn("the gateway's attested keys do not include the signing key",
                       attestation.detail)
+        self.assertIsNone(client.keyset)
         self.assertEqual(attestation.signers, (address_of(KEY).lower(),))
 
     def test_the_gateway_stands_in_for_a_model_whose_own_evidence_was_relayed(self):
         """Live, TEE/deepseek-v3.2: its own report is Chutes' for the relay's nonce,
-        its replies RedPill's. Refused before."""
-        server = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound")
+        its replies RedPill's, with receipts. Refused before."""
+        server = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound", receipts=True)
         client = server.tee_client(API_URL, "k", "TEE/deepseek-v3.2")
         attestation = client.attest()
+        self.assertEqual(attestation.level, "partial")
         self.assertEqual(attestation.shortfalls,
                          [privacy.GATEWAY_SHORTFALL, "no GPU evidence"])
         self.assertIn("relayed for a nonce not ours: the gateway that answers it is "
                       "attested instead", attestation.detail)
+        self.assertIn("no GPU evidence", attestation.summary)
         self.assertEqual(attestation.signing_address, "")
         self.assertEqual(attestation.signers, (address_of(KEY).lower(),))
-        self.assertEqual(client.check_reply("chatcmpl-42", receipt_id="rcpt-1")[0],
-                         privacy.SIGNED)
+        state, detail = self.check(client, server)
+        self.assertEqual(state, privacy.VERIFIED, detail)
+        self.assertIn("RedPill's receipt for it holds", detail)
+        # Without the gateway, refused as before.
+        alone = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="400")
         with self.assertRaisesRegex(PrivacyError, "nonce the relay chose"):
-            ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="400").tee_client(
-                API_URL, "k", "TEE/deepseek-v3.2").attest()
+            alone.tee_client(API_URL, "k", "TEE/deepseek-v3.2").attest()
+
+    def test_strict_refuses_a_model_attested_through_the_gateway(self):
+        server = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound", receipts=True)
+        strict = PrivacySession(API_URL, "k", "TEE/deepseek-v3.2",
+                                tee_factory=server.tee_client, strict=True)
+        with self.assertRaisesRegex(PrivacyError, "RedPill's gateway, not the model's host, "
+                                                  "no GPU evidence.*choose a private/ "
+                                                  "model.*nothing was sent"):
+            strict.ensure()
 
     def test_a_slow_attestation_is_asked_again_with_a_new_nonce_then_the_gateway_stands_in(
             self):
@@ -1240,6 +1466,7 @@ class GatewaysOwnReport(unittest.TestCase):
         ShapedNanoGpt(once, aci="bound").tee_client(API_URL, "k", "TEE/x").attest()
         self.assertEqual(len(asked), 2)
         self.assertNotEqual(asked[0], asked[1])
+        # Live, TEE/qwen3.6-27b: its own report always times out.
         always = ShapedNanoGpt(lambda nonce: (504, TIMED_OUT), aci="bound")
         attestation = always.tee_client(API_URL, "k", "TEE/qwen3.6-27b").attest()
         self.assertEqual(attestation.shortfalls,
@@ -1276,45 +1503,43 @@ class GatewaysOwnReport(unittest.TestCase):
                 server.tee_client(API_URL, "k", "TEE/glm-5.2").attest()
 
     def test_a_chutes_model_with_the_gateway_checks_the_replies_redpill_answers(self):
-        server = ShapedNanoGpt(lambda nonce: (200, self.instances.body(nonce)), aci="bound")
+        """Chutes answers first and signs nothing; a reply RedPill answers instead names
+        its receipt, checked against the gateway's bound keys."""
+        server = ShapedNanoGpt(lambda nonce: (200, self.instances.body(nonce)),
+                               aci="bound", receipts=True)
         client = server.tee_client(API_URL, "k", "TEE/glm-5.1")
         attestation = client.attest()
-        self.assertEqual((attestation.instances, attestation.gpus), (2, 16))
+        self.assertEqual(attestation.instances, 2)
+        self.assertEqual(attestation.gpus, 16)
         self.assertEqual(attestation.shortfalls, [privacy.GATEWAY_SHORTFALL],
                          "a request may be answered by RedPill's gateway")
+        self.assertIn("a reply RedPill's gateway answers instead is checked against its "
+                      "attested keys", attestation.detail)
         self.assertIn("the instances sign no replies", attestation.detail)
-        self.assertEqual(client.check_reply("chatcmpl-42", receipt_id="rcpt-1")[0],
-                         privacy.SIGNED)
+        state, detail = self.check(client, server)
+        self.assertEqual(state, privacy.VERIFIED, detail)
         looked_up = len(server.lookups)
-        state, detail = client.check_reply("chatcmpl-42")
-        self.assertEqual(state, privacy.UNSIGNED)
+        state, detail = self.check(client, server, receipt_id=None)
+        self.assertEqual(state, privacy.UNCHECKED)
         self.assertIn("signs no replies", detail)
         self.assertEqual(len(server.lookups), looked_up, "Chutes' reply is not looked up")
+        # Chutes alone (report=aci answers 400): whole, its replies unsigned as before.
         alone = ShapedNanoGpt(lambda nonce: (200, self.instances.body(nonce)))
         client = alone.tee_client(API_URL, "k", "TEE/kimi-k3")
-        self.assertEqual(client.attest().level, "full")
-        self.assertEqual(client.check_reply("chatcmpl-42", receipt_id="rcpt-1")[0],
-                         privacy.UNSIGNED)
+        attestation = client.attest()
+        self.assertEqual((attestation.level, attestation.signers), ("full", ()))
+        self.assertEqual(self.check(client, alone)[0], privacy.UNCHECKED)
         self.assertEqual(alone.lookups, [])
 
     def test_a_chutes_model_whose_gateway_could_not_be_asked_falls_short(self):
+        """Live (Nov 10 2026), report=aci was rate-limited for TEE/glm-5.1, which then
+        read whole: better than with the gateway's report, which names the gateway that
+        may answer it. Only a 400 - RedPill does not serve it - leaves it whole."""
         for aci in ("429", "ignored"):
             server = ShapedNanoGpt(lambda nonce: (200, self.instances.body(nonce)), aci=aci)
             attestation = server.tee_client(API_URL, "k", "TEE/glm-5.1").attest()
             self.assertEqual(attestation.shortfalls, [privacy.GATEWAY_UNCHECKED], aci)
-
-    def test_the_route_goes_with_the_lookup_and_not_with_the_attestation(self):
-        server = FakeNanoGpt(aci="bound")
-        client = server.tee_client(API_URL, "k", TEXT)
-        client.attest()
-        self.assertEqual(client.check_reply("chatcmpl-42", receipt_id="rcpt-7",
-                                            route="r2")[0], privacy.SIGNED)
-        client.attest()
-        self.assertIn("/tee/signature/rcpt-7", [g for g in server.gets
-                                                if "/tee/signature/" in g][-1])
-        self.assertEqual(server.lookups[-1].get("X-TEE-Verification-Route"), "r2")
-        self.assertFalse(any("X-TEE-Verification-Route" in r["headers"]
-                             for r in server.reports))
+            self.assertIn("nano-gpt gave no report of RedPill's gateway", attestation.detail)
 
     def test_strict_attests_again_only_after_a_reply_the_bound_keys_were_to_sign(self):
         chutes = privacy.Attestation(model="TEE/glm-5.1", kind=privacy.TEE,
@@ -1327,15 +1552,164 @@ class GatewaysOwnReport(unittest.TestCase):
                                                             kind=privacy.TEE,
                                                             instances=2), "rcpt-1"))
 
-    def test_strict_refuses_a_model_attested_through_the_gateway(self):
+    def test_neither_report_is_asked_with_a_replys_route(self):
+        """The route a reply names goes with the lookup of its record, as SealedLore
+        sends it; an attestation is made for whatever answers next, and a route that
+        has expired makes nano-gpt answer it with a 400."""
+        server = FakeNanoGpt(aci="bound", receipts=True)
+        client = server.tee_client(API_URL, "k", TEXT)
+        client.attest()
+        self.assertEqual(self.check(client, server, receipt_id="rcpt-7", route="r2")[0],
+                         privacy.VERIFIED)
+        client.attest()
+        self.assertIn("/tee/signature/rcpt-7", [g for g in server.gets
+                                                if "/tee/signature/" in g][-1])
+        self.assertEqual(server.lookups[-1].get("X-TEE-Verification-Route"), "r2")
+        self.assertEqual(len(server.reports), 4)
+        self.assertFalse(any("X-TEE-Verification-Route" in r["headers"]
+                             for r in server.reports))
+
+    def test_the_details_name_every_key_a_reply_may_be_signed_by(self):
         server = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="bound")
-        strict = PrivacySession(API_URL, "k", "TEE/deepseek-v3.2",
-                                tee_factory=server.tee_client, strict=True)
-        with self.assertRaisesRegex(PrivacyError, "RedPill's gateway, not the model's host, "
-                                                  "no GPU evidence.*choose a private/ "
-                                                  "model.*nothing was sent"):
-            strict.ensure()
-        relaxed = PrivacySession(API_URL, "k", "TEE/deepseek-v3.2",
+        session = PrivacySession(API_URL, "k", "TEE/deepseek-v3.2",
                                  tee_factory=server.tee_client)
-        relaxed.ensure()
-        self.assertIn(f"signing key {address_of(KEY).lower()}", relaxed.details())
+        session.ensure()
+        self.assertIn(f"signing key {address_of(KEY).lower()}", session.details())
+
+
+# ---- each reply's record and receipt (Nov 2026) ---------------------------------------
+
+@unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+class Receipts(unittest.TestCase):
+    """A reply's exact bytes, and RedPill's signed receipt for it (Nov 2026): nano-gpt as
+    live, the quote binding the signing key, the keyset beside it listing that key as its
+    e2ee key, and each reply's record carrying the receipt the keyset's key signed.
+    Ported from DA Assistant's tests (Nov 2026), from SealedLore's."""
+
+    def client(self, model=TEXT, **server):
+        server = FakeNanoGpt(**dict({"tied": "e2ee", "receipts": True}, **server))
+        client = server.tee_client(API_URL, "k", model)
+        client.attest()
+        return client, server
+
+    def check(self, client, server, **record):
+        record.setdefault("body_hash", stream_hash(server.stream()))
+        return client.check_reply("chatcmpl-42", **record)
+
+    def test_a_streamed_reply_is_checked_to_its_exact_bytes_and_its_receipt(self):
+        client, server = self.client()
+        self.assertIsNotNone(client.keyset, "the keyset holds the attested key")
+        state, detail = self.check(client, server, receipt_id="rcpt-1")
+        self.assertEqual(state, privacy.VERIFIED, detail)
+        self.assertIn("RedPill's receipt for it holds", detail)
+        self.assertIn("/tee/signature/rcpt-1", server.gets[-1])
+
+    def test_bytes_other_than_those_signed_fail(self):
+        client, server = self.client()
+        self.assertEqual(self.check(client, server,
+                                    body_hash=stream_hash(b"data: [DONE]\n\n"))[0],
+                         privacy.FAILED)
+
+    def test_a_model_whose_streams_nano_gpt_rebuilds_is_checked_by_signature_alone(self):
+        for model in ("TEE/gemma-4-31b-it", "tee/gemma-4-31b-it",      # however written
+                      "TEE/Gemma-4-31B-it"):
+            client, server = self.client(model=model)
+            state, detail = self.check(client, server, body_hash=stream_hash(b"rebuilt"))
+            self.assertEqual(state, privacy.SIGNED, model)
+            self.assertIn("nano-gpt rebuilds this model's stream", detail)
+
+    def test_a_receipt_whose_upstream_was_not_verified_fails(self):
+        client, server = self.client(upstream="failed")
+        self.assertEqual(self.check(client, server), (privacy.FAILED,
+                                                      "RedPill's receipt for it does not "
+                                                      "hold"))
+
+    def test_a_receipt_signed_by_another_key_fails(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        client, server = self.client(receipt_key=Ed25519PrivateKey.generate())
+        self.assertEqual(self.check(client, server)[0], privacy.FAILED)
+
+    def test_a_receipt_under_keys_renewed_since_is_unchecked_not_failed(self):
+        client, server = self.client(digest="sha256:" + "0" * 64)
+        state, detail = self.check(client, server)
+        self.assertEqual(state, privacy.UNCHECKED)
+        self.assertIn("keys changed", detail)
+
+    def test_a_keyset_the_quote_binds_itself_is_taken_and_one_tied_neither_way_is_not(self):
+        bound, _server = self.client(tied="statement")
+        self.assertIsNotNone(bound.keyset)
+        self.assertEqual(bound.attest().level, "full",
+                         "RedPill's own form binds the receipt keys")
+        loose, server = self.client(tied="none")
+        self.assertIsNone(loose.keyset)
+        # Still signed by the attested key, for these bytes: the receipt goes unread.
+        state, detail = self.check(loose, server)
+        self.assertEqual(state, privacy.VERIFIED)
+        self.assertNotIn("receipt", detail)
+
+    def test_the_receipt_keys_are_named_short_whether_a_keyset_comes_or_not(self):
+        """Leaving the keyset out must never read better than sending it loose."""
+        with_keys, _server = self.client()
+        self.assertIsNotNone(with_keys.keyset)
+        self.assertIn(privacy.RECEIPT_KEYS_LOOSE, with_keys.attest().shortfalls)
+        without, _server = self.client(tied=None, receipts=False)
+        self.assertIsNone(without.keyset)
+        self.assertIn(privacy.RECEIPT_KEYS_LOOSE, without.attest().shortfalls)
+
+    def test_receipt_keys_with_no_time_to_hold_them_to_are_not_used(self):
+        client, _server = self.client(tied="statement", not_after=None)
+        self.assertIsNone(client.keyset)
+        self.assertEqual(client.attest().shortfalls, ["receipt keys expired"])
+
+    def test_a_stream_just_ended_waits_for_its_receipt(self):
+        with mock.patch.object(privacy, "RECEIPT_RETRY_SECONDS", 0):
+            client, server = self.client(not_ready=2)
+            state, detail = self.check(client, server, receipt_id="rcpt-1", route="r1")
+        self.assertEqual(state, privacy.VERIFIED, detail)
+        self.assertEqual(len(server.lookups), 3)
+        self.assertTrue(all(headers.get("X-TEE-Verification-Route") == "r1"
+                            for headers in server.lookups))
+
+    def test_a_reply_that_named_no_receipt_is_looked_up_once(self):
+        """Live, a reply that named none never had one to wait for."""
+        with mock.patch.object(privacy, "RECEIPT_RETRY_SECONDS", 0):
+            client, server = self.client(not_ready=1)
+            state, _detail = self.check(client, server)
+        self.assertEqual(state, privacy.UNCHECKED)
+        self.assertEqual(len(server.lookups), 1)
+
+    def test_only_a_record_not_ready_yet_is_waited_for(self):
+        with mock.patch.object(privacy, "RECEIPT_RETRY_SECONDS", 0):
+            client, server = self.client(signature_status=500)
+            state, _detail = self.check(client, server, receipt_id="rcpt-1")
+        self.assertEqual(state, privacy.UNCHECKED)
+        self.assertEqual(len(server.lookups), 1)
+
+    def test_the_wait_for_a_receipt_has_an_end(self):
+        """A receipt that never comes is waited for RECEIPT_WAIT_SECONDS, no longer:
+        here a clock that moves 5 s at each look at it."""
+        client, server = self.client(not_ready=100)
+        clock = iter(range(0, 1000, 5))
+        with mock.patch.object(privacy, "RECEIPT_RETRY_SECONDS", 0), \
+                mock.patch.object(privacy.time, "monotonic", lambda: next(clock)):
+            state, _detail = self.check(client, server, receipt_id="rcpt-1")
+        self.assertEqual(state, privacy.UNCHECKED)
+        self.assertEqual(len(server.lookups), privacy.RECEIPT_WAIT_SECONDS // 5)
+
+
+class ReplyMarks(unittest.TestCase):
+    """What each reply's check is called where the app shows it: after Test in
+    Settings, under Detect Chapters' answer, and in Help → What Was Sent."""
+
+    def test_receipts_read_as_what_they_prove(self):
+        def label(state):
+            return privacy.receipt_label(privacy.Receipt(TEXT, privacy.TEE, state))
+        self.assertEqual(label(privacy.VERIFIED), ("✓ TEE, verified", privacy.OK))
+        self.assertEqual(label(privacy.SIGNED),
+                         ("TEE, signed, text not compared", privacy.WARN))
+        self.assertEqual(label(privacy.FAILED), ("⚠ TEE, check failed", privacy.BAD))
+        self.assertEqual(label(privacy.UNCHECKED), ("⚠ TEE, not verified", privacy.WARN))
+        self.assertEqual(privacy.receipt_label(privacy.Receipt(
+            "private/x", privacy.E2EE, privacy.SEALED)), ("✓ end-to-end encrypted",
+                                                         privacy.OK))
+        self.assertEqual(privacy.receipt_label(None), ("", privacy.OK))
