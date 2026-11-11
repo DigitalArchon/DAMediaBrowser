@@ -78,6 +78,13 @@ DEBIAN_LIBS=(
     # pair keeps xkbcommon-x11 matched to the xkbcommon it was built with.
     "libx/libxkbcommon/libxkbcommon0_1.0.3-2_amd64.deb              d74d0b9f0a6641b44c279644c7ac627fa7a9b92350b7c6ff37da94352885bcfc"
     "libx/libxkbcommon/libxkbcommon-x11-0_1.0.3-2_amd64.deb         c786f80d1a5405e96167ebbebdd7d100b356c0a3ae0f87fb6f65f05f2e723f72"
+    # What Qt's xcb plugin and xkbcommon-x11 need of the X server's keyboard
+    # extension. A full X11 desktop has it; one with no X11 session doesn't: a
+    # stock Ubuntu 26.04 GNOME, where 0.23.0's first build stopped before any
+    # window (lab, Nov 12 2026), as SealedLore's AppImage did (3.1.0b4). The
+    # sha256 is Debian's Packages index's for bullseye. check-x11-libs.sh fails
+    # the build if another such library goes missing.
+    "libx/libxcb/libxcb-xkb1_1.14-3_amd64.deb                       91d9359576312d2d868114b49d4fddeb264542fe98d5dbb7bd0b7f61cec86562"
 )
 
 # The oldest glibc the AppImage runs on; anything inside needing more fails the build.
@@ -403,6 +410,9 @@ if [ -n "$missing" ]; then
     echo "the xcb plugin can't resolve: $missing" >&2
     exit 1
 fi
+# And not just here: what they need must be carried, or be what even a desktop
+# with no X11 session has (Ubuntu 26.04 GNOME has no libxcb-xkb1).
+"$HERE/check-x11-libs.sh" "$APPDIR"
 
 # The bundled OpenSSL finds no CA certificates by itself (its compiled-in
 # paths belong to the distribution it was built on), so AppRun points it at
