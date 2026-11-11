@@ -258,6 +258,32 @@ class TestSettings:
         dialog.accept()
         assert memory_keyring.store == {}
 
+    def test_an_endpoint_with_a_password_in_its_address_is_not_saved(self, window,
+                                                                     monkeypatch):
+        """This app sends no user name or password written into an address, and keeps
+        none in settings.json: Settings says why, and where the key goes instead,
+        without repeating either."""
+        from mediabrowser.gui.dialogs.settings_dialog import TAB_AI, SettingsDialog
+
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+        dialog = SettingsDialog(window)
+        dialog.tabs.setCurrentIndex(0)
+        dialog.base_url.setText("http://alice:Sekrit-77@192.168.1.5:8080/v1")
+        dialog.model.setCurrentText("anthropic/claude-opus-5.5")
+        dialog.accept()
+        assert dialog.result() != dialog.DialogCode.Accepted
+        assert dialog.tabs.currentIndex() == TAB_AI
+        said = dialog.status.text()
+        assert said.startswith("Not saved:") and "user name or password" in said
+        assert "API key goes in its own field" in said
+        assert "Sekrit-77" not in said and "alice" not in said
+        assert ai.load_settings()[ai.SETTING_MODEL] == ai.DEFAULT_MODEL, "nothing saved"
+        assert not config.APP_SETTINGS_FILE.exists() or \
+            "Sekrit-77" not in config.APP_SETTINGS_FILE.read_text(encoding="utf-8")
+        dialog.base_url.setText("http://192.168.1.5:8080/v1")
+        dialog.accept()
+        assert ai.load_settings()[ai.SETTING_BASE_URL] == "http://192.168.1.5:8080/v1"
+
     def test_a_keyring_that_refuses_keeps_the_dialog_open(self, window, monkeypatch):
         from keyring.errors import KeyringLocked
 

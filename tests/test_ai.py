@@ -258,41 +258,79 @@ class TestChat:
 
 
 class TestAPasswordInTheAddress:
-    """A user name or password written into the endpoint's address is never sent:
-    urllib fails such a request before anything goes. But its error quoted the
-    password - "nonnumeric port: 'Sekrit-77@nano-gpt.com'" - in the window and on
-    What Was Sent, whose Copy takes it to the clipboard. As SealedLore keeps one out
-    of what it saves beside the keyring's copy (0db15a2, Nov 2026), it is kept out of
-    what is shown and listed here."""
+    """A user name or password written into the endpoint's address is never sent, kept
+    or shown. urllib cannot send them - such a request failed before anything went, as
+    "nonnumeric port: 'Sekrit-77@nano-gpt.com'", the password quoted in the window and on
+    What Was Sent - and Tinfoil's client would send them as Basic auth in place of the
+    key. So such an address is refused wherever it is used, before anything is sent, in
+    words that say how to put it right; Settings won't save one, and settings.json is
+    written without its password. In SealedLore's spirit (0db15a2, Nov 2026)."""
 
     URL = "https://alice:Sekrit-77@nano-gpt.com/api/v1"
 
     @pytest.fixture(autouse=True)
-    def as_urllib_has_it(self, monkeypatch):
-        # The first thing urllib does with an https address, before any connection.
-        monkeypatch.setattr(netguard, "_transport", lambda request, timeout:
-                            HTTPSConnection(request.host))
+    def transport(self, monkeypatch):
+        sent = []
 
-    def test_the_request_says_why_it_failed_and_quotes_none_of_it(self):
-        with pytest.raises(ai.AIError) as caught:
-            ai.chat([{"role": "user", "content": "hi"}],
-                    settings(**{ai.SETTING_BASE_URL: self.URL}))
-        assert "user name or password written into it" in str(caught.value)
-        assert "Sekrit-77" not in str(caught.value)
-        (entry,) = outbound.entries()
-        assert entry.outcome == outbound.FAILED and "Sekrit-77" not in repr(entry)
+        def as_urllib_has_it(request, timeout):
+            sent.append(request.full_url)
+            # The first thing urllib does with an https address, before any connection.
+            return HTTPSConnection(request.host)
 
-    def test_nor_does_privacy_modes_attestation(self):
-        private = ai.settings_from({privacy.AI: True, ai.SETTING_KEY: "sk-1",
-                                    ai.SETTING_BASE_URL: self.URL,
-                                    ai.SETTING_PRIVACY_MODE: True,
-                                    ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"})
+        monkeypatch.setattr(netguard, "_transport", as_urllib_has_it)
+        return sent
+
+    def settings_held(self, **more):
+        return ai.settings_from({privacy.AI: True, ai.SETTING_KEY: "sk-1",
+                                 ai.SETTING_BASE_URL: self.URL, **more})
+
+    def test_settings_holding_one_send_nothing_and_say_how_to_put_it_right(self, transport):
+        for more in ({}, {ai.SETTING_PRIVACY_MODE: True,
+                          ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"},
+                     {ai.SETTING_PRIVACY_MODE: True,
+                      ai.SETTING_PRIVATE_MODEL: "private/kimi-k3"}):
+            with pytest.raises(ai.NotConfigured) as caught:
+                ai.chat([{"role": "user", "content": "Glass Harbor"}], self.settings_held(**more))
+            said = str(caught.value)
+            assert "has a user name or password written into it" in said, more
+            assert "take them out of the address" in said and "Settings' AI tab" in said
+            assert "Sekrit-77" not in said and "alice" not in said
         with pytest.raises(ai.Refused) as caught:
-            ai.check_attestation(private)
-        assert "user name or password written into it" in str(caught.value)
+            ai.check_attestation(self.settings_held(**{
+                ai.SETTING_PRIVACY_MODE: True, ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"}))
         assert "Sekrit-77" not in str(caught.value)
-        assert outbound.entries() and all("Sekrit-77" not in repr(entry)
-                                          for entry in outbound.entries())
+        assert transport == [] and outbound.entries() == []
+
+    def test_each_way_out_refuses_it_by_itself(self, transport):
+        """However it is reached: the request, Privacy Mode's attestation and the
+        sealed client each refuse it before anything is sent."""
+        from mediabrowser.core import private_ai, sealed
+        with pytest.raises(ai.Refused, match="user name or password") as caught:
+            ai._request(f"{self.URL}/chat/completions", "sk-1", {"model": "x"})
+        assert "Sekrit-77" not in str(caught.value)
+        with pytest.raises(private_ai.PrivacyError) as caught:
+            private_ai.TeeClient(self.URL, "sk-1", "TEE/glm-5.3-flash").attest()
+        assert "user name or password" in str(caught.value)
+        assert "Sekrit-77" not in str(caught.value)
+        with pytest.raises(private_ai.PrivacyError, match="user name or password") as caught:
+            sealed.PrivateModeClient(self.URL, "sk-1")
+        assert "Sekrit-77" not in str(caught.value)
+        assert transport == []
+
+    def test_the_settings_file_is_written_without_it(self):
+        settings = store.load_app_settings()
+        settings[ai.SETTING_BASE_URL] = "http://alice:Sekrit-77@192.168.1.5:8080/v1"
+        store.save_app_settings(settings)
+        written = config.APP_SETTINGS_FILE.read_text()
+        assert "Sekrit-77" not in written
+        kept = store.load_app_settings()[ai.SETTING_BASE_URL]
+        assert kept == "http://alice@192.168.1.5:8080/v1"
+        assert "user name or password" in ai.endpoint_problem(kept), "still said, and why"
+        assert settings[ai.SETTING_BASE_URL].endswith("Sekrit-77@192.168.1.5:8080/v1"), \
+            "what was given is not changed under the caller"
+        for odd in ("http://[fd00::5", "https://:Sekrit-77@host/v1", ":Sekrit-77@host"):
+            store.save_app_settings({ai.SETTING_BASE_URL: odd})
+            assert "Sekrit-77" not in config.APP_SETTINGS_FILE.read_text(), odd
 
     def test_an_error_without_one_is_said_as_it_was(self):
         error = InvalidURL("nonnumeric port: 'x'")

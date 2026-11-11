@@ -10,7 +10,10 @@ import threading
 import time
 from pathlib import Path
 
-from . import config, naming, protection
+from . import config, naming, netguard, protection
+
+# The AI endpoint's address (core.ai.SETTING_BASE_URL), kept free of a password.
+AI_ENDPOINT = "ai_base_url"
 
 DEFAULT_APP_SETTINGS = {
     "musicbrainz_format": "xml",
@@ -40,7 +43,16 @@ def load_app_settings() -> dict:
 
 
 def save_app_settings(settings: dict) -> None:
+    """Write settings.json - never with a password written into the AI
+    endpoint's address. Settings refuses such an address (netguard.problem),
+    and nothing sends one, but a file saved from before it did, or by any
+    window that loaded it and saves its own choices, would otherwise go on
+    holding the password in plain text. What is left - the user name, if any -
+    is still refused, and says how to put it right."""
     config.ensure_data_dir()
+    if isinstance(settings.get(AI_ENDPOINT), str):
+        settings = dict(settings, **{AI_ENDPOINT: netguard.without_password(
+            settings[AI_ENDPOINT])})
     tmp_path = config.own(config.APP_SETTINGS_FILE.with_suffix(".json.tmp"))
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2, sort_keys=True)

@@ -30,6 +30,9 @@ address that resolves to this network today can resolve elsewhere tomorrow.
 An address with a backslash, a space or a control character in it is
 refused outright, because parsers do not agree on where its host ends -
 `http://evil.com\\@localhost` is localhost to one and evil.com to another.
+So is one with a user name or password written into it
+(`https://alice:secret@host/v1`): the app sends neither, and keeps no
+password in its settings file (store.save_app_settings).
 
 A redirect is held to the same rule: followed only to an address that could
 have been used in the first place, never from https to plain http, and
@@ -160,6 +163,14 @@ def problem(url) -> str | None:
     if scheme not in ("http", "https") or not host:
         return (f"Not a web address: {shown(text)!r}. It must start with https:// - or "
                 f"http:// for this machine or its local network.")
+    if parsed.username is not None or parsed.password is not None:
+        # urllib cannot send them (an address with them fails before anything is
+        # sent), Tinfoil's client would send them as Basic auth in place of the key, and
+        # settings.json is no place for a password: refused, everywhere, before a byte
+        # goes. Named as shown() has it.
+        return (f"{shown(text)} has a user name or password written into it, which this "
+                f"app never sends: take them out of the address. The API key goes in "
+                f"its own field on Settings' AI tab, and is kept in the system keyring.")
     if scheme == "https":
         return None
     if _unescaped(host) is None:
@@ -216,6 +227,31 @@ def shown(url) -> str:
     if "@" not in parsed.netloc:
         return text
     return parsed._replace(netloc="…@" + parsed.netloc.rsplit("@", 1)[1]).geturl()
+
+
+def without_password(url) -> str:
+    """`url` with any password written into it taken out and its user name kept -
+    so that it is still refused, and problem() says how to put it right: what
+    settings.json keeps of the AI endpoint's address (store.save_app_settings).
+    Text with no "@" in it is returned as it is; one that cannot be read as an
+    address loses all it has up to its last "@", as shown() has it. Never
+    raises. (DA Assistant's of this name takes the user name out too: it keeps
+    the password in the keyring, and sends them.)"""
+    text = str(url or "")
+    if "@" not in text:
+        return text
+    try:
+        parsed = urlparse(text)
+        _ = parsed.port         # raises on a port that is not a number
+    except ValueError:
+        parsed = None
+    if parsed is None or not parsed.netloc:
+        return _UP_TO_AT.sub(r"\1", text, count=1)
+    if parsed.password is None:
+        return text
+    userinfo, _at, hostport = parsed.netloc.rpartition("@")
+    user = userinfo.split(":", 1)[0]
+    return parsed._replace(netloc=f"{user}@{hostport}" if user else hostport).geturl()
 
 
 def key_problem(key, name="the service") -> str | None:

@@ -124,6 +124,30 @@ class TestWhichAddresses:
         assert "secret" not in netguard.shown("alice:secret@host")
         assert netguard.shown("https://host/v1") == "https://host/v1"
 
+    @pytest.mark.parametrize("url", [
+        "https://alice:secret@nano-gpt.com/api/v1",
+        "http://alice:secret@192.168.1.5:8080/v1",
+        "https://alice@nano-gpt.com/api/v1",
+        "https://:secret@nano-gpt.com/api/v1",
+        "http://alice:secret@localhost:11434/v1",
+    ])
+    def test_a_user_name_or_password_in_an_address_is_refused_unquoted(self, url):
+        """The app sends neither: urllib can't, and Tinfoil's client would send them as
+        Basic auth in place of the key. Said without repeating them, with where the key
+        goes instead."""
+        found = netguard.problem(url)
+        assert found and "user name or password written into it" in found
+        assert "secret" not in found and "alice" not in found
+        assert "Settings' AI tab" in found and "keyring" in found
+
+    def test_what_a_file_keeps_of_an_address_has_no_password(self):
+        assert netguard.without_password("https://alice:secret@host/v1") == \
+            "https://alice@host/v1"
+        assert netguard.without_password("https://host/v1") == "https://host/v1"
+        assert netguard.without_password("https://:secret@host/v1") == "https://host/v1"
+        for unreadable in ("http://alice:secret@[fd00::5", "alice:secret@host"):
+            assert "secret" not in netguard.without_password(unreadable)
+
     def test_a_key_that_cant_be_sent_is_said_without_quoting_it(self):
         assert netguard.key_problem("sk-ok_123") is None
         assert netguard.key_problem("") is None

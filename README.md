@@ -832,9 +832,10 @@ can't go through (SOCKS: use Tor's `HTTPTunnelPort` instead) means nothing
 is sent rather than sent around it. Plain http to an onion service goes
 only through a proxy on this computer. An API key with a space or a hidden
 character in it, picked up where it was copied from, is refused in words
-that don't repeat it. An endpoint address with a user name or password
-written into it doesn't work — the app's own requests can't send them —
-and the error that says so doesn't repeat them either.
+that don't repeat it. So is an address with a user name or password
+written into it (`https://alice:secret@host/v1`): the app sends neither,
+Settings won't save one — the key goes in its own field — and
+`settings.json` is written without the password.
 
 **You can always see where things can go.** The status bar's right-hand
 corner says it — "Online: MusicBrainz · Covers · AI", "AI, sealed end to
