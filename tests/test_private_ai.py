@@ -374,7 +374,9 @@ class TestTee:
         settings = private_settings(server=FakeNanoGpt(tied="statement", evidence=False))
         ai.chat([], settings, json_reply=False)
         assert len(sent) == 1
-        assert "less than it could prove: no GPU evidence" in outbound.entries()[-1].detail
+        listed = outbound.entries()[-1].detail
+        assert listed.startswith("TEE gateway attested (no GPU evidence)")
+        assert "less than it could prove" not in listed, "said once, in the headline"
 
     def test_the_record_is_looked_up_by_the_receipt_and_route_the_reply_names(
             self, tee_stream):

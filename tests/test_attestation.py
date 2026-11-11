@@ -2249,6 +2249,30 @@ class ReplyMarks(unittest.TestCase):
         relaxed.ensure()
         self.assertFalse(relaxed.check_reply("chatcmpl-1").doubted)
 
+    def test_an_attestation_names_what_it_lacked_once(self):
+        """The headline names each shortfall; the label adds only what it does not say
+        - an end-to-end encrypted enclave's older release - rather than all of it again."""
+        gateway = privacy.Attestation(model=TEXT, kind=privacy.TEE, attested="gateway",
+                                      level="partial",
+                                      shortfalls=[privacy.GATEWAY_SHORTFALL,
+                                                  privacy.GPUS_LOOSE])
+        self.assertEqual(privacy.attestation_label(gateway), (
+            "TEE gateway attested (RedPill's gateway, not the model's host, GPUs not tied "
+            "to the quote)", privacy.WARN))
+        older = privacy.Attestation(model="private/x", kind=privacy.E2EE,
+                                    latest_release="v0.0.155")
+        self.assertEqual(privacy.attestation_label(older), (
+            "End-to-end encrypted - less than it could prove: an older release than "
+            "v0.0.155", privacy.WARN))
+        unnamed = privacy.Attestation(model=TEXT, kind=privacy.TEE, level="partial")
+        self.assertEqual(privacy.attestation_label(unnamed), (
+            "TEE attested - less than it could prove: not everything could be checked",
+            privacy.WARN))
+        whole = privacy.Attestation(model="TEE/kimi-k3", kind=privacy.TEE,
+                                    attested="instances")
+        self.assertEqual(privacy.attestation_label(whole), ("TEE attested", privacy.OK))
+        self.assertEqual(privacy.attestation_label(None), ("not attested yet", privacy.WARN))
+
     def test_what_was_sent_is_received_only_as_far_as_its_replys_check_shows(self):
         """What Was Sent said a TEE request went "to the model's attested enclave"
         whatever its reply showed: nano-gpt routes each request, Chutes signs no

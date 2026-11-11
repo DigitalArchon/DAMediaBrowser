@@ -2010,13 +2010,20 @@ OK, WARN, BAD = "ok", "warning", "error"
 
 
 def attestation_label(attestation):
-    """(text, tone) for what an enclave proved."""
+    """(text, tone) for what an enclave proved: its headline, which names what it was
+    of and its shortfalls ("TEE gateway attested (RedPill's gateway, not the model's
+    host, GPUs not tied to the quote)"), in amber where it fell short, and after it only
+    what fell short that the headline does not say - an end-to-end encrypted enclave's
+    older release, say. Each was said twice over."""
     if attestation is None:
         return "not attested yet", WARN
     lacking = attestation.fell_short
-    if lacking:
-        return f"{attestation.headline} - less than it could prove: {', '.join(lacking)}", WARN
-    return attestation.headline, OK
+    if not lacking:
+        return attestation.headline, OK
+    unsaid = [what for what in lacking if what not in attestation.shortfalls]
+    if not unsaid:
+        return attestation.headline, WARN
+    return f"{attestation.headline} - less than it could prove: {', '.join(unsaid)}", WARN
 
 
 # What a TEE/ request's text passed on the way, for every mark that does not say it nearby.
