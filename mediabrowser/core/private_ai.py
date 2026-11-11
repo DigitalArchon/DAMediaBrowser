@@ -47,9 +47,10 @@ What matters here:
   so a reply is "verified" for the text that came, and RedPill's receipt
   beside it is held to the same hashes (TeeClient.check_reply). Neither hash
   is of what this app sent: the request is hashed as nano-gpt passed it on.
-  (Each request here is still sent whole, not streamed, and nano-gpt
-  rebuilds a whole TEE reply, so there are no bytes of it to compare: such a
-  reply is "signed, text not compared".)
+  Every TEE request is streamed (ai._tee_stream), so nano-gpt's exact mode
+  for whole replies (`X-NanoGPT-TEE-Response: exact`), whose bytes it
+  otherwise rebuilds, is not needed: the bytes hashed are the stream's, as
+  they came.
 
 What attestation proves is genuine, current Intel hardware (and NVIDIA GPUs,
 where their evidence is offered) holding a live key bound to this request's
@@ -1584,12 +1585,18 @@ class PrivacySession:
                     "when you send, how much, and the cost.")
         if self.kind == TEE:
             return ("nano-gpt's gateway sees what is sent in the clear: the frames, the "
-                    "names, the tracklist. Not checked by this app: whether a reply's "
-                    "content matches its signed record; where RedPill's gateway "
-                    "answers, that the model's own host is an enclave - the gateway "
-                    "says so in each reply's receipt; and which software the enclave "
-                    "runs - its measurements are proved genuine by Intel's chain, but "
-                    "not compared with a known build.")
+                    "names, the tracklist. A reply is checked against the record the "
+                    "attested key signed, for the exact bytes that came, where nano-gpt "
+                    "passes its stream on as it was. Not checked by this app: what was "
+                    "sent - the record hashes the request as nano-gpt passed it on, so "
+                    "that it was this app's rests on nano-gpt; where nano-gpt has no "
+                    "report of RedPill's gateway's own for a model, that the gateway's "
+                    "receipt keys are in the quote; where the gateway answers, that the "
+                    "model's own host is an enclave - each reply's receipt says so, in "
+                    "the gateway's word; and which software the enclave runs - its quote "
+                    "shows genuine, current hardware holding a live key bound to this "
+                    "app's nonce, and no measurement in it is compared with a published "
+                    "one.")
         return ""
 
     def details(self):

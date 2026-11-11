@@ -27,12 +27,29 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 class Reply:
-    def __init__(self, body, headers=None):
-        self.body = json.dumps(body).encode()
+    """An answer as netguard's transport gives it: its body, read as asked -
+    at most `step` bytes a read, so that a stream's lines fall across reads,
+    as on the wire - its headers, its status, and where it came from."""
+
+    def __init__(self, body, headers=None, status=200, url=None, step=None):
+        self.body = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.headers = headers or {}
+        self.status = status
+        self.url = url
+        self.step = step
+        self._at = 0
 
     def read(self, size=-1):
-        return self.body
+        left = len(self.body) - self._at
+        size = left if size is None or size < 0 else min(size, left)
+        if self.step:
+            size = min(size, self.step)
+        piece = self.body[self._at:self._at + size]
+        self._at += len(piece)
+        return piece
+
+    def geturl(self):
+        return self.url
 
     def __enter__(self):
         return self
@@ -41,19 +58,48 @@ class Reply:
         pass
 
 
+def _sent(request):
+    return {"url": request.full_url, "body": json.loads(request.data or b"{}"),
+            "headers": dict(request.header_items())}
+
+
 @pytest.fixture
 def endpoint(monkeypatch):
     """The chat endpoint: what it was sent, and a reply with an id."""
     sent = []
 
     def transport(request, timeout):
-        sent.append({"url": request.full_url, "body": json.loads(request.data or b"{}"),
-                     "headers": dict(request.header_items())})
+        sent.append(_sent(request))
         return Reply({"id": "chatcmpl-42",
                       "choices": [{"message": {"content": '{"ok": true}'}}]})
 
     monkeypatch.setattr(netguard, "_transport", transport)
     return sent
+
+
+@pytest.fixture
+def tee_stream(monkeypatch):
+    """The chat endpoint as nano-gpt streams a TEE/ model's reply:
+    `tee_stream(server)` has it answer with that FakeNanoGpt's stream, seven
+    bytes a read, the receipt and route the server names in its headers - the
+    stream the server's records hash - and returns what it was sent."""
+    sent, serving = [], {}
+
+    def transport(request, timeout):
+        sent.append(_sent(request))
+        server = serving["server"]
+        named = {"Content-Type": "text/event-stream", "X-Receipt-Id": server.receipt_id,
+                 "X-TEE-Verification-Route": server.route}
+        return Reply(server.stream(), {name: value for name, value in named.items() if value},
+                     step=7)
+
+    monkeypatch.setattr(netguard, "_transport", transport)
+
+    def serve(server):
+        serving["server"] = server
+        return sent
+
+    return serve
 
 
 class FakeSealed:
@@ -175,25 +221,119 @@ class TestTheSessionIsFixedWhenItStarts:
 
 
 class TestTee:
-    def test_attested_first_then_sent_then_its_signature_checked(self, endpoint):
-        server = FakeNanoGpt()
+    def test_attested_first_then_streamed_then_checked_to_its_bytes(self, tee_stream):
+        server = FakeNanoGpt(reply='{"ok": true}')
+        sent = tee_stream(server)
         settings = private_settings(server=server)
         assert ai.chat_json([{"role": "user", "content": "name these"}], settings,
                             online=True) == {"ok": True}
-        (request,) = endpoint
+        (request,) = sent
         assert request["url"] == f"{BASE}/chat/completions"
         assert request["body"]["model"] == TEE_MODEL, "no web search, ever"
+        assert request["body"]["response_format"] == {"type": "json_object"}
         assert any("/tee/attestation" in g for g in server.gets)
         assert any("/tee/signature/chatcmpl-42" in g for g in server.gets)
-        session = ai.session_of(settings)
-        # Sent whole, not streamed: no bytes of it to compare with the record.
-        assert session.last_receipt().state == private_ai.SIGNED
-        assert "the reply did not arrive whole" in session.last_receipt().detail
-        check, sent = outbound.entries()
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.VERIFIED, receipt.detail
+        assert "for the exact bytes that came" in receipt.detail
+        check, listed = outbound.entries()
         assert (check.protection, check.outcome) == (outbound.CHECK, outbound.SENT)
         assert "nothing about your videos" in check.how
-        assert sent.protection == outbound.TEE and "can read it" in sent.how
-        assert "reply: TEE, signed, text not compared" in sent.detail
+        assert listed.protection == outbound.TEE and "can read it" in listed.how
+        assert "reply: ✓ TEE, verified" in listed.detail
+
+    def test_a_tee_request_is_streamed_and_exact_mode_is_not_asked_for(self, tee_stream):
+        """nano-gpt rebuilds a whole (unstreamed) TEE reply, so its bytes never match
+        the record's hash unless it is asked for in its exact mode
+        (X-NanoGPT-TEE-Response: exact, Nov 10 2026), which is not known to take the
+        JSON object nearly every request here asks for. Every TEE request streams, as
+        in DA Assistant and SealedLore: the bytes hashed are the ones that came."""
+        server = FakeNanoGpt(reply="OK")
+        sent = tee_stream(server)
+        settings = private_settings(server=server)
+        assert ai.ping(settings) == "OK"
+        (request,) = sent
+        assert request["body"]["stream"] is True
+        assert request["headers"].get("Accept") == "text/event-stream"
+        assert not any(name.lower() == "x-nanogpt-tee-response"
+                       for name in request["headers"])
+        assert ai.session_of(settings).last_receipt().state == private_ai.VERIFIED
+
+    def test_the_hash_is_of_every_byte_the_stream_carried_and_its_receipt_is_named(
+            self, tee_stream, monkeypatch):
+        """Read on after [DONE], as the record hashes it: what came after it too. The
+        receipt id and route nano-gpt's headers name go with the lookup, and the
+        receipt is checked. From DA Assistant's tests, from SealedLore's (Nov 2026)."""
+        monkeypatch.setattr(private_ai, "RECEIPT_RETRY_SECONDS", 0)
+        server = FakeNanoGpt(tied="e2ee", receipts=True, receipt_id="rcpt-7", route="r2",
+                             tail=b": a comment after the end\n\n", reply="Glass Harbor")
+        tee_stream(server)
+        settings = private_settings(server=server)
+        assert ai.chat([], settings, json_reply=False) == "Glass Harbor"
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.VERIFIED, receipt.detail
+        assert "RedPill's receipt for it holds" in receipt.detail
+        assert "/tee/signature/rcpt-7" in [g for g in server.gets if "/tee/signature/" in g][-1]
+        assert server.lookups[-1].get("X-TEE-Verification-Route") == "r2"
+        assert not any("X-TEE-Verification-Route" in r["headers"] for r in server.reports)
+
+    def test_a_reply_whose_bytes_are_not_those_signed_fails(self, tee_stream):
+        from tests.test_attestation import stream_bytes
+        server = FakeNanoGpt(tail=b": a comment after the end\n\n")
+        server.signed_bytes = stream_bytes(server.lines())     # all but what came after
+        tee_stream(server)
+        settings = private_settings(server=server)
+        ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.FAILED
+        assert private_ai.receipt_label(receipt) == ("⚠ TEE, check failed", private_ai.BAD)
+        assert "reply: ⚠ TEE, check failed" in outbound.entries()[-1].detail
+
+    def test_a_stream_cut_short_is_checked_as_not_whole_and_is_no_answer(self, tee_stream):
+        server = FakeNanoGpt(cut=True)
+        tee_stream(server)
+        settings = private_settings(server=server)
+        with pytest.raises(ai.AIError, match="cut off before it was complete"):
+            ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.SIGNED
+        assert "the reply did not arrive whole" in receipt.detail
+        assert outbound.entries()[-1].outcome == outbound.FAILED
+
+    @pytest.mark.parametrize(("body", "kind"), [
+        (b"<html><body>Sign in to the Wi-Fi</body></html>", "text/html"),
+        (b"", "text/event-stream"),
+        (b'{"id": "x", "choices": []}', "application/json"),
+    ])
+    def test_an_answer_with_no_stream_in_it_is_said_never_an_empty_reply(
+            self, monkeypatch, body, kind):
+        """A web page where the API was expected, or anything else with not one
+        "data:" line in it, is an error naming its status and content type, and where
+        it came from when that was elsewhere - never "the model returned an empty
+        reply". Nothing in it is looked up as a reply. From SealedLore (e947938)."""
+        monkeypatch.setattr(netguard, "_transport", lambda request, timeout: Reply(
+            body, {"Content-Type": f"{kind}; charset=utf-8"},
+            url="https://nano-gpt.com/login"))
+        server = FakeNanoGpt()
+        settings = private_settings(server=server)
+        with pytest.raises(ai.AIError) as caught:
+            ai.chat([], settings, json_reply=False)
+        said = str(caught.value)
+        assert f"answered HTTP 200 ({kind}) with no reply in it" in said
+        assert "sent on to https://nano-gpt.com/login" in said
+        assert "Settings → AI" in said
+        assert server.lookups == [] and ai.session_of(settings).last_receipt() is None
+        assert outbound.entries()[-1].outcome == outbound.FAILED
+
+    def test_a_stream_is_read_whatever_its_content_type_says(self, monkeypatch):
+        """Real servers label their streams every way: a body with "data:" lines is the
+        reply. From SealedLore (e947938)."""
+        server = FakeNanoGpt(reply="fine")
+        for kind in ("text/html", "application/json", "text/plain", None):
+            headers = {"Content-Type": kind} if kind else {}
+            monkeypatch.setattr(netguard, "_transport", lambda request, timeout, h=headers:
+                                Reply(server.stream(), h))
+            assert ai.chat([], private_settings(server=server), json_reply=False) == "fine"
 
     def test_an_enclave_that_isnt_attested_is_sent_nothing(self, endpoint):
         settings = private_settings(server=FakeNanoGpt(nonce_bound=False))
@@ -204,53 +344,47 @@ class TestTee:
         assert check.outcome == outbound.REFUSED and refused.outcome == outbound.REFUSED
         assert "Glass Harbor" in refused.content, "the list says what would have gone"
 
-    def test_strict_refuses_an_attestation_that_proved_less_than_it_could(self, endpoint):
+    def test_strict_refuses_an_attestation_that_proved_less_than_it_could(self, tee_stream):
         # On an enclave whose quote binds the gateway's keys itself, which proves all
         # else there is to prove; and as nano-gpt serves them, whose quote binds the
         # key that signs each reply's record but not the receipt keys beside it.
+        sent = tee_stream(FakeNanoGpt())
         for lacking, lacked in ((FakeNanoGpt(tied="statement", evidence=False),
                                  "no GPU evidence"),
                                 (FakeNanoGpt(), private_ai.RECEIPT_KEYS_LOOSE)):
             with pytest.raises(ai.Refused, match=f"proved less than it could .{lacked}."):
                 ai.chat([], private_settings(server=lacking, strict=True))
-            assert endpoint == []
+            assert sent == []
         settings = private_settings(server=FakeNanoGpt(tied="statement", evidence=False))
-        ai.chat([], settings)
-        assert len(endpoint) == 1
+        ai.chat([], settings, json_reply=False)
+        assert len(sent) == 1
         assert "less than it could prove: no GPU evidence" in outbound.entries()[-1].detail
 
     def test_the_record_is_looked_up_by_the_receipt_and_route_the_reply_names(
-            self, monkeypatch):
+            self, tee_stream):
         """A reply RedPill's gateway answers names its receipt and, now and then, a
         route (Nov 2026): its record is found by the receipt, the route named with it.
         For a model Chutes answers first, only such a reply is looked up (Nov 10 2026)."""
         from tests.test_attestation import InstanceEvidence, ShapedNanoGpt
-        named = {}
-
-        def transport(request, timeout):
-            return Reply({"id": "chatcmpl-42",
-                          "choices": [{"message": {"content": '{"ok": true}'}}]}, named)
-
-        monkeypatch.setattr(netguard, "_transport", transport)
-        server = FakeNanoGpt(aci="bound")
-        named.update({"X-Receipt-Id": "rcpt-7", "X-TEE-Verification-Route": "r2"})
+        server = FakeNanoGpt(aci="bound", receipt_id="rcpt-7", route="r2")
+        tee_stream(server)
         settings = private_settings(server=server)
-        ai.chat([], settings)
-        assert ai.session_of(settings).last_receipt().state == private_ai.SIGNED
+        ai.chat([], settings, json_reply=False)
+        assert ai.session_of(settings).last_receipt().state == private_ai.VERIFIED
         assert "/tee/signature/rcpt-7" in [g for g in server.gets if "/tee/signature/" in g][-1]
         assert server.lookups[-1].get("X-TEE-Verification-Route") == "r2"
         assert not any("X-TEE-Verification-Route" in r["headers"] for r in server.reports)
 
         instances = InstanceEvidence()
         chutes = ShapedNanoGpt(lambda nonce: (200, instances.body(nonce)), aci="bound")
+        tee_stream(chutes)
         settings = private_settings(model="TEE/glm-5.1", server=chutes)
-        named.clear()
-        ai.chat([], settings)
+        ai.chat([], settings, json_reply=False)
         assert ai.session_of(settings).last_receipt().state == private_ai.UNCHECKED
         assert chutes.lookups == [], "Chutes answered: nothing to look up"
-        named["X-Receipt-Id"] = "rcpt-8"
-        ai.chat([], settings)
-        assert ai.session_of(settings).last_receipt().state == private_ai.SIGNED
+        chutes.receipt_id = "rcpt-8"
+        ai.chat([], settings, json_reply=False)
+        assert ai.session_of(settings).last_receipt().state == private_ai.VERIFIED
 
     def test_strict_attests_again_after_a_reply_less_than_verified(self):
         """Signed by the attested key but not shown to be for the text that came, no
@@ -277,12 +411,13 @@ class TestTee:
         assert replies(FakeNanoGpt(tied="statement"), **came) == (private_ai.VERIFIED, 1)
         assert replies(FakeNanoGpt(tied="statement"), strict=False) == (private_ai.SIGNED, 1)
 
-    def test_strict_attests_again_after_a_signature_by_another_key(self, endpoint):
+    def test_strict_attests_again_after_a_signature_by_another_key(self, tee_stream):
         server = FakeNanoGpt(tied="statement", signer=0x1234)
+        tee_stream(server)
         settings = private_settings(server=server, strict=True)
-        ai.chat([], settings)
+        ai.chat([], settings, json_reply=False)
         assert ai.session_of(settings).last_receipt().state == private_ai.FAILED
-        ai.chat([], settings)
+        ai.chat([], settings, json_reply=False)
         assert len(server.plain_reports()) == 2
 
 

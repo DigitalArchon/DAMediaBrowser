@@ -757,9 +757,17 @@ There are two kinds, and the private model's name says which:
   with the GPU evidence sent to NVIDIA's attestation service and its signed
   verdict checked in turn; and beside it, for a nonce of its own, RedPill's
   gateway's own report, whose quote binds every key the gateway signs
-  replies with. Each reply's signature is then checked against those keys,
-  where nano-gpt keeps a record of it, found by the receipt the reply
-  names. But Nano-GPT's gateway reads what is sent on the way, and in Nov
+  replies and their receipts with. Each request is streamed, and its reply
+  checked against the record nano-gpt keeps of it, found by the receipt the
+  reply names: signed by one of those keys, for the exact bytes that came,
+  with RedPill's receipt for it holding where there is one. Only then does
+  the reply read **verified**. Signed, but its text not compared (a stream
+  nano-gpt rebuilds, or one cut short), it reads **signed, text not
+  compared**; with no record to read, **not verified**; signed by another
+  key, for other bytes or with a receipt that doesn't hold, **check
+  failed**. The record hashes the request as nano-gpt passed it on, so
+  that it was what the app sent rests on nano-gpt. And Nano-GPT's gateway
+  reads what is sent on the way, and in Nov
   2026 every `TEE/` model it attests but Chutes' own comes through
   RedPill's gateway, whose attestation doesn't reach the model's own host:
   it is used, and shown in amber as partial. `TEE/deepseek-v3.2` and
@@ -775,7 +783,9 @@ Nothing is sent if an enclave can't be attested, and nothing ever falls
 back to the ordinary model. There is no web search: Nano-GPT would have to
 read the request to run one. **Strict** refuses an enclave that proved less
 than it could — an older release, Intel's or NVIDIA's services out of
-reach, RedPill's gateway — rather than using it in amber. **Check
+reach, RedPill's gateway — rather than using it in amber; and after a
+`TEE/` reply its attested keys were to sign that reads less than verified,
+it attests the model again before anything more is sent to it. **Check
 Attestation** attests the enclave on the spot, sending nothing for it to
 read, for free; **Test** on the AI tab asks the private model one word,
 through the same checks. The private model's list is nano-gpt's, public: no
@@ -786,7 +796,7 @@ opened, an Identify Library run — and only ever tightens: switch Privacy
 Mode on, or the AI off, and a run already going sends nothing more to the
 ordinary model. While Privacy Mode is on the status bar says so ("AI,
 sealed end to end"), and after an answer, Detect Chapters says what the
-enclave proved.
+enclave proved and what the reply's check found; so does Test.
 
 The end-to-end encrypted models need Tinfoil's own client, which the
 AppImage carries and `tools/install-private-mode.sh` installs from source;

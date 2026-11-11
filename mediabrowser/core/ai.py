@@ -38,6 +38,7 @@ Every request is listed as it is made in outbound, for Help → What Was Sent.
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import json
 import os
@@ -370,43 +371,138 @@ def _without_frames(messages) -> list[dict]:
     return stripped
 
 
-def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TIMEOUT_SECONDS,
-             answered: dict | None = None):
-    """One request, by way of netguard: refused - Refused, before anything is
-    sent - unless the address is https or on this machine's own network, and
-    the key one that can be sent. `answered`, when given, is filled with the
-    reply's headers, their names in lower case: those of a TEE reply name
-    the receipt and route its check looks up (_private_chat)."""
+def _prepared(url: str, api_key: str | None, body: dict | None = None,
+              accept: str = "application/json") -> urllib.request.Request:
+    """One request, ready to go by way of netguard - or Refused, before
+    anything is sent, unless the address is https or on this machine's own
+    network, and the key one that can be sent."""
     insecure = netguard.problem(url)
     if insecure:
         raise Refused(insecure)
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers = {"Content-Type": "application/json", "Accept": accept}
     if api_key:
         unfit = netguard.key_problem(api_key, _service(url))
         if unfit:
             raise Refused(unfit)
         headers["Authorization"] = f"Bearer {api_key}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
+    return urllib.request.Request(url, data=data, headers=headers,
+                                  method="POST" if data else "GET")
+
+
+# What a request raises that _failed says in words: a malformed answer, cut
+# short or too long a line, as much as a network that failed.
+_REQUEST_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException, ValueError)
+
+
+def _failed(exc: Exception) -> AIError:
+    """What a request that went wrong raises (_REQUEST_ERRORS): Refused when
+    netguard refused it before anything was sent, an AIError saying what went
+    wrong otherwise - listed by the caller (chat)."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return AIError(_http_error_message(exc))
+    if isinstance(exc, netguard.REFUSALS):
+        return Refused(str(exc.reason))
+    return AIError(netguard.reason(exc))
+
+
+def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TIMEOUT_SECONDS):
+    """One request, by way of netguard (_prepared), and its answer as JSON."""
+    req = _prepared(url, api_key, body)
     try:
         with netguard.urlopen(req, timeout) as resp:
             raw = resp.read()
-            if answered is not None:
-                headers = getattr(resp, "headers", None)
-                answered.update((str(name).lower(), str(value))
-                                for name, value in (headers.items() if headers else ()))
-    except urllib.error.HTTPError as exc:
-        raise AIError(_http_error_message(exc)) from exc
-    except netguard.REFUSALS as exc:
-        raise Refused(str(exc.reason)) from exc
-    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
-        # A malformed answer, cut short or too long a line, as much as a network
-        # that failed: said as what went wrong, and listed (chat).
-        raise AIError(netguard.reason(exc)) from exc
+    except _REQUEST_ERRORS as exc:
+        raise _failed(exc) from exc
     try:
         return json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise AIError(f"the reply wasn't JSON: {exc}") from exc
+
+
+def _tee_stream(url: str, api_key: str, body: dict, timeout=TIMEOUT_SECONDS) -> dict:
+    """One request to a TEE/ model, streamed, its reply read whole: what
+    _consume finds in it, with what the reply's check needs
+    (private_ai.TeeClient.check_reply) - the hash of every byte the stream
+    carried, [DONE] and whatever follows it too ("body_hash", None for a
+    stream that did not arrive whole), and the receipt and route its headers
+    name.
+
+    Streamed because the record nano-gpt keeps of a TEE reply hashes the
+    bytes of its stream as they came, while a reply asked for whole it
+    rebuilds, so that its bytes match nothing. Its exact mode for whole
+    replies (X-NanoGPT-TEE-Response: exact) would be the other way; but
+    nearly every request here asks for a JSON object (response_format), which
+    that mode is not known to take, and every other app of the family streams
+    - DA Assistant and SealedLore, whose hashes were measured against every
+    TEE/ model live. Nothing here shows a reply before it is whole, so
+    streaming changes nothing else.
+
+    An answer that carries no stream at all - a web page where the API was
+    expected, a sign-in page on a local network - is an AIError naming its
+    status and content type, never an empty reply. A body with "data:" lines
+    is read whatever its content type says. From DA Assistant's
+    llm._private_call and SealedLore's openai_compat (Nov 2026)."""
+    request = _prepared(url, api_key, dict(body, stream=True), accept="text/event-stream")
+    digest = hashlib.sha256()
+    try:
+        with netguard.urlopen(request, timeout) as response:
+            lines = _hashed_lines(response, digest)
+            result = _consume(lines)
+            whole = result["done"] and _read_to_the_end(lines)
+            status = getattr(response, "status", None) or 200
+            headers = getattr(response, "headers", None)
+            answered = {str(name).lower(): str(value)
+                        for name, value in (headers.items() if headers else ())}
+            landed = response.geturl() if hasattr(response, "geturl") else url
+    except _REQUEST_ERRORS as exc:
+        raise _failed(exc) from exc
+    if not result["data"]:
+        kind = answered.get("content-type", "").split(";")[0].strip() or "no content type"
+        moved = f", sent on to {netguard.shown(landed)}," if landed and landed != url else ""
+        raise AIError(
+            f"{netguard.shown(url)}{moved} answered HTTP {status} ({kind[:80]}) with no reply "
+            f"in it, not the stream a chat endpoint sends. Check the endpoint's address in "
+            f"Settings → AI: a web page answers like this where the API was expected (an "
+            f"address without its /v1, say).")
+    result["body_hash"] = "sha256:" + digest.hexdigest() if whole else None
+    result["receipt_id"] = answered.get("x-receipt-id") or answered.get("x-tee-signature-id")
+    result["route"] = answered.get("x-tee-verification-route")
+    return result
+
+
+def _hashed_lines(response, digest):
+    """A stream's lines, every byte fed to `digest` as it is read: a TEE
+    reply's record names the hash of the exact bytes the stream carried. As
+    DA Assistant's llm._hashed_lines reads requests' chunks (Nov 2026), from
+    urllib's answer."""
+    pending = None
+    while True:
+        chunk = response.read(512)
+        if not chunk:
+            break
+        digest.update(chunk)
+        if pending is not None:
+            chunk = pending + chunk
+        lines = chunk.splitlines()
+        if lines and lines[-1] and chunk and lines[-1][-1] == chunk[-1]:
+            pending = lines.pop()
+        else:
+            pending = None
+        yield from lines
+    if pending is not None:
+        yield pending
+
+
+def _read_to_the_end(lines) -> bool:
+    """Read what is left of a stream after its [DONE], so that its hash is of
+    every byte it carried. Whether it could be."""
+    try:
+        for _rest in lines:
+            pass
+    except _REQUEST_ERRORS:
+        return False
+    return True
 
 
 def _http_error_message(exc: urllib.error.HTTPError) -> str:
@@ -590,10 +686,11 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
         and never goes anywhere unsealed; a TEE/ model's goes to the
         endpoint the session was made with, never to another.
 
-    Afterwards the reply is checked - a TEE reply's signature against the
-    keys its attestation bound, its record looked up by the receipt and the
-    route its headers name - and the receipt kept on the session for the
-    window."""
+    Afterwards the reply is checked - a TEE reply, streamed (_tee_stream),
+    against the record its attestation's keys signed, for the exact bytes its
+    stream carried, with RedPill's receipt beside it, looked up by the receipt
+    and the route its headers name - and the receipt kept on the session for
+    the window."""
     model = session.model
     text, pictures = outbound.text_of(messages)
     what = _what(text, pictures, model)
@@ -620,14 +717,11 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
         if sealed:
             answer = _sealed_chat(body, session)
         else:
-            answered = {}
-            reply = _request(f"{session.api_url}/chat/completions", session.api_key, body,
-                             answered=answered)
-            answer = reply_text(reply)
-            session.check_reply(reply.get("id") if isinstance(reply, dict) else None,
-                                receipt_id=(answered.get("x-receipt-id")
-                                            or answered.get("x-tee-signature-id")),
-                                route=answered.get("x-tee-verification-route"))
+            result = _tee_stream(f"{session.api_url}/chat/completions", session.api_key,
+                                 body)
+            session.check_reply(result["id"], receipt_id=result["receipt_id"],
+                                body_hash=result["body_hash"], route=result["route"])
+            answer = _answer_of(result)
     except private_ai.PrivacyError as exc:
         refused = "nothing was sent" in str(exc).lower()
         outbound.record(service, session.api_url, what, protection, f"Sends it {where}",
@@ -666,8 +760,18 @@ def _sealed_chat(body: dict, session: private_ai.PrivacySession) -> str:
         result = _consume(client.lines(response))
     client.finish(result["finish_reason"], result["done"])
     session.check_reply(result["id"])
+    return _answer_of(result)
+
+
+def _answer_of(result: dict) -> str:
+    """The text of a private reply's stream (_consume), or AIError for one
+    that is no answer: an error it carried, a stream that ended with neither
+    [DONE] nor a finish reason, a model that ran out of room before it
+    answered, or nothing at all."""
     if result["error"]:
         raise AIError(result["error"])
+    if not (result["done"] or result["finish_reason"]):
+        raise AIError("the reply was cut off before it was complete")
     if result["finish_reason"] == "length" and not result["text"].strip():
         raise AIError("the model ran out of room before it answered - try again, or "
                       "another private model in Settings → AI")
@@ -677,17 +781,20 @@ def _sealed_chat(body: dict, session: private_ai.PrivacySession) -> str:
 
 
 def _consume(lines) -> dict:
-    """Read a sealed SSE stream: {text, id, finish_reason, done, error}. Its
-    lines are decrypted as they come (sealed.PrivateModeClient.lines), and an
-    error in them is never read as text. From DA Assistant's llm._consume,
-    less what only a chat window needs."""
+    """Read an SSE stream - a TEE reply's, or a sealed one's, its lines
+    decrypted as they come (sealed.PrivateModeClient.lines): {text, id,
+    finish_reason, done, error, data}. An error in it is never read as text;
+    `data` is whether it held a "data:" line at all. From DA Assistant's
+    llm._consume, less what only a chat window needs."""
     text, response_id, finish_reason, done, error = "", None, None, False, None
+    data = False
     for raw in lines:
         if not raw:
             continue
         line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
         if not line.startswith("data:"):
             continue
+        data = True
         line = line[5:].strip()
         if line == "[DONE]":
             done = True
@@ -718,7 +825,7 @@ def _consume(lines) -> dict:
         if isinstance(piece, str):
             text += piece
     return {"text": text, "id": response_id, "finish_reason": finish_reason,
-            "done": done, "error": error}
+            "done": done, "error": error, "data": data}
 
 
 def check_attestation(settings: dict) -> private_ai.PrivacySession:
