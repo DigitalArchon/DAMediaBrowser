@@ -714,9 +714,11 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
         raise Refused(message)
     sealed = session.kind == private_ai.E2EE
     protection = outbound.SEALED if sealed else outbound.TEE
+    # Not "to its attested enclave": that a TEE/ request reached it is the reply's
+    # record's to show (private_ai.sent_label).
     where = (f"sealed end to end to {model}'s attested enclave: Nano-GPT relays only "
              f"ciphertext" if sealed else
-             f"to {model}'s attested enclave, through Nano-GPT's gateway, which can read it")
+             f"to {model}, attested first, through Nano-GPT's gateway, which can read it")
     service = _service(session.api_url)
     try:
         attestation = session.ensure()
@@ -725,32 +727,42 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
                         outbound.REFUSED, str(exc), text)
         raise Refused(str(exc)) from exc
     body = dict(body, model=model)
+    checked = []            # a TEE reply's check, once it has one (_how)
+
+    def how(verb):
+        """How it travelled, and - for a TEE/ reply that came - whether its record
+        shows the attested TEE received it (private_ai.sent_label)."""
+        if not checked:
+            return f"{verb} {where}"
+        return f"Sent it {where}: {private_ai.sent_label(checked[0])[0]}"
+
     try:
         if sealed:
             answer = _sealed_chat(body, session)
         else:
             result = _tee_stream(f"{session.api_url}/chat/completions", session.api_key,
                                  body)
-            session.check_reply(result["id"], receipt_id=result["receipt_id"],
-                                body_hash=result["body_hash"], route=result["route"])
+            checked.append(session.check_reply(
+                result["id"], receipt_id=result["receipt_id"],
+                body_hash=result["body_hash"], route=result["route"]))
             answer = _answer_of(result)
     except private_ai.PrivacyError as exc:
         refused = "nothing was sent" in str(exc).lower()
-        outbound.record(service, session.api_url, what, protection, f"Sends it {where}",
+        outbound.record(service, session.api_url, what, protection, how("Sends it"),
                         outbound.REFUSED if refused else outbound.FAILED, str(exc), text)
         raise (Refused if refused else AIError)(
             f"{exc}. Privacy Mode: nothing was sent in the clear") from exc
     except AIError as exc:
-        outbound.record(service, session.api_url, what, protection, f"Sends it {where}",
+        outbound.record(service, session.api_url, what, protection, how("Sends it"),
                         outbound.REFUSED if isinstance(exc, Refused) else outbound.FAILED,
                         str(exc), text)
         raise
     except Exception as exc:  # noqa: BLE001 - listed, then said, whatever it was
-        outbound.record(service, session.api_url, what, protection, f"Sends it {where}",
+        outbound.record(service, session.api_url, what, protection, how("Sends it"),
                         outbound.FAILED, f"{type(exc).__name__}: {exc}", text)
         raise AIError(f"the private request failed: {exc}") from exc
     receipt = session.last_receipt()
-    outbound.record(service, session.api_url, what, protection, f"Sent it {where}",
+    outbound.record(service, session.api_url, what, protection, how("Sent it"),
                     outbound.SENT,
                     f"{private_ai.attestation_label(attestation)[0]}; reply: "
                     f"{private_ai.receipt_label(receipt)[0]}", text)

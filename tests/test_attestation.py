@@ -2010,3 +2010,25 @@ class ReplyMarks(unittest.TestCase):
             "private/x", privacy.E2EE, privacy.SEALED)), ("✓ end-to-end encrypted",
                                                          privacy.OK))
         self.assertEqual(privacy.receipt_label(None), ("", privacy.OK))
+
+    def test_what_was_sent_is_received_only_as_far_as_its_replys_check_shows(self):
+        """What Was Sent said a TEE request went "to the model's attested enclave"
+        whatever its reply showed: nano-gpt routes each request, Chutes signs no
+        replies, and a model may be served elsewhere. Only a record the attested key
+        signed shows the attested enclave received it (SealedLore 9af15c1, by way of DA
+        Assistant's 4f8bbce)."""
+        def sent(state):
+            return privacy.sent_label(privacy.Receipt(TEXT, privacy.TEE, state))
+        for state in (privacy.VERIFIED, privacy.SIGNED):
+            text, tone, tip = sent(state)
+            self.assertEqual((text, tone), ("received by the attested TEE", privacy.OK))
+            self.assertIn("RedPill's gateway, which passed it on", tip)
+            self.assertIn("in the clear", tip)
+        for state in (privacy.UNCHECKED, privacy.FAILED):
+            text, tone, tip = sent(state)
+            self.assertEqual((text, tone), ("⚠ not shown to reach the attested enclave",
+                                            privacy.WARN))
+            self.assertIn("no signed record of its reply shows the attested enclave "
+                          "received it", tip)
+        self.assertEqual(privacy.sent_label(None)[0], privacy.UNPROVEN)
+        self.assertNotIn("igned", sent(privacy.SIGNED)[0], "signed is the reply's word")

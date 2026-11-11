@@ -245,6 +245,11 @@ class TestTee:
             "the Intel TDX quote binds")
         assert listed.protection == outbound.TEE and "can read it" in listed.how
         assert "reply: ✓ TEE, verified" in listed.detail
+        # Received by the attested TEE: its reply's record, signed by the attested key,
+        # shows it. Not "to its attested enclave" before that.
+        assert listed.how == (f"Sent it to {TEE_MODEL}, attested first, through "
+                              f"Nano-GPT's gateway, which can read it: received by the "
+                              f"attested TEE")
 
     def test_a_tee_request_is_streamed_and_exact_mode_is_not_asked_for(self, tee_stream):
         """nano-gpt rebuilds a whole (unstreamed) TEE reply, so its bytes never match
@@ -390,6 +395,39 @@ class TestTee:
         chutes.receipt_id = "rcpt-8"
         ai.chat([], settings, json_reply=False)
         assert ai.session_of(settings).last_receipt().state == private_ai.VERIFIED
+
+    def test_what_was_sent_is_received_only_once_its_replys_record_shows_it(
+            self, tee_stream, monkeypatch):
+        """A reply with no signed record (Chutes keeps none) or one whose check failed
+        leaves what was sent not shown to reach the attested enclave; a stream that
+        ended short whose record the attested key signed was received, though no answer
+        came of it; and one that never brought a reply says nothing of it."""
+        from tests.test_attestation import InstanceEvidence, ShapedNanoGpt
+        instances = InstanceEvidence()
+        chutes = ShapedNanoGpt(lambda nonce: (200, instances.body(nonce)))
+        tee_stream(chutes)
+        ai.chat([], private_settings(model="TEE/kimi-k3", server=chutes), json_reply=False)
+        assert outbound.entries()[-1].how.endswith(
+            ": ⚠ not shown to reach the attested enclave")
+        other = FakeNanoGpt(signed_bytes=b"data: [DONE]\n\n")
+        tee_stream(other)
+        ai.chat([], private_settings(server=other), json_reply=False)
+        assert outbound.entries()[-1].how.endswith(
+            ": ⚠ not shown to reach the attested enclave")
+        cut = FakeNanoGpt(cut=True)
+        tee_stream(cut)
+        with pytest.raises(ai.AIError):
+            ai.chat([], private_settings(server=cut), json_reply=False)
+        failed = outbound.entries()[-1]
+        assert failed.outcome == outbound.FAILED
+        assert failed.how.endswith(": received by the attested TEE")
+        monkeypatch.setattr(netguard, "_transport", lambda request, timeout: Reply(
+            b"<html></html>", {"Content-Type": "text/html"}))
+        with pytest.raises(ai.AIError):
+            ai.chat([], private_settings(server=FakeNanoGpt()), json_reply=False)
+        assert outbound.entries()[-1].how == (
+            f"Sends it to {TEE_MODEL}, attested first, through Nano-GPT's gateway, which "
+            f"can read it")
 
     def test_through_the_gateway_alone_a_reply_needs_a_receipt_that_holds(self, tee_stream):
         """A model attested through RedPill's gateway alone has its own enclave only as

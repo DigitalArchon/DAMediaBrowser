@@ -1758,6 +1758,37 @@ def attestation_label(attestation):
     return attestation.headline, OK
 
 
+# What a TEE/ request's text passed on the way, for every mark that does not say it nearby.
+_CLEAR = (" The text passed nano-gpt's servers in the clear; a private/ model is "
+          "end-to-end encrypted instead.")
+RECEIVED = "received by the attested TEE"
+UNPROVEN = "⚠ not shown to reach the attested enclave"
+
+
+def sent_label(receipt):
+    """(text, tone, tip) for what was sent to a TEE/ model, from its reply's check
+    (`receipt`, None when no reply was checked): received by the attested TEE only as
+    far as that shows it - VERIFIED or SIGNED, a record the attested key signed naming
+    the exchange. Otherwise not shown to reach the attested enclave: nano-gpt routes
+    each request, Chutes signs no replies, and a model may be served elsewhere when its
+    provider is busy. What Was Sent said "Sent it to the model's attested enclave"
+    whatever its reply showed. Never "signed": that is the reply's. Here each request
+    is one entry of What Was Sent, with one reply, and nothing of it is kept to be read
+    again. From SealedLore (9af15c1), as DA Assistant's sent_badge has it (4f8bbce)."""
+    if receipt is not None and receipt.state in (VERIFIED, SIGNED):
+        return (RECEIVED, OK,
+                "Received by the attested TEE: sent while its model's attestation held, and "
+                "the record of its reply, signed by the attested key, names the exchange. "
+                "For a model RedPill serves, that TEE is RedPill's gateway, which passed it "
+                "on to the machine that runs the model." + _CLEAR)
+    return (UNPROVEN, WARN,
+            "Sent to the TEE model while its attestation held, but no signed record of "
+            "its reply shows the attested enclave received it: nano-gpt routes each "
+            "request, and this model's provider signs no replies (Chutes) or the check "
+            "could not be made. A model may be served elsewhere when its provider is "
+            "busy." + _CLEAR)
+
+
 def receipt_label(receipt):
     """(text, tone) for one reply, from its receipt: what its check found, as DA
     Assistant's receipt_badge says it (Nov 2026). "Verified" only for a reply whose
