@@ -801,8 +801,10 @@ There are two kinds, and the private model's name says which:
   that one of its models was used around then; it carries only the
   session's id, never what was sent or the key, at most 1 MB once a session
   (about an hour), and never for a model Chutes serves. What it names is
-  RedPill's word, believed only as the signed receipt names it. It is read
-  at each reply: switched off, nothing more is looked up.
+  RedPill's word, believed only as the signed receipt names it. Like the
+  rest of Privacy Mode it only ever tightens a run: it counts for one only
+  if it was on when the run began and still is — switched off, nothing more
+  is looked up, at once; switched on, it applies from the next run.
 
 Nothing is sent if an enclave can't be attested, and nothing ever falls
 back to the ordinary model. There is no web search: Nano-GPT would have to

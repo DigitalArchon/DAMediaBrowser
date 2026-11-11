@@ -1890,9 +1890,9 @@ class PrivacySession:
         `body_hash` and `route` are what a TEE reply's stream said of itself: the
         receipt id and route nano-gpt's headers named, and the hash of every byte
         it carried (TeeClient.check_reply). `name_upstream` (Settings → Privacy,
-        read by the request at each reply): and who ran a TEE reply's model, by
-        RedPill's record of its session (TeeClient.check), on the receipt; it
-        changes nothing else.
+        on when the run began and still on at this reply: ai._names_upstreams):
+        and who ran a TEE reply's model, by RedPill's record of its session
+        (TeeClient.check), on the receipt; it changes nothing else.
 
         With strict attestation, a TEE reply that proved less than a verified
         one - a check that failed, or, one the attested keys were to sign

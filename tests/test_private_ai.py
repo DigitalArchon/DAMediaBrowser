@@ -499,9 +499,14 @@ class TestTee:
 class TestNamingTheProvider:
     """Settings → Privacy's "Name the provider behind each TEE reply" (off by default):
     after a TEE/ reply whose receipt holds, RedPill's record of its session names who ran
-    the model, beside the reply's mark, from api.redpill.ai directly - read at each reply,
-    listed on What Was Sent, and never changing the mark (SealedLore 44e145d, by way of
-    DA Assistant's dd44f6b)."""
+    the model, beside the reply's mark, from api.redpill.ai directly - for a run only if
+    it was on when the run began and still is, listed on What Was Sent, and never
+    changing the mark (SealedLore 44e145d, by way of DA Assistant's dd44f6b)."""
+
+    def named_run(self, server, **more):
+        """A run begun with the switch on, as settings.json has it too."""
+        save(**{ai.SETTING_NAME_UPSTREAMS: True})
+        return private_settings(server=server, **{ai.SETTING_NAME_UPSTREAMS: True}, **more)
 
     @pytest.fixture(autouse=True)
     def no_records_kept(self, monkeypatch):
@@ -523,8 +528,7 @@ class TestNamingTheProvider:
         monkeypatch.setattr(private_ai, "RECEIPT_RETRY_SECONDS", 0)
         server = self.server()
         tee_stream(server)
-        save(**{ai.SETTING_NAME_UPSTREAMS: True})
-        settings = private_settings(server=server)
+        settings = self.named_run(server)
         ai.chat([], settings, json_reply=False)
         receipt = ai.session_of(settings).last_receipt()
         assert receipt.state == private_ai.VERIFIED, receipt.detail
@@ -535,34 +539,46 @@ class TestNamingTheProvider:
         assert "reply: ✓ TEE, verified · run by Tinfoil" in outbound.entries()[-1].detail
         assert len(server.records_asked) == 1 and server.records_asked[0]["headers"] == {}
 
-    def test_it_is_read_at_each_reply_and_off_looks_nothing_up(self, tee_stream,
-                                                               monkeypatch):
+    def test_a_run_asks_only_if_it_was_on_when_the_run_began_and_still_is(
+            self, tee_stream, monkeypatch):
+        """This app's rule: a run's privacy only ever tightens. Switched on part way
+        through a run, the lookup begins with the next run, not that one; switched off,
+        it stops at once, in a run already going too. (SealedLore and DA Assistant read
+        it at each reply alone.)"""
         monkeypatch.setattr(private_ai, "RECEIPT_RETRY_SECONDS", 0)
         server = self.server()
         tee_stream(server)
-        settings = private_settings(server=server)      # off when the run began
-        ai.chat([], settings, json_reply=False)
-        assert ai.session_of(settings).last_receipt().upstream is None
-        assert server.records_asked == []
-        save(**{ai.SETTING_NAME_UPSTREAMS: True})       # on, as the next reply comes
-        ai.chat([], settings, json_reply=False)
-        assert ai.session_of(settings).last_receipt().upstream.name == "tinfoil"
+        begun_off = private_settings(server=server)     # off when the run began
+        ai.chat([], begun_off, json_reply=False)
+        assert ai.session_of(begun_off).last_receipt().upstream is None
+        save(**{ai.SETTING_NAME_UPSTREAMS: True})       # on, part way through it
+        ai.chat([], begun_off, json_reply=False)
+        receipt = ai.session_of(begun_off).last_receipt()
+        assert receipt.state == private_ai.VERIFIED and receipt.upstream is None
+        assert server.records_asked == [], "not in a run begun with it off"
+        assert outbound.entries()[-1].service == "Nano-GPT", "nothing listed for RedPill"
+        begun_on = self.named_run(server)               # the next run: on from its start
+        ai.chat([], begun_on, json_reply=False)
+        assert ai.session_of(begun_on).last_receipt().upstream.name == "tinfoil"
         save(**{ai.SETTING_NAME_UPSTREAMS: False})      # off: at once, in this run too
         private_ai._records.clear()
-        ai.chat([], settings, json_reply=False)
-        receipt = ai.session_of(settings).last_receipt()
+        ai.chat([], begun_on, json_reply=False)
+        receipt = ai.session_of(begun_on).last_receipt()
         assert receipt.upstream is None and "run by" not in private_ai.receipt_label(
             receipt)[0]
         assert len(server.records_asked) == 1
+        # Settings' own form goes by what it shows.
+        form = ai.settings_from({privacy.AI: True, ai.SETTING_KEY: "sk-1",
+                                 ai.SETTING_NAME_UPSTREAMS: True}, form=True)
+        assert ai._names_upstreams(form) and not ai._names_upstreams({})
 
     def test_only_beside_a_mark_its_receipt_held_under_and_never_for_chutes(
             self, tee_stream, monkeypatch):
         from tests.test_attestation import TINFOIL, InstanceEvidence, ShapedNanoGpt
         monkeypatch.setattr(private_ai, "RECEIPT_RETRY_SECONDS", 0)
-        save(**{ai.SETTING_NAME_UPSTREAMS: True})
         failed = self.server(signer=1)
         tee_stream(failed)
-        settings = private_settings(server=failed)
+        settings = self.named_run(failed)
         ai.chat([], settings, json_reply=False)
         receipt = ai.session_of(settings).last_receipt()
         assert receipt.state == private_ai.FAILED and receipt.upstream is None
@@ -571,7 +587,7 @@ class TestNamingTheProvider:
         chutes = ShapedNanoGpt(lambda nonce: (200, instances.body(nonce)), aci="bound",
                                receipts=True, receipt_id="rcpt-1", record=TINFOIL)
         tee_stream(chutes)
-        settings = private_settings(model="TEE/glm-5.1", server=chutes)
+        settings = self.named_run(chutes, model="TEE/glm-5.1")
         ai.chat([], settings, json_reply=False)
         receipt = ai.session_of(settings).last_receipt()
         assert receipt.state == private_ai.VERIFIED, "RedPill answered this one"

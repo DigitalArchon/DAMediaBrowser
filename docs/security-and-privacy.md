@@ -257,10 +257,12 @@ NEAR AI, 0G, Tinfoil's router — beside its mark: *✓ TEE, verified · run by 
   time. What it says is still RedPill's word: this app does not check that machine. A
   record that cannot be read or believed names nobody, and the tooltip says why; the
   reply's mark never changes for it.
-- **When it applies.** The setting is read at each reply: switched on, it applies from
-  the next reply, in a run already going too; switched off, nothing more is looked up.
-  While it is on, the status bar and What Was Sent name RedPill among the places things
-  can go, and each lookup is listed as it is made.
+- **When it applies.** Like the rest of Privacy Mode, it only ever tightens a run: a
+  reply's provider is looked up only if the setting was on when the run began — a Detect
+  Chapters window opened, an Identify Library run — and is still on at that reply.
+  Switched off, nothing more is looked up, at once, in a run already going too; switched
+  on, it applies from the next run. While it is on, the status bar and What Was Sent name
+  RedPill among the places things can go, and each lookup is listed as it is made.
 
 ## Seeing where things go
 

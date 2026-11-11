@@ -74,8 +74,10 @@ SETTING_STRICT = "ai_privacy_strict"
 # RedPill's public record of its gateway's session (private_ai.TeeClient.served_by). Off
 # by default: it connects to api.redpill.ai directly, not through Nano-GPT, so RedPill
 # sees this computer's address (SealedLore's author, Nov 11 2026: a clear choice in
-# Settings, said plainly beside it). Read at each reply, as SealedLore and DA Assistant
-# read it (_names_upstreams): off, nothing more is looked up, in a run already going too.
+# Settings, said plainly beside it). Held to this app's rule that a run's privacy only
+# ever tightens (_names_upstreams): it counts for a run only if it was on when the run
+# began and is still on at the reply - off, nothing more is looked up, at once; on, from
+# the next run.
 SETTING_NAME_UPSTREAMS = "ai_tee_name_upstreams"
 # Not settings: what settings_from adds for the operation they are loaded for.
 SESSION = "_privacy_session"    # its private_ai.PrivacySession, in Privacy Mode
@@ -229,12 +231,17 @@ class _ListedLookups(netguard.Session):
 
 
 def _names_upstreams(settings: dict) -> bool:
-    """Whether a TEE/ reply's provider is named now (SETTING_NAME_UPSTREAMS): read at
-    each reply, as SealedLore and DA Assistant read it, so that switching it off in
-    Settings stops the lookups at once, in a run already going too. Settings' own form
-    goes by what it shows."""
+    """Whether a TEE/ reply's provider is named now (SETTING_NAME_UPSTREAMS), held to
+    this app's rule that a run's privacy only ever tightens: only if it was on when the
+    run began (`settings`, loaded then) and is still on in settings.json at this reply.
+    Switched off, the lookups stop at once, in a run already going too; switched on,
+    they begin with the next run, never part way through one already going. (SealedLore
+    and DA Assistant read it at each reply alone.) Settings' own form goes by what it
+    shows."""
+    if not settings.get(SETTING_NAME_UPSTREAMS):
+        return False
     if settings.get(FROM_FORM):
-        return bool(settings.get(SETTING_NAME_UPSTREAMS))
+        return True
     return store.load_app_settings().get(SETTING_NAME_UPSTREAMS) is True
 
 
@@ -757,9 +764,9 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession,
     against the record its attestation's keys signed, for the exact bytes its
     stream carried, with RedPill's receipt beside it, looked up by the receipt
     and the route its headers name - and the receipt kept on the session for
-    the window; and, where Settings → Privacy asks for it as the reply comes,
-    who ran a TEE reply's model, from RedPill's record of its session
-    (_names_upstreams, private_ai.TeeClient.served_by)."""
+    the window; and, where Settings → Privacy asked for it when the run began
+    and still does, who ran a TEE reply's model, from RedPill's record of its
+    session (_names_upstreams, private_ai.TeeClient.served_by)."""
     model = session.model
     text, pictures = outbound.text_of(messages)
     what = _what(text, pictures, model)
