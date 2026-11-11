@@ -411,17 +411,31 @@ class Enclave:
 
 
 def _sealing_transport(public_key, route=None):
-    """EHBP over a transport that goes through `route`, the proxy, if there is one.
+    """EHBP over a transport that goes through `route`, the proxy, if there is one, and
+    sends nothing EHBP did not seal.
 
     httpx takes no proxy from the environment for a client given a transport of its
     own, so this one is told (netguard.env_proxy_for): without it the sealed request,
     alone of all the app's, would go direct - from this machine's own address, Tor or no
-    Tor, beside a preflight that had gone through the proxy."""
+    Tor, beside a preflight that had gone through the proxy.
+
+    EHBP seals a request that has a body, and passes one it finds none in on as it came,
+    unsealed, for nano-gpt's relay to read - as it would anything another version of it
+    left unsealed. So the transport under it refuses any request that does not carry
+    EHBP's encapsulated key: nothing goes to the enclave but what was sealed to it, as
+    in the other apps' copies of this client (DA Vibe Manager's, Nov 2026)."""
     import httpx
     from ehbp import EHBPTransport
+    from ehbp.protocol import ENCAPSULATED_KEY_HEADER
 
-    inner = httpx.HTTPTransport(proxy=route,
-                                limits=httpx.Limits(max_keepalive_connections=0))
+    class SealedOnly(httpx.HTTPTransport):
+        def handle_request(self, request):
+            if ENCAPSULATED_KEY_HEADER not in request.headers:  # read case-insensitively
+                raise PrivacyError("a request to the enclave was not sealed, so it was "
+                                   "refused, and nothing was sent")
+            return super().handle_request(request)
+
+    inner = SealedOnly(proxy=route, limits=httpx.Limits(max_keepalive_connections=0))
     return EHBPTransport.from_public_key_hex(public_key, inner=inner)
 
 

@@ -870,6 +870,31 @@ class TestTheRealSealedClient:
         ai.chat([], self.settings_with(client))
         assert routes == ["http://proxy.example:3128"]
 
+    def test_nothing_ehbp_did_not_seal_is_sent_to_the_enclave(self, monkeypatch):
+        """EHBP passes a request it finds no body in on as it came, unsealed, and the
+        transport under it sent that too. It refuses anything without EHBP's
+        encapsulated key now, as DA Assistant's and DA Vibe Manager's do; what EHBP
+        sealed goes. From DA Assistant's tests (8139d72, Nov 2026)."""
+        import httpx
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        key = X25519PrivateKey.generate().public_key().public_bytes_raw().hex()
+        sent = []
+
+        def network(_transport, request):
+            sent.append((request.headers, request.read()))
+            return httpx.Response(500, text="stop here")
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", network)
+        url = sealed.relay_url(BASE) + "/v1/chat/completions"
+        with httpx.Client(transport=sealed._sealing_transport(key)) as client:
+            client.post(url, json={"messages": [{"role": "user", "content": "my secret"}]})
+            with pytest.raises(PrivacyError, match="was not sealed, so it was refused"):
+                client.post(url, content=b"")
+        assert len(sent) == 1, "the unsealed request was sent"
+        headers, body = sent[0]
+        assert "Ehbp-Encapsulated-Key" in headers
+        assert b"my secret" not in body
+
     def test_bodies_are_shaped_per_family(self):
         body = sealed.shape_body({"model": "x", "messages": [], "temperature": 0,
                                   "reasoning": {"effort": "low"}, "extra": 1},
