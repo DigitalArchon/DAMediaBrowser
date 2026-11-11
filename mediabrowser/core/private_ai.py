@@ -102,6 +102,13 @@ GATEWAY_SHORTFALL = "RedPill's gateway, not the model's host"
 # the gateway's receipt keys beside it: one nano-gpt has no report of the gateway's own
 # for, or whose keys that report does not include the signing key among.
 RECEIPT_KEYS_LOOSE = "receipt keys not in the quote"
+# And what one lacks whose GPU evidence NVIDIA vouched for, made with our nonce, but which
+# the attested machine's quote does not commit to: nano-gpt's report binds the signing key
+# (or the gateway's keyset) and our nonce, and nothing of the GPUs, so they may be another
+# machine's - the model's host's, say, passed on. A Chutes instance's quote binds its GPU
+# evidence's nonce (_check_instance), so its GPUs are its own. From SealedLore (Nov 11
+# 2026).
+GPUS_LOOSE = "GPUs not tied to the quote"
 # And what one of a model Chutes serves lacks when nano-gpt gave no report of RedPill's
 # gateway for it, for any reason but that RedPill does not serve it (a 400): whether the
 # gateway answers it instead now and then, unattested, is not known (_attest_instances).
@@ -953,6 +960,14 @@ class TeeClient:
         else:
             payload = None
         self._check_gpus(payload, nonce, check, "this request's nonce")
+        if payload is not None and payload.get("evidence_list"):
+            # The quote's report data is the signing key and our nonce, or the gateway's
+            # keyset and our nonce: nothing in it commits to the GPU evidence. Live (Nov 11
+            # 2026, SealedLore), TEE/qwen3.6-35b-a3b's report carried 8 GPUs where
+            # RedPill's own record of its host (NEAR AI) had none.
+            check.fall_short(GPUS_LOOSE)
+            check.note("the quote does not commit to the GPU evidence, so the GPUs may be "
+                       "another machine's")
         self.signing_address, self.signers, self.instances = address, signers, False
         self._take_keyset(keyset if tie else None, tie, check)
         return check.attestation(self.model, bound, signing_address=address,

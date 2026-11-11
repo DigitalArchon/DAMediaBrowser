@@ -18,7 +18,7 @@ import pytest
 
 from mediabrowser.core import ai, config, netguard, outbound, privacy, private_ai, sealed, store
 from mediabrowser.core.private_ai import ModelRetired, PrivacyError, PrivacySession
-from tests.test_attestation import FakeNanoGpt
+from tests.test_attestation import FakeNanoGpt, GpusTied
 
 BASE = "https://nano-gpt.com/api/v1"
 TEE_MODEL = "TEE/glm-5.3-flash"
@@ -351,7 +351,8 @@ class TestTee:
         sent = tee_stream(FakeNanoGpt())
         for lacking, lacked in ((FakeNanoGpt(tied="statement", evidence=False),
                                  "no GPU evidence"),
-                                (FakeNanoGpt(), private_ai.RECEIPT_KEYS_LOOSE)):
+                                (FakeNanoGpt(), private_ai.RECEIPT_KEYS_LOOSE),
+                                (FakeNanoGpt(tied="statement"), private_ai.GPUS_LOOSE)):
             with pytest.raises(ai.Refused, match=f"proved less than it could .{lacked}."):
                 ai.chat([], private_settings(server=lacking, strict=True))
             assert sent == []
@@ -425,17 +426,18 @@ class TestTee:
             session.ensure()
             return state, len(server.plain_reports())
 
+        # On an enclave that proves everything (GpusTied), which Strict accepts.
         came = {"body_hash": stream_hash(FakeNanoGpt().stream())}
-        assert replies(FakeNanoGpt(tied="statement")) == (private_ai.SIGNED, 2)
-        assert replies(FakeNanoGpt(tied="statement", signature_status=500),
+        assert replies(GpusTied(tied="statement")) == (private_ai.SIGNED, 2)
+        assert replies(GpusTied(tied="statement", signature_status=500),
                        **came) == (private_ai.UNCHECKED, 2)
-        assert replies(FakeNanoGpt(tied="statement", signed_bytes=b"data: [DONE]\n\n"),
+        assert replies(GpusTied(tied="statement", signed_bytes=b"data: [DONE]\n\n"),
                        **came) == (private_ai.FAILED, 2)
-        assert replies(FakeNanoGpt(tied="statement"), **came) == (private_ai.VERIFIED, 1)
-        assert replies(FakeNanoGpt(tied="statement"), strict=False) == (private_ai.SIGNED, 1)
+        assert replies(GpusTied(tied="statement"), **came) == (private_ai.VERIFIED, 1)
+        assert replies(GpusTied(tied="statement"), strict=False) == (private_ai.SIGNED, 1)
 
     def test_strict_attests_again_after_a_signature_by_another_key(self, tee_stream):
-        server = FakeNanoGpt(tied="statement", signer=0x1234)
+        server = GpusTied(tied="statement", signer=0x1234)
         tee_stream(server)
         settings = private_settings(server=server, strict=True)
         ai.chat([], settings, json_reply=False)

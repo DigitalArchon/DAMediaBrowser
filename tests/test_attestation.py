@@ -377,31 +377,43 @@ class TeeAttestation(unittest.TestCase):
     def client(self, **server):
         return FakeNanoGpt(**server).tee_client(API_URL, "k", TEXT)
 
-    def test_a_bound_quote_intel_and_nvidia_vouch_for_is_attested_its_receipt_keys_named(self):
+    def test_a_bound_quote_intel_and_nvidia_vouch_for_is_attested_its_loose_keys_named(self):
         """The quote binds the key that signs each reply's record, as nano-gpt serves
-        it (Nov 2026), and not the gateway's receipt keys: said, keyset or none."""
+        it (Nov 2026), and not the gateway's receipt keys: said, keyset or none. Nor
+        its GPUs: NVIDIA vouches for them, for our nonce, but the quote's report data is
+        the signing key and the nonce, nothing of the GPUs' (SealedLore, Nov 11 2026)."""
         attestation = self.client().attest()
         self.assertEqual(attestation.level, "partial")
-        self.assertEqual(attestation.shortfalls, [privacy.RECEIPT_KEYS_LOOSE])
+        self.assertEqual(attestation.shortfalls,
+                         [privacy.RECEIPT_KEYS_LOOSE, privacy.GPUS_LOOSE])
         self.assertTrue(attestation.gpu_ok)
         self.assertEqual(attestation.gpus, 8)
         self.assertEqual(attestation.tcb_status, "UpToDate")
         self.assertEqual(attestation.signing_address, address_of(KEY).lower())
         self.assertIn("binds the signing key to our nonce", attestation.detail)
         self.assertIn("vouches for 8 GPUs", attestation.detail)
-        self.assertEqual(attestation.headline, "TEE attested (receipt keys not in the quote)")
+        self.assertIn("the quote does not commit to the GPU evidence, so the GPUs may be "
+                      "another machine's", attestation.detail)
+        self.assertEqual(attestation.headline, "TEE attested (receipt keys not in the "
+                                               "quote, GPUs not tied to the quote)")
 
-    def test_one_whose_quote_binds_the_gateways_keys_itself_is_fully_attested(self):
+    def test_one_whose_quote_binds_the_gateways_keys_itself_falls_short_of_its_gpus(self):
         """RedPill's own statement in the report data: the keyset, its signing key
-        among them, and our nonce."""
+        among them, and our nonce - the receipt keys bound, the GPUs still not."""
         client = self.client(tied="statement")
         attestation = client.attest()
-        self.assertEqual(attestation.level, "full")
-        self.assertEqual(attestation.headline, "TEE attested")
+        self.assertEqual(attestation.level, "partial")
+        self.assertEqual(attestation.shortfalls, [privacy.GPUS_LOOSE])
+        self.assertEqual(attestation.headline, "TEE attested (GPUs not tied to the quote)")
         self.assertIn("binds the gateway's keys, its signing key among them, to our "
                       "nonce", attestation.detail)
         self.assertIsNotNone(client.keyset)
         self.assertEqual(attestation.signing_address, address_of(KEY).lower())
+
+    def test_no_gpu_evidence_is_named_once_and_not_as_gpus_not_tied(self):
+        """With no GPU evidence there is nothing for the quote to leave untied."""
+        attestation = self.client(tied="statement", evidence=False).attest()
+        self.assertEqual(attestation.shortfalls, ["no GPU evidence"])
 
     def test_no_gpu_evidence_is_partial_and_says_so(self):
         attestation = self.client(evidence=False).attest()
@@ -936,9 +948,10 @@ class RealEvidence(unittest.TestCase):
 
     # together
 
-    def test_the_whole_attestation_holds_with_only_its_receipt_keys_short(self):
+    def test_the_whole_attestation_holds_with_only_its_receipt_keys_and_gpus_short(self):
         """Sept 2026's capture has no keyset: no receipts, and nothing binds them
-        either. Everything else is proved."""
+        either; and its quote binds the signing key and our nonce, not its GPUs.
+        Everything else is proved."""
         client = TeeClient(API_URL, "k", self.fixture["model"], session=self.session,
                            intel=lambda raw, s: dcap.verify(raw, s, now=self.when),
                            nvidia=lambda a, n, s: nras.verify(a, n, s, now=self.now))
@@ -948,8 +961,10 @@ class RealEvidence(unittest.TestCase):
             attestation = client.attest()
         finally:
             privacy.secrets.token_hex = original
-        self.assertEqual(attestation.headline, "TEE attested (receipt keys not in the quote)")
-        self.assertEqual(attestation.shortfalls, [privacy.RECEIPT_KEYS_LOOSE])
+        self.assertEqual(attestation.headline, "TEE attested (receipt keys not in the "
+                                               "quote, GPUs not tied to the quote)")
+        self.assertEqual(attestation.shortfalls,
+                         [privacy.RECEIPT_KEYS_LOOSE, privacy.GPUS_LOOSE])
         self.assertEqual((attestation.gpus, attestation.tcb_status), (8, "UpToDate"))
         self.assertEqual(attestation.signing_address, self.fixture["signing_address"])
         self.assertIsNone(client.keyset)
@@ -1234,6 +1249,29 @@ class ShapedNanoGpt(FakeNanoGpt):
         return super().nvidia_verify(answer, nonce, session)
 
 
+class GpusTied(FakeNanoGpt):
+    """FakeNanoGpt, standing for an enclave whose GPU evidence its quote commits to: one
+    that proves everything this app can check. None of nano-gpt's TEE/ models does (their
+    quotes bind the signing key and our nonce, nothing of the GPUs: GPUS_LOOSE), so this
+    is what Strict's handling of an enclave it has accepted is tested with - its replies
+    doubted, its attestation made again - and what the other shortfalls are tested alone
+    against."""
+
+    def tee_client(self, url, key, model):
+        client = super().tee_client(url, key, model)
+        attest = client.attest
+
+        def tied():
+            attestation = attest()
+            attestation.shortfalls = [what for what in attestation.shortfalls
+                                      if what != privacy.GPUS_LOOSE]
+            attestation.level = "partial" if attestation.shortfalls else "full"
+            return attestation
+
+        client.attest = tied
+        return client
+
+
 @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
 class PerInstanceAttestation(unittest.TestCase):
     """TEE/kimi-k3 and the other Chutes models (live, Sept and Nov 2026)."""
@@ -1346,7 +1384,8 @@ class GatewayAttestation(unittest.TestCase):
         self.assertEqual(attestation.level, "partial")
         self.assertIn(privacy.GATEWAY_SHORTFALL, attestation.headline)
         self.assertEqual(attestation.fell_short,
-                         [privacy.GATEWAY_SHORTFALL, privacy.RECEIPT_KEYS_LOOSE])
+                         [privacy.GATEWAY_SHORTFALL, privacy.RECEIPT_KEYS_LOOSE,
+                          privacy.GPUS_LOOSE])
         self.assertIn("not that the model itself runs in an enclave", attestation.detail)
         self.assertEqual((attestation.gpus, attestation.tcb_status), (8, "UpToDate"),
                          "every other check stands")
@@ -1355,8 +1394,10 @@ class GatewayAttestation(unittest.TestCase):
         for extra in ({"api_version": "aci/1"},
                       {"service_capabilities": {"serving": "aggregator"}}):
             self.assertEqual(self.attest(extra).fell_short,
-                             [privacy.GATEWAY_SHORTFALL, privacy.RECEIPT_KEYS_LOOSE])
-        self.assertEqual(self.attest({}).fell_short, [privacy.RECEIPT_KEYS_LOOSE])
+                             [privacy.GATEWAY_SHORTFALL, privacy.RECEIPT_KEYS_LOOSE,
+                              privacy.GPUS_LOOSE])
+        self.assertEqual(self.attest({}).fell_short,
+                         [privacy.RECEIPT_KEYS_LOOSE, privacy.GPUS_LOOSE])
 
     @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
     def test_bound_by_its_own_statement_it_is_still_the_gateway(self):
@@ -1365,7 +1406,8 @@ class GatewayAttestation(unittest.TestCase):
         server = FakeNanoGpt(tied="statement", attestation_extra={
             key: GATEWAY[key] for key in ("api_version", "service_capabilities")})
         attestation = server.tee_client(API_URL, "k", TEXT).attest()
-        self.assertEqual(attestation.fell_short, [privacy.GATEWAY_SHORTFALL])
+        self.assertEqual(attestation.fell_short,
+                         [privacy.GATEWAY_SHORTFALL, privacy.GPUS_LOOSE])
 
     def test_keys_it_attests_that_have_expired_are_refused(self):
         expired = dict(GATEWAY, attestation={"workload_keyset": {"not_after": 1700000000}})
@@ -1416,7 +1458,9 @@ class GatewaysOwnReport(unittest.TestCase):
         server = FakeNanoGpt(aci="bound", receipts=True)
         client = server.tee_client(API_URL, "k", TEXT)
         attestation = client.attest()
-        self.assertEqual(attestation.shortfalls, [privacy.GATEWAY_SHORTFALL])
+        self.assertEqual(attestation.shortfalls,
+                         [privacy.GATEWAY_SHORTFALL, privacy.GPUS_LOOSE],
+                         "whole but for the gateway, and GPUs the quote does not name")
         self.assertIn("the gateway's quote binds its receipt keys, the signing key among "
                       "them", attestation.detail)
         self.assertIn("not that the model itself runs in an enclave", attestation.detail)
@@ -1483,7 +1527,8 @@ class GatewaysOwnReport(unittest.TestCase):
         server = FakeNanoGpt(aci="bound", tied="none")
         client = server.tee_client(API_URL, "k", TEXT)
         attestation = client.attest()
-        self.assertEqual(attestation.shortfalls, [privacy.RECEIPT_KEYS_LOOSE])
+        self.assertEqual(attestation.shortfalls,
+                         [privacy.RECEIPT_KEYS_LOOSE, privacy.GPUS_LOOSE])
         self.assertIn("the gateway's attested keys do not include the signing key",
                       attestation.detail)
         self.assertIsNone(client.keyset)
@@ -1510,6 +1555,31 @@ class GatewaysOwnReport(unittest.TestCase):
         alone = ShapedNanoGpt(lambda nonce: (200, RELAYED), aci="400")
         with self.assertRaisesRegex(PrivacyError, "nonce the relay chose"):
             alone.tee_client(API_URL, "k", "TEE/deepseek-v3.2").attest()
+
+    def test_gpus_not_tied_to_the_quote_change_nothing_strict_refuses(self):
+        """GPUS_LOOSE turns nothing amber that was green among the shapes nano-gpt's TEE/
+        models attest in (live, Nov 2026): every one RedPill serves fell short for the
+        gateway already, so Strict refused it already; a Chutes instance's quote binds
+        its GPU evidence's nonce, so its GPUs are its own, and a model Chutes alone
+        serves stays whole. From DA Assistant's tests (b931944)."""
+        marks = {key: GATEWAY[key] for key in ("api_version", "service_capabilities")}
+        shapes = {
+            "RedPill's, with the gateway's report": FakeNanoGpt(
+                aci="bound", attestation_extra=marks),
+            "RedPill's, without the gateway's report": FakeNanoGpt(
+                aci="400", tied="e2ee", attestation_extra=marks),
+            "through the gateway alone": ShapedNanoGpt(lambda nonce: (200, RELAYED),
+                                                       aci="bound"),
+            "Chutes first, with the gateway": ShapedNanoGpt(
+                lambda nonce: (200, self.instances.body(nonce)), aci="bound"),
+        }
+        for what, server in shapes.items():
+            lacked = server.tee_client(API_URL, "k", "TEE/x").attest().fell_short
+            self.assertIn(privacy.GATEWAY_SHORTFALL, lacked, what)
+            self.assertTrue([w for w in lacked if w != privacy.GPUS_LOOSE], what)
+        chutes = ShapedNanoGpt(lambda nonce: (200, self.instances.body(nonce)))
+        attestation = chutes.tee_client(API_URL, "k", "TEE/kimi-k3").attest()
+        self.assertEqual((attestation.level, attestation.fell_short), ("full", []))
 
     def test_through_the_gateway_alone_a_reply_without_a_receipt_is_not_verified(self):
         """The gateway's signature on a reply's record says only that the reply passed
@@ -1758,7 +1828,7 @@ class Receipts(unittest.TestCase):
     def test_a_keyset_the_quote_binds_itself_is_taken_and_one_tied_neither_way_is_not(self):
         bound, _server = self.client(tied="statement")
         self.assertIsNotNone(bound.keyset)
-        self.assertEqual(bound.attest().level, "full",
+        self.assertEqual(bound.attest().shortfalls, [privacy.GPUS_LOOSE],
                          "RedPill's own form binds the receipt keys")
         loose, server = self.client(tied="none")
         self.assertIsNone(loose.keyset)
@@ -1779,7 +1849,8 @@ class Receipts(unittest.TestCase):
     def test_receipt_keys_with_no_time_to_hold_them_to_are_not_used(self):
         client, _server = self.client(tied="statement", not_after=None)
         self.assertIsNone(client.keyset)
-        self.assertEqual(client.attest().shortfalls, ["receipt keys expired"])
+        self.assertEqual(client.attest().shortfalls,
+                         [privacy.GPUS_LOOSE, "receipt keys expired"])
 
     def test_a_stream_just_ended_waits_for_its_receipt(self):
         with mock.patch.object(privacy, "RECEIPT_RETRY_SECONDS", 0):
