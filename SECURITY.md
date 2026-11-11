@@ -33,8 +33,9 @@ Anything that breaks one of DA Media Browser's promises, for example:
 - anything reaching RedPill's `api.redpill.ai` while *Name the provider behind each TEE reply*
   is off, or anything but a reply's session id when it is on;
 - a request going over plain http anywhere but this computer, its local network or an onion
-  service, a redirect followed from https to plain http or onto your own network, an API key
-  carried to a server it wasn't sent to, or a certificate left unchecked;
+  service, a redirect followed for a request that carries a key or what you sent, or from
+  https to plain http or onto your own network, an API key carried to a server it wasn't
+  sent to, or a certificate left unchecked;
 - an API key, or a password written into an address, reaching `settings.json`, a library
   file, a backup, an export or a message on screen;
 - Help → What Was Sent leaving out a request the app made, or saying it travelled more safely

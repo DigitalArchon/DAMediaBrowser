@@ -857,11 +857,15 @@ protect you from.
 Everything goes over https. Plain http is accepted only for this computer,
 its local network and Tor onion services — an endpoint of your own, say —
 and anything else is refused before a byte is sent, never quietly
-rewritten to https; certificates are always checked. A redirect is
-followed only to where the request could have gone in the first place:
-never from https to plain http, never from a server out there onto your own
-network, and never with the key to another server. A server on your own
-network is reached directly, whatever the environment's proxy says;
+rewritten to https; certificates are always checked. Nothing that carries
+a key or what you send follows a redirect — the AI's requests, Privacy
+Mode's checks, setlist.fm's, MusicBrainz's: it is an error saying where the
+server pointed, and nothing is sent there (if the AI endpoint has moved,
+put its new address in Settings → AI). Anything else follows one only to
+where the request could have gone in the first place: never from https to
+plain http, and never from a server out there onto your own network. A
+server on your own network is reached directly, whatever the environment's
+proxy says;
 everything else goes through it, `ALL_PROXY` included, and a proxy the app
 can't go through (SOCKS: use Tor's `HTTPTunnelPort` instead) means nothing
 is sent rather than sent around it. Plain http to an onion service goes

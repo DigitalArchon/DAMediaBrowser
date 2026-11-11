@@ -179,6 +179,10 @@ UPSTREAMS_NOTE = (
     "about one small download a model an hour, never more than 1 MB, and never for "
     "models Chutes serves itself, whose records are megabytes each. What it names is "
     "RedPill's word, matched to the receipt the attested gateway signed.")
+# What a redirect from the AI endpoint says to do. Nothing that carries the key or what
+# was sent follows one (netguard.Redirected, sealed's relay), so an endpoint that has
+# moved is the user's to set again. After SealedLore's e947938 (Nov 11 2026).
+ENDPOINT_MOVED = "if the endpoint has moved, put its new address in Settings → AI"
 E2EE_NOTE = ("End-to-end encrypted: every message is sealed on this machine to a key only "
              "the model's attested enclave holds. nano-gpt relays ciphertext; it sees your "
              "account, the model, timing, sizes and cost, never the text.")

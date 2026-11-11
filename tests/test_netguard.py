@@ -189,23 +189,51 @@ class TestRedirects:
             netguard.urlopen(start.url + "/go", 5)
         assert target.seen == []
 
-    def test_a_redirect_that_may_be_followed_is_without_the_key_elsewhere(
+    def test_what_carries_a_key_a_body_or_what_was_sent_follows_no_redirect(
             self, server, real_transport):
+        """A redirect would send the request on to wherever the server pointed, the key
+        and what was sent with it - urllib turns a 301, 302 or 303 on a POST into a GET
+        to the new address. So none is followed: an error says where the server pointed,
+        without a password, and nothing goes there (SealedLore's e947938)."""
         other = server({"/landed": (200, {}, b"reached")}, host="127.0.0.2")
-        start = server({"/elsewhere": (302, {"Location": other.url + "/landed"}, b"")})
-        secret = {"Authorization": "Bearer sk-secret", "X-api-key": "setlist-secret"}
-        with netguard.urlopen(urllib.request.Request(start.url + "/elsewhere",
-                                                     headers=secret), 5) as reply:
+        landed = other.url + "/landed"
+        start = server({
+            "/key": (302, {"Location": landed}, b""),
+            "/same-server": (301, {"Location": "/landed"}, b""),
+            "/post": (303, {"Location": landed}, b""),
+            "/post-308": (308, {"Location": landed}, b""),
+            "/said": (307, {"Location": landed}, b""),
+            "/password": (302, {"Location": other.url.replace("//", "//alice:secret@")
+                                + "/landed"}, b""),
+            "/public": (302, {"Location": landed}, b""),
+            "/landed": (200, {}, b"the same server"),
+        })
+        request = urllib.request.Request
+        for sent, follow, code, target in [
+                (request(start.url + "/key", headers={"Authorization": "Bearer sk-secret"}),
+                 True, 302, landed),
+                (request(start.url + "/same-server", headers={"X-api-key": "setlist"}),
+                 True, 301, start.url + "/landed"),
+                (request(start.url + "/post", data=b'{"prompt": "Glass Harbor"}'),
+                 True, 303, landed),
+                (request(start.url + "/post-308", data=b"{}"), True, 308, landed),
+                (request(start.url + "/said"), False, 307, landed)]:
+            with pytest.raises(netguard.Redirected) as caught:
+                netguard.urlopen(sent, 5, follow_redirects=follow)
+            assert caught.value.reason == (f"{sent.full_url} redirected (HTTP {code}) to "
+                                           f"{target}. Nothing was sent there.")
+            assert not isinstance(caught.value, netguard.REFUSALS), "it was sent, there"
+        with pytest.raises(netguard.Redirected) as caught:
+            netguard.urlopen(request(start.url + "/password",
+                                     headers={"Authorization": "Bearer sk-1"}), 5)
+        assert "secret" not in caught.value.reason and "to http://…@127.0.0.2:" in \
+            caught.value.reason
+        assert other.seen == [], "nothing went where it pointed"
+        assert "/landed" not in [seen["path"] for seen in start.seen]
+        # A fetch with none of them - a cover, say - still follows one where netguard's
+        # rule allows it.
+        with netguard.urlopen(start.url + "/public", 5) as reply:
             assert reply.read() == b"reached"
-        landed = {name.lower(): value for name, value in other.seen[0]["headers"].items()}
-        assert "authorization" not in landed and "x-api-key" not in landed
-        assert not any("secret" in value for value in landed.values())
-        # To the same server, the key goes with it.
-        same_server = server({"/a": (302, {"Location": "/b"}, b""), "/b": (200, {}, b"b")})
-        with netguard.urlopen(urllib.request.Request(same_server.url + "/a",
-                                                     headers=secret), 5) as reply:
-            assert reply.read() == b"b"
-        assert same_server.seen[1]["headers"].get("Authorization") == "Bearer sk-secret"
 
     def test_a_server_on_this_network_is_reached_directly_whatever_the_proxy(
             self, server, real_transport, monkeypatch):
@@ -247,6 +275,106 @@ class TestSession:
             netguard.Session().get(start.url + "/go")
         with pytest.raises(netguard.RequestError):
             netguard.Session().get("http://127.0.0.1:1/")   # nothing listens there
+
+
+    def test_a_request_with_the_key_or_a_body_follows_no_redirect(self, server,
+                                                                  real_transport):
+        other = server({"/landed": (200, {}, b"{}")}, host="127.0.0.2")
+        start = server({"/attest": (307, {"Location": other.url + "/landed"}, b""),
+                        "/nras": (302, {"Location": other.url + "/landed"}, b"")})
+        with pytest.raises(netguard.RequestError) as caught:
+            netguard.Session().get(start.url + "/attest",
+                                   headers={"Authorization": "Bearer sk-1"})
+        assert str(caught.value) == (f"{start.url}/attest redirected (HTTP 307) to "
+                                     f"{other.url}/landed. Nothing was sent there.")
+        with pytest.raises(netguard.RequestError, match=r"redirected \(HTTP 302\)"):
+            netguard.Session().post(start.url + "/nras", json={"evidence": "a GPU's"})
+        assert other.seen == []
+
+
+class Everywhere(dict):
+    """Routes for a Server that answer every path as `answer(path)` says."""
+
+    def __init__(self, answer):
+        super().__init__()
+        self.answer = answer
+
+    def get(self, path, default=None):
+        return self.answer(path)
+
+
+class TestNothingThatCarriesWhatWasSentFollowsARedirect:
+    """The AI's requests, Privacy Mode's TEE checks, a MusicBrainz search and setlist.fm:
+    a redirect is an error saying where the server pointed, and nothing is sent there.
+    Where the address is the user's to set - the AI endpoint - it says where a new one
+    goes (SealedLore's e947938)."""
+
+    MOVED = ("Nothing was sent there: if the endpoint has moved, put its new address in "
+             "Settings → AI.")
+
+    @pytest.fixture
+    def moved(self, server):
+        """(the server that redirects every request, the one it points to)."""
+        def make(status):
+            other = server({}, host="127.0.0.2")
+            start = server(Everywhere(lambda path: (status, {"Location": other.url + path},
+                                                    b"")))
+            return start, other
+        return make
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_the_ais_request_and_its_model_list(self, moved, real_transport, status):
+        start, other = moved(status)
+        settings = ai.settings_from({privacy.AI: True, ai.SETTING_KEY: "sk-1",
+                                     ai.SETTING_BASE_URL: start.url + "/v1"})
+        with pytest.raises(ai.AIError) as caught:
+            ai.chat([{"role": "user", "content": "Glass Harbor"}], settings)
+        assert str(caught.value) == (
+            f"{start.url}/v1/chat/completions redirected (HTTP {status}) to "
+            f"{other.url}/v1/chat/completions. {self.MOVED}")
+        with pytest.raises(ai.AIError, match=f"redirected \\(HTTP {status}\\)"):
+            ai.list_models(settings)
+        assert other.seen == []
+
+    @pytest.mark.parametrize("status", [301, 308])
+    def test_a_tee_models_streamed_request(self, moved, real_transport, status):
+        start, other = moved(status)
+        with pytest.raises(ai.AIError) as caught:
+            ai._tee_stream(start.url + "/v1/chat/completions", "sk-1",
+                           {"model": "TEE/glm-5.3", "messages": []})
+        assert str(caught.value) == (
+            f"{start.url}/v1/chat/completions redirected (HTTP {status}) to "
+            f"{other.url}/v1/chat/completions. {self.MOVED}")
+        assert other.seen == []
+
+    def test_privacy_modes_tee_checks_which_carry_the_key(self, moved, real_transport):
+        from mediabrowser.core import private_ai
+        start, other = moved(308)
+        client = ai._tee_client(start.url + "/v1", "sk-1", "TEE/glm-5.3")
+        with pytest.raises(private_ai.PrivacyError) as caught:
+            client._get("/tee/attestation", {"model": "TEE/glm-5.3"})
+        assert f"redirected (HTTP 308) to {other.url}/" in str(caught.value)
+        assert self.MOVED in str(caught.value)
+        assert other.seen == [] and all(
+            seen["headers"].get("Authorization") == "Bearer sk-1" for seen in start.seen)
+
+    def test_a_musicbrainz_search_and_setlist_fm(self, moved, real_transport, monkeypatch):
+        start, other = moved(301)
+        monkeypatch.setattr(musicbrainz, "_MIN_INTERVAL", 0.0)
+        monkeypatch.setattr(setlistfm, "_MIN_INTERVAL", 0.0)
+        monkeypatch.setattr(musicbrainz.config, "MUSICBRAINZ_BASE_URL", start.url + "/ws/2")
+        monkeypatch.setattr(setlistfm, "BASE_URL", start.url + "/rest/1.0")
+        monkeypatch.setenv(setlistfm.API_KEY_ENV, "setlist-key")
+        with pytest.raises(musicbrainz.MusicBrainzError,
+                           match=rf"redirected \(HTTP 301\) to {other.url}/ws/2/release"):
+            musicbrainz.search_releases("Glass Harbor", fmt="json")
+        with pytest.raises(setlistfm.SetlistError,
+                           match=rf"redirected \(HTTP 301\) to {other.url}/rest/1\.0/"):
+            setlistfm.search("Glass Harbor", year=2026)
+        assert other.seen == []
+        assert [entry.outcome for entry in outbound.entries()] == [outbound.FAILED] * 2
+        assert all("Nothing was sent there." in entry.detail
+                   for entry in outbound.entries())
 
 
 class TestTheProviderLookup:

@@ -88,10 +88,18 @@ not. The status bar's right-hand corner says where things can go now (see
 - **An address with a user name or password written into it** (`https://alice:secret@host/v1`)
   is refused, in words that repeat neither: the app sends neither, so it says so rather
   than send the request without them. The key goes in its own field.
-- **Redirects** are followed only to an address that could have been used in the first
-  place: never from https to plain http, and never from a server on the internet onto
-  this computer or its network. When the server changes, the key is not sent along.
-  Tinfoil's client's own fetches are held to the same rules.
+- **Redirects.** Nothing that carries a key or what you send follows one: the AI's
+  requests, model lists included, key or none; Privacy Mode's checks with the key, and
+  its sealed requests; setlist.fm's; MusicBrainz's, whose searches name your videos; and
+  NVIDIA's attestation service, which is sent the GPUs' evidence. A redirect would send
+  the request on to wherever the server pointed, so it is an error saying where, without
+  a password, and nothing is sent there; if the AI endpoint has moved, its new address
+  goes in Settings → AI. Fetches that carry none of that — the Cover Art Archive's
+  pictures, which it sends on to the Internet Archive, Intel's certificates and
+  revocation lists, NVIDIA's signing keys, RedPill's session records and Tinfoil's
+  client's own fetches — follow one only to an address that could have been used in the
+  first place: never from https to plain http, and never from a server on the internet
+  onto this computer or its network.
 - **The environment's proxy** (`https_proxy`, `http_proxy`, `ALL_PROXY`) carries every
   request the app makes — the AI's, the lookups, the covers, the attestation services,
   RedPill's session records, Tinfoil's client — except to this computer and its own

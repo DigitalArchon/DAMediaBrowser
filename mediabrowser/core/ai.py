@@ -203,7 +203,8 @@ def _session(settings: dict) -> private_ai.PrivacySession:
 def _tee_client(api_url, api_key, model) -> private_ai.TeeClient:
     """A TEE/ model's client, its requests through netguard as ever, and the one of
     them that goes somewhere of its own listed on What Was Sent (_ListedLookups)."""
-    return private_ai.TeeClient(api_url, api_key, model, session=_ListedLookups())
+    return private_ai.TeeClient(api_url, api_key, model,
+                                session=_ListedLookups(endpoint=api_url))
 
 
 class _ListedLookups(netguard.Session):
@@ -218,9 +219,22 @@ class _ListedLookups(netguard.Session):
     HOW = ("Asked RedPill's api.redpill.ai directly, not through Nano-GPT: it sees this "
            "computer's internet address, or the proxy's")
 
+    def __init__(self, endpoint=None):
+        self.endpoint = endpoint
+
     def request(self, method, url, *args, **kwargs):
         if not str(url).startswith(private_ai.SESSION_RECORDS):
-            return super().request(method, url, *args, **kwargs)
+            try:
+                return super().request(method, url, *args, **kwargs)
+            except netguard.RequestError as exc:
+                moved = exc.__cause__
+                if isinstance(moved, netguard.Redirected) and self.endpoint and \
+                        urlparse(str(url)).netloc == urlparse(self.endpoint).netloc:
+                    # nano-gpt's TEE checks carry the key, so none follows a redirect,
+                    # and the endpoint is the user's to set: said as the AI's are.
+                    raise netguard.RequestError(
+                        moved.said(private_ai.ENDPOINT_MOVED)) from moved
+                raise
         try:
             response = super().request(method, url, *args, **kwargs)
         except netguard.RequestError as exc:
@@ -472,7 +486,11 @@ def _failed(exc: Exception, url: str) -> AIError:
     """What a request to `url` that went wrong raises (_REQUEST_ERRORS):
     Refused when netguard refused it before anything was sent, an AIError
     saying what went wrong otherwise - listed by the caller (chat) - in words
-    that quote no password written into the address (netguard.reason)."""
+    that quote no password written into the address (netguard.reason). A
+    redirect is followed by none of the AI's requests: it says where the
+    endpoint pointed, and where to put its new address if it has moved."""
+    if isinstance(exc, netguard.Redirected):
+        return AIError(exc.said(private_ai.ENDPOINT_MOVED))
     if isinstance(exc, urllib.error.HTTPError):
         return AIError(_http_error_message(exc))
     if isinstance(exc, netguard.REFUSALS):
@@ -481,10 +499,12 @@ def _failed(exc: Exception, url: str) -> AIError:
 
 
 def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TIMEOUT_SECONDS):
-    """One request, by way of netguard (_prepared), and its answer as JSON."""
+    """One request, by way of netguard (_prepared), and its answer as JSON. It
+    follows no redirect, key or none: every request to the AI endpoint is
+    one of the AI's (_failed says where it pointed)."""
     req = _prepared(url, api_key, body)
     try:
-        with netguard.urlopen(req, timeout) as resp:
+        with netguard.urlopen(req, timeout, follow_redirects=False) as resp:
             raw = resp.read()
     except _REQUEST_ERRORS as exc:
         raise _failed(exc, url) from exc
@@ -520,7 +540,7 @@ def _tee_stream(url: str, api_key: str, body: dict, timeout=TIMEOUT_SECONDS) -> 
     request = _prepared(url, api_key, dict(body, stream=True), accept="text/event-stream")
     digest = hashlib.sha256()
     try:
-        with netguard.urlopen(request, timeout) as response:
+        with netguard.urlopen(request, timeout, follow_redirects=False) as response:
             lines = _hashed_lines(response, digest)
             result = _consume(lines)
             whole = result["done"] and _read_to_the_end(lines)

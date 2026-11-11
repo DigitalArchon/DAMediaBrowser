@@ -74,7 +74,9 @@ def _get_in_turn(path: str, params: dict, fmt: str) -> dict:
 
     try:
         try:
-            with netguard.urlopen(req, 15) as resp:
+            # No redirect is followed: a search names the video, which would go on
+            # to wherever the server pointed (netguard.Redirected says where).
+            with netguard.urlopen(req, 15, follow_redirects=False) as resp:
                 body = resp.read()
         except urllib.error.HTTPError as exc:
             # 503 is MusicBrainz saying it's busy, and a moment later it
@@ -82,7 +84,7 @@ def _get_in_turn(path: str, params: dict, fmt: str) -> dict:
             if exc.code != 503:
                 raise
             time.sleep(BUSY_RETRY_SECONDS)
-            with netguard.urlopen(req, 15) as resp:
+            with netguard.urlopen(req, 15, follow_redirects=False) as resp:
                 body = resp.read()
     except (urllib.error.URLError, OSError) as exc:
         refused = isinstance(exc, netguard.REFUSALS)

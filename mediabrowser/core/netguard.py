@@ -34,10 +34,16 @@ So is one with a user name or password written into it
 (`https://alice:secret@host/v1`): the app sends neither, and keeps no
 password in its settings file (store.save_app_settings).
 
-A redirect is held to the same rule: followed only to an address that could
-have been used in the first place, never from https to plain http, and
-never from a server out there to one on this machine's own network. One
-that goes to another server is followed without the key.
+A request that carries a key, a body, or what was sent - the AI's, Privacy
+Mode's checks with the key, setlist.fm's, a MusicBrainz search - follows no
+redirect at all: a redirect sends the request on to wherever the server
+points, the prompt or the key with it (urllib turns a 301, 302 or 303 on a
+POST into a GET to the new address). It is an error saying where the
+server pointed, without a password (Redirected), and nothing is sent
+there. A public fetch with none of those - a cover, Intel's certificates,
+RedPill's session records - follows one only to an address that could have
+been used in the first place: never from https to plain http, and never
+from a server out there to one on this machine's own network.
 
 A server on this machine or its own network is reached directly, whatever
 the environment's proxy says: plain http to it through a proxy elsewhere
@@ -90,6 +96,32 @@ class InsecureURL(urllib.error.URLError):
 class RedirectRefused(urllib.error.URLError):
     """A redirect to somewhere the request could not have been sent in the
     first place. A URLError, like InsecureURL."""
+
+
+class Redirected(urllib.error.URLError):
+    """A redirect not followed, because the request carried a key, a body or what was
+    sent (follows_redirects): a redirect would have sent it on to wherever the server
+    pointed. The request itself went where it was made for, so it is no refusal
+    (REFUSALS). `reason` says where the server pointed, without a password; a caller
+    whose address the user sets says where to put a new one (said)."""
+
+    def __init__(self, source, code, target):
+        self.source, self.code, self.target = source, code, target
+        super().__init__(self.said())
+
+    def said(self, moved="") -> str:
+        """The error in words (redirect_said); `moved`, what to do if the address has
+        moved."""
+        return redirect_said(self.source, self.code, self.target, moved)
+
+
+def redirect_said(source, code, target, moved="") -> str:
+    """A redirect not followed, in words: where `source` pointed (`target`, None when it
+    named nowhere), without a password, and that nothing was sent there; `moved`, what
+    to do if the address has moved, after it. SealedLore's e947938 has it so."""
+    where = f" to {shown(target)[:200]}" if target else ""
+    return (f"{shown(source)} redirected (HTTP {code}){where}. Nothing was sent there"
+            + (f": {moved}" if moved else "") + ".")
 
 
 class RequestError(Exception):
@@ -274,13 +306,28 @@ def _origin(url) -> tuple:
     return (parts.scheme.lower(), (parts.hostname or "").lower(), parts.port)
 
 
+def follows_redirects(request) -> bool:
+    """Whether a redirect of `request` may be followed at all: not if it carries a key
+    (Authorization, X-api-key) or a body, nor if its caller said it carries what was
+    sent (urlopen's follow_redirects) - a redirect would send that on to wherever the
+    server pointed. A public fetch with none of them may, as redirect_problem allows."""
+    if getattr(request, "follow_redirects", True) is False or request.data is not None:
+        return False
+    return not any(request.has_header(name) for name in ("Authorization", "X-api-key"))
+
+
 class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
-    """A redirect followed only where the request could have gone in the
-    first place (redirect_problem), and without the key when it goes to
-    another server: urllib hands a redirect every header it was given."""
+    """No redirect for a request that carries a key, a body or what was sent
+    (follows_redirects: Redirected, saying where); for any other, one followed only
+    where the request could have gone in the first place (redirect_problem), and
+    without a secret header when it goes to another server: urllib hands a redirect
+    every header it was given."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         newurl = urljoin(req.full_url, newurl)
+        if not follows_redirects(req):
+            fp.close()
+            raise Redirected(req.full_url, code, newurl)
         found = redirect_problem(req.full_url, newurl)
         if found:
             raise RedirectRefused(found)
@@ -355,13 +402,16 @@ def _transport(request, timeout):
     return _opener().open(request, timeout=timeout)
 
 
-def urlopen(request, timeout):
+def urlopen(request, timeout, follow_redirects=True):
     """urllib.request.urlopen, held to this module's rules. Raises
     InsecureURL (a URLError) before anything is sent to an address that may
-    not be used, RedirectRefused for a redirect that may not be followed,
-    and urllib's own errors for the rest."""
+    not be used, Redirected for a redirect of a request that carries a key, a
+    body or - `follow_redirects` False - what was sent, RedirectRefused for
+    one that may not be followed, and urllib's own errors for the rest."""
     if isinstance(request, str):
         request = urllib.request.Request(request)
+    if not follow_redirects:
+        request.follow_redirects = False
     check(request.full_url)
     refused = proxy_problem(request.full_url)
     if refused:
@@ -508,6 +558,8 @@ class Session:
             except Exception:  # noqa: BLE001 - the status is what matters
                 body = b""
             return Response(exc.code, exc.headers.items() if exc.headers else (), body, url)
+        except Redirected as exc:
+            raise RequestError(exc.said()) from exc
         except (urllib.error.URLError, OSError, ValueError,
                 http.client.HTTPException) as exc:
             raise RequestError(f"{shown(url)}: {reason(exc, url)}") from exc

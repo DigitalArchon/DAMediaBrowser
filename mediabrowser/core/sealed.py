@@ -50,12 +50,13 @@ import threading
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from . import netguard
 from .dcap import since_boot
 from .private_ai import (
     E2EE,
+    ENDPOINT_MOVED,
     Attestation,
     ModelRetired,
     PrivacyError,
@@ -562,6 +563,8 @@ class PrivateModeClient:
             raise PrivacyError(f"nano-gpt refused the Private Mode request "
                                f"(HTTP {response.status_code}; its relay said: "
                                f"{_error_text(response)})")
+        if response.status_code >= 300:
+            raise _redirected(self.enclave.relay + "/preflight", response)
         try:
             data = response.json()
         except ValueError as e:
@@ -641,6 +644,11 @@ class PrivateModeClient:
                     continue
                 raise PrivacyError(f"HTTP {response.status_code}; nano-gpt's relay said "
                                    f"(unauthenticated, not the model): {text}")
+            if 300 <= response.status_code < 400:
+                # Not followed (follow_redirects=False): it would carry the key and the
+                # sealed body to wherever it points. Said, with where to.
+                response.close()
+                raise _redirected(self.endpoint, response)
             if not 200 <= response.status_code < 300:
                 # Only a 2xx reply is opened. EHBP hands on any other that carries no
                 # response nonce just as it came, unsealed (ehbp's
@@ -679,6 +687,17 @@ class PrivateModeClient:
         if not (finish_reason and saw_done):
             # The proxy's private_stream_incomplete: whatever came may be partial.
             raise PrivacyError("the encrypted reply ended before it was complete")
+
+
+def _redirected(url, response):
+    """A redirect from nano-gpt's relay, as the error to raise: the client follows none
+    (each request carries the key, and a sealed one what was sent), so where it pointed
+    is said, without a password, and where a moved endpoint's address goes. As
+    netguard.Redirected says it for the app's other requests."""
+    location = response.headers.get("location")
+    target = urljoin(url, location) if location else None
+    return PrivacyError(netguard.redirect_said(url, response.status_code, target,
+                                               ENDPOINT_MOVED))
 
 
 def _error_text(response):

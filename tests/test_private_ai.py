@@ -1046,15 +1046,44 @@ class TestTheRealSealedClient:
         with pytest.raises(ai.AIError, match="did not come back through Private Mode"):
             ai.chat([], self.settings_with(client))
 
-    def test_a_reply_that_is_not_2xx_is_refused_unread(self, endpoint):
+    def test_a_redirect_is_said_and_refused_unread(self, endpoint):
+        """Not followed - the request carries the key and the sealed body - and said, with
+        where to, as the AI's other requests say one (SealedLore's e947938). Any other
+        answer but a 2xx is refused unread, as before."""
         import httpx
         for status in (301, 302, 307, 308):
             client, _ = self.make(lambda r, status=status: httpx.Response(
                 status, headers={"x-nanogpt-private-mode": "tinfoil",
                                  "location": "https://nano-gpt.com/elsewhere"},
                 content=self.stream_body()))
-            with pytest.raises(ai.AIError, match=f"HTTP {status} instead of a sealed reply"):
+            with pytest.raises(ai.AIError) as caught:
                 ai.chat([], self.settings_with(client))
+            assert (f"{BASE}/private/tinfoil/v1/chat/completions redirected (HTTP {status}) "
+                    f"to https://nano-gpt.com/elsewhere. Nothing was sent there: if the "
+                    f"endpoint has moved, put its new address in Settings → AI.") \
+                in str(caught.value)
+            assert "Private Mode" not in str(caught.value).split("redirected")[1]
+        client, _ = self.make(lambda r: httpx.Response(
+            103, headers={"x-nanogpt-private-mode": "tinfoil"}, content=self.stream_body()))
+        with pytest.raises(ai.AIError, match="HTTP 103 instead of a sealed reply"):
+            ai.chat([], self.settings_with(client))
+
+    def test_a_redirected_preflight_is_said_and_nothing_is_sealed(self, endpoint):
+        import httpx
+        sent = []
+        client = sealed.PrivateModeClient(
+            BASE, "sk-1", enclave=sealed.Enclave(sealed.relay_url(BASE),
+                                                 verifier=lambda *a: self.verified()),
+            transport_factory=lambda key, route: httpx.MockTransport(sent.append),
+            preflight_client=httpx.Client(transport=httpx.MockTransport(
+                lambda r: httpx.Response(308, headers={
+                    "location": "https://alice:pw@relay.example/preflight"}))))
+        with pytest.raises(ai.AIError) as caught:
+            ai.chat([], self.settings_with(client))
+        assert ("/private/tinfoil/preflight redirected (HTTP 308) to "
+                "https://…@relay.example/preflight. Nothing was sent there: if the endpoint "
+                "has moved, put its new address in Settings → AI.") in str(caught.value)
+        assert "pw" not in str(caught.value) and sent == []
 
     def test_a_stream_cut_short_is_refused(self, endpoint):
         import httpx
