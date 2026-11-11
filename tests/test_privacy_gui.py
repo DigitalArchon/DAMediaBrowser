@@ -103,6 +103,29 @@ class TestSettings:
         assert said.index("Attested: RedPill's") < said.index("the gateway's quote binds")
         assert dialog.attest_status.property("tone") == "warning"
 
+    def test_naming_a_tee_replys_provider_is_a_choice_that_says_where_it_goes(self,
+                                                                              window):
+        """Off by default, usable with Privacy Mode, and said plainly beside it: the one
+        request that goes to RedPill directly (SealedLore 44e145d)."""
+        save(**{privacy.AI: True})
+        dialog = settings_dialog(window)
+        assert not dialog.upstreams_check.isChecked(), "off until it's ticked"
+        assert not dialog.upstreams_check.isEnabled(), "Privacy Mode's to allow first"
+        note = dialog.upstreams_note.text()
+        for said in ("api.redpill.ai directly, not through Nano-GPT",
+                     "RedPill sees this computer's internet address",
+                     "Only the session's id is sent", "never more than 1 MB",
+                     "never for models Chutes serves itself", "RedPill's word"):
+            assert said in note, said
+        dialog.privacy_mode_check.setChecked(True)
+        assert dialog.upstreams_check.isEnabled()
+        dialog.private_model.setCurrentText("TEE/glm-5.3-flash")
+        dialog.upstreams_check.setChecked(True)
+        assert dialog.settings()[ai.SETTING_NAME_UPSTREAMS] is True
+        dialog.accept()
+        assert store.load_app_settings()[ai.SETTING_NAME_UPSTREAMS] is True
+        assert ai.load_settings()[ai.SETTING_NAME_UPSTREAMS] is True
+
     def test_without_tinfoils_client_the_model_line_says_how_to_get_it(self, window,
                                                                       monkeypatch):
         monkeypatch.setattr(sealed, "_known", (False, sealed.INSTALL_HINT))

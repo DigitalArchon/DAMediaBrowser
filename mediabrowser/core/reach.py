@@ -19,7 +19,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import ai, privacy, setlistfm, store
+from . import ai, privacy, private_ai, setlistfm, store
+
+# Not one of privacy's switches: Settings → Privacy's "Name the provider behind each TEE
+# reply", under Privacy Mode (ai.SETTING_NAME_UPSTREAMS), off by default.
+UPSTREAMS = "tee_upstreams"
 
 # Who each is, in a sentence, and in the status bar where room is short.
 NAMES = {
@@ -28,6 +32,7 @@ NAMES = {
     privacy.SETLISTFM: "setlist.fm",
     privacy.AI: "the AI",
     privacy.WEB_SEARCH: "the AI's web search",
+    UPSTREAMS: "RedPill's session records",
 }
 SHORT = {
     privacy.MUSICBRAINZ: "MusicBrainz",
@@ -35,12 +40,14 @@ SHORT = {
     privacy.SETLISTFM: "setlist.fm",
     privacy.AI: "AI",
     privacy.WEB_SEARCH: "Web search",
+    UPSTREAMS: "RedPill",
 }
 # Where its requests go, as an address to name.
 HOSTS = {
     privacy.MUSICBRAINZ: "musicbrainz.org",
     privacy.COVER_ART: "coverartarchive.org",
     privacy.SETLISTFM: "setlist.fm",
+    UPSTREAMS: "api.redpill.ai",
 }
 
 NOTHING = "Nothing leaves this computer."
@@ -91,6 +98,7 @@ def services(app_settings: dict | None = None,
     where, _protection = ai.destination(ai_settings)
     found[privacy.AI] = Service(privacy.AI, not ai_off, where, ai_off)
     found[privacy.WEB_SEARCH] = _web_search(ai_settings, ai_off)
+    found[UPSTREAMS] = _upstreams(ai_settings, ai_off)
     return found
 
 
@@ -113,6 +121,26 @@ def _web_search(ai_settings: dict, ai_off: str) -> Service:
         off = ""
     return Service(privacy.WEB_SEARCH, not off,
                    f"to {provider}, through Nano-GPT: a search about the show", off)
+
+
+def _upstreams(ai_settings: dict, ai_off: str) -> Service:
+    """RedPill's session records, read to name the provider behind each TEE/ reply:
+    only with Settings → Privacy's switch for it on, in Privacy Mode, for a TEE/
+    model."""
+    if not ai_settings.get(ai.SETTING_NAME_UPSTREAMS):
+        off = ("Settings → Privacy's \"Name the provider behind each TEE reply\" "
+               "isn't ticked.")
+    elif not ai.in_privacy_mode(ai_settings):
+        off = "Only in Privacy Mode, for a TEE/ model's replies."
+    elif private_ai.kind_of(ai.active_model(ai_settings)) != private_ai.TEE:
+        off = "Only for a TEE/ model's replies: the private model is sealed end to end."
+    elif ai_off:
+        off = "It's the AI's, and the AI can't be asked."
+    else:
+        off = ""
+    return Service(UPSTREAMS, not off,
+                   "to api.redpill.ai, directly: a TEE reply's session id, to name the "
+                   "provider that ran the model", off)
 
 
 def status_text(found: dict[str, Service]) -> str:

@@ -72,7 +72,31 @@ def test_the_overview_lists_every_place_and_says_why_one_is_off():
     assert lines[0] == "✓ MusicBrainz: to musicbrainz.org"
     assert lines[1].startswith("✗ The Cover Art Archive: off. Fetching cover art")
     assert lines[2].startswith("✗ setlist.fm: off.")
-    assert len(lines) == len(privacy.CHOICES)
+    # And RedPill's session records, which only Privacy Mode's own switch sends to.
+    assert len(lines) == len(privacy.CHOICES) + 1
+    assert lines[-1] == ("✗ RedPill's session records: off. Settings → Privacy's \"Name "
+                         "the provider behind each TEE reply\" isn't ticked.")
+
+
+def test_redpill_is_named_only_while_its_switch_is_on_for_a_tee_model(monkeypatch):
+    """The provider behind each TEE reply, from api.redpill.ai directly: off by default,
+    in Privacy Mode only, and only for a TEE/ model (SealedLore 44e145d)."""
+    monkeypatch.setenv(ai.API_KEY_ENV, "sk")
+    tee = settings(**{privacy.AI: True, ai.SETTING_PRIVACY_MODE: True,
+                      ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"})
+    assert not reach.services(tee)[reach.UPSTREAMS].on, "off by default"
+    named = dict(tee, **{ai.SETTING_NAME_UPSTREAMS: True})
+    found = reach.services(named)
+    assert found[reach.UPSTREAMS].on
+    assert found[reach.UPSTREAMS].where.startswith("to api.redpill.ai, directly")
+    assert reach.status_text(found).endswith("AI, TEE attested first · RedPill")
+    assert reach.names([reach.UPSTREAMS], found) == "api.redpill.ai"
+    sealed_one = dict(named, **{ai.SETTING_PRIVATE_MODEL: "private/kimi-k3"})
+    assert "sealed end to end" in reach.services(sealed_one)[reach.UPSTREAMS].off
+    outside = dict(named, **{ai.SETTING_PRIVACY_MODE: False})
+    assert "Only in Privacy Mode" in reach.services(outside)[reach.UPSTREAMS].off
+    garbled = dict(tee, **{ai.SETTING_NAME_UPSTREAMS: "yes"})
+    assert not reach.services(garbled)[reach.UPSTREAMS].on, "on only when plainly on"
 
 
 def test_names_are_the_hosts_of_those_on():

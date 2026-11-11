@@ -84,6 +84,9 @@ PRIVACY_MODE_NOTE = (
     "Nothing falls back to the ordinary model, and there's no web search."
 )
 STRICT_LABEL = "Strict: refuse an enclave that proves less than it could"
+# Off by default, and said plainly beside it (SealedLore's author, Nov 11 2026): the one
+# request that goes to RedPill directly, not through Nano-GPT.
+UPSTREAMS_LABEL = "Name the provider behind each TEE reply"
 STRICT_NOTE = (
     "Otherwise one that passed every check it took, but couldn't take them all - an "
     "older release, Intel's or NVIDIA's services out of reach - is used, and shown in "
@@ -269,6 +272,16 @@ class SettingsDialog(QDialog):
         strict_note.setContentsMargins(26, 0, 0, 0)
         self.strict_note = strict_note
 
+        self.upstreams_check = QCheckBox(UPSTREAMS_LABEL)
+        self.upstreams_check.setChecked(settings[ai.SETTING_NAME_UPSTREAMS])
+        self.upstreams_check.setToolTip(private_ai.UPSTREAMS_NOTE)
+        self.upstreams_check.toggled.connect(lambda _on: self._update_privacy())
+        upstreams_note = QLabel(private_ai.UPSTREAMS_NOTE)
+        upstreams_note.setObjectName("hintLabel")
+        upstreams_note.setWordWrap(True)
+        upstreams_note.setContentsMargins(26, 0, 0, 0)
+        self.upstreams_note = upstreams_note
+
         self.attest_button = QPushButton("Check Attestation")
         self.attest_button.clicked.connect(self.check_attestation)
         self.attest_status = QLabel("")
@@ -288,6 +301,8 @@ class SettingsDialog(QDialog):
         inner.addWidget(self.private_model_note)
         inner.addWidget(self.strict_check)
         inner.addWidget(strict_note)
+        inner.addWidget(self.upstreams_check)
+        inner.addWidget(upstreams_note)
         inner.addLayout(attest_row)
 
         box = QVBoxLayout()
@@ -304,7 +319,8 @@ class SettingsDialog(QDialog):
         for widget in (self.privacy_mode_check, self.privacy_mode_note):
             widget.setEnabled(ai_on)
         for widget in (self.private_model, self.private_list_button, self.strict_check,
-                       self.strict_note, self.attest_button, self.private_model_note):
+                       self.strict_note, self.upstreams_check, self.upstreams_note,
+                       self.attest_button, self.private_model_note):
             widget.setEnabled(ai_on and private)
         search = self.privacy_checks[privacy.WEB_SEARCH]
         search.setEnabled(ai_on and not private)
@@ -573,6 +589,7 @@ class SettingsDialog(QDialog):
             ai.SETTING_PRIVACY_MODE: self.privacy_mode_check.isChecked(),
             ai.SETTING_PRIVATE_MODEL: self.private_model.currentText().strip(),
             ai.SETTING_STRICT: self.strict_check.isChecked(),
+            ai.SETTING_NAME_UPSTREAMS: self.upstreams_check.isChecked(),
         }, form=True)
 
     def accept(self) -> None:
@@ -617,6 +634,7 @@ class SettingsDialog(QDialog):
         settings[ai.SETTING_PRIVACY_MODE] = self.privacy_mode_check.isChecked()
         settings[ai.SETTING_PRIVATE_MODEL] = private_model
         settings[ai.SETTING_STRICT] = self.strict_check.isChecked()
+        settings[ai.SETTING_NAME_UPSTREAMS] = self.upstreams_check.isChecked()
         for choice in privacy.CHOICES:
             privacy.set_allowed(settings, choice, self.allowed(choice))
         store.save_app_settings(settings)

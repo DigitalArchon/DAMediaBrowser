@@ -51,6 +51,9 @@ class Reply:
     def geturl(self):
         return self.url
 
+    def close(self):
+        pass
+
     def __enter__(self):
         return self
 
@@ -489,6 +492,132 @@ class TestTee:
         assert ai.session_of(settings).last_receipt().state == private_ai.FAILED
         ai.chat([], settings, json_reply=False)
         assert len(server.plain_reports()) == 2
+
+
+class TestNamingTheProvider:
+    """Settings → Privacy's "Name the provider behind each TEE reply" (off by default):
+    after a TEE/ reply whose receipt holds, RedPill's record of its session names who ran
+    the model, beside the reply's mark, from api.redpill.ai directly - read at each reply,
+    listed on What Was Sent, and never changing the mark (SealedLore 44e145d, by way of
+    DA Assistant's dd44f6b)."""
+
+    @pytest.fixture(autouse=True)
+    def no_records_kept(self, monkeypatch):
+        monkeypatch.setattr(private_ai, "_records", {})
+
+    def server(self, **more):
+        from tests.test_attestation import TINFOIL
+        return FakeNanoGpt(aci="bound", receipts=True, receipt_id="rcpt-1", record=TINFOIL,
+                           **more)
+
+    def test_it_is_off_by_default_and_on_only_when_plainly_on(self):
+        assert ai.settings_from({})[ai.SETTING_NAME_UPSTREAMS] is False
+        for value in ("yes", 1, "true", [1]):
+            assert ai.settings_from({ai.SETTING_NAME_UPSTREAMS: value})[
+                ai.SETTING_NAME_UPSTREAMS] is False, value
+        assert ai.settings_from({ai.SETTING_NAME_UPSTREAMS: True})[ai.SETTING_NAME_UPSTREAMS]
+
+    def test_a_reply_names_who_ran_its_model_beside_its_mark(self, tee_stream, monkeypatch):
+        monkeypatch.setattr(private_ai, "RECEIPT_RETRY_SECONDS", 0)
+        server = self.server()
+        tee_stream(server)
+        save(**{ai.SETTING_NAME_UPSTREAMS: True})
+        settings = private_settings(server=server)
+        ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.VERIFIED, receipt.detail
+        assert receipt.upstream.name == "tinfoil"
+        assert private_ai.receipt_label(receipt) == ("✓ TEE, verified · run by Tinfoil",
+                                                     private_ai.OK)
+        assert "Run by Tinfoil (as m): RedPill's record" in private_ai.receipt_tip(receipt)
+        assert "reply: ✓ TEE, verified · run by Tinfoil" in outbound.entries()[-1].detail
+        assert len(server.records_asked) == 1 and server.records_asked[0]["headers"] == {}
+
+    def test_it_is_read_at_each_reply_and_off_looks_nothing_up(self, tee_stream,
+                                                               monkeypatch):
+        monkeypatch.setattr(private_ai, "RECEIPT_RETRY_SECONDS", 0)
+        server = self.server()
+        tee_stream(server)
+        settings = private_settings(server=server)      # off when the run began
+        ai.chat([], settings, json_reply=False)
+        assert ai.session_of(settings).last_receipt().upstream is None
+        assert server.records_asked == []
+        save(**{ai.SETTING_NAME_UPSTREAMS: True})       # on, as the next reply comes
+        ai.chat([], settings, json_reply=False)
+        assert ai.session_of(settings).last_receipt().upstream.name == "tinfoil"
+        save(**{ai.SETTING_NAME_UPSTREAMS: False})      # off: at once, in this run too
+        private_ai._records.clear()
+        ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.upstream is None and "run by" not in private_ai.receipt_label(
+            receipt)[0]
+        assert len(server.records_asked) == 1
+
+    def test_only_beside_a_mark_its_receipt_held_under_and_never_for_chutes(
+            self, tee_stream, monkeypatch):
+        from tests.test_attestation import TINFOIL, InstanceEvidence, ShapedNanoGpt
+        monkeypatch.setattr(private_ai, "RECEIPT_RETRY_SECONDS", 0)
+        save(**{ai.SETTING_NAME_UPSTREAMS: True})
+        failed = self.server(signer=1)
+        tee_stream(failed)
+        settings = private_settings(server=failed)
+        ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.FAILED and receipt.upstream is None
+        assert private_ai.receipt_label(receipt)[0] == "⚠ TEE, check failed"
+        instances = InstanceEvidence()
+        chutes = ShapedNanoGpt(lambda nonce: (200, instances.body(nonce)), aci="bound",
+                               receipts=True, receipt_id="rcpt-1", record=TINFOIL)
+        tee_stream(chutes)
+        settings = private_settings(model="TEE/glm-5.1", server=chutes)
+        ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.VERIFIED, "RedPill answered this one"
+        assert receipt.upstream.name == ""
+        assert "not looked up for a model Chutes serves" in receipt.upstream.note
+        assert "run by" not in private_ai.receipt_label(receipt)[0]
+        assert failed.records_asked == chutes.records_asked == []
+
+    def test_the_lookup_goes_through_netguard_and_on_what_was_sent(self, monkeypatch):
+        from tests.test_attestation import TINFOIL, canonical
+        session = ai._session(private_settings())
+        assert session._tee_factory is ai._tee_client
+        client = ai._tee_client(BASE, "sk-1", TEE_MODEL)
+        assert isinstance(client.session, ai._ListedLookups)
+        sent = []
+
+        def transport(request, timeout):
+            sent.append(dict(request.header_items()))
+            return Reply(json.dumps(TINFOIL).encode(), {"Content-Type": "application/json"})
+
+        monkeypatch.setattr(netguard, "_transport", transport)
+        import hashlib
+        session_id = hashlib.sha256(canonical(TINFOIL)).hexdigest()
+        found = private_ai._session_record(client.session, session_id)
+        assert found.name == "tinfoil"
+        assert not any(name.lower() == "authorization" for name in sent[0]), "no key"
+        (listed,) = outbound.entries()
+        assert (listed.service, listed.host, listed.protection, listed.outcome) == (
+            "RedPill", "api.redpill.ai", outbound.CLEAR, outbound.SENT)
+        assert "session id" in listed.what and "no key" in listed.what
+        assert "directly, not through Nano-GPT" in listed.how
+        # Everything else it asks is listed by the attestation's own entry, not here.
+        monkeypatch.setattr(netguard, "_transport", lambda request, timeout: Reply({}))
+        client.session.get(f"{BASE}/tee/attestation", params={"model": TEE_MODEL})
+        assert len(outbound.entries()) == 1
+        # And a proxy it cannot go through: nothing sent, and said so.
+        private_ai._records.clear()
+        monkeypatch.setenv("ALL_PROXY", "socks5h://127.0.0.1:9050")
+        with pytest.raises(private_ai.PrivacyError):
+            private_ai._session_record(client.session, session_id)
+        assert outbound.entries()[-1].outcome == outbound.REFUSED
+
+    def test_the_caveats_say_whom_it_tells(self):
+        session = PrivacySession(BASE, "sk-1", TEE_MODEL)
+        assert "api.redpill.ai" not in session.caveats()
+        said = session.caveats(name_upstreams=True)
+        assert "read from api.redpill.ai, directly, not through nano-gpt" in said
+        assert "Only the session's id is sent" in said
 
 
 class TestSealed:

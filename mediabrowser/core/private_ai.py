@@ -165,6 +165,20 @@ TEE_NOTE = ("TEE: attested before anything is sent to it - most as RedPill's gat
             "which passes each request on to the machine that runs the model - and each "
             "reply checked against the record the attested key signs for it, where its "
             "provider signs one. The text passes nano-gpt's gateway in the clear.")
+# Settings → Privacy, under "Name the provider behind each TEE reply" (ai's
+# SETTING_NAME_UPSTREAMS, TeeClient.served_by): what it does, and whom it tells. From
+# SealedLore's TEE_UPSTREAMS_NOTE (44e145d, Nov 11 2026), by way of DA Assistant's.
+UPSTREAMS_NOTE = (
+    "Most TEE models are attested as RedPill's gateway, which passes each request on to "
+    "the provider that runs the model. With this on, after a TEE reply checks out the app "
+    "asks RedPill which provider that was (Phala, Fortanix, NEAR AI, 0G, Tinfoil…) and "
+    "shows it beside the reply's mark. This connects to api.redpill.ai directly, not "
+    "through Nano-GPT, so RedPill sees this computer's internet address (or the proxy's, "
+    "if the environment sets one) and that one of its models was used around then. Only "
+    "the session's id is sent, never what was sent to the model, nor your key. It is "
+    "about one small download a model an hour, never more than 1 MB, and never for "
+    "models Chutes serves itself, whose records are megabytes each. What it names is "
+    "RedPill's word, matched to the receipt the attested gateway signed.")
 E2EE_NOTE = ("End-to-end encrypted: every message is sealed on this machine to a key only "
              "the model's attested enclave holds. nano-gpt relays ciphertext; it sees your "
              "account, the model, timing, sizes and cost, never the text.")
@@ -438,6 +452,8 @@ class Receipt:
     # Strict doubted it: its model is attested again before anything more is sent to it
     # (PrivacySession.check_reply).
     doubted: bool = False
+    # Who ran its model, where Settings asked (TeeUpstream, TeeClient.served_by), else None.
+    upstream: object = None
 
 
 def _json(value):
@@ -1868,11 +1884,15 @@ class PrivacySession:
         self._accept(attestation, self._clock(),
                      known is None or known.detail != attestation.detail)
 
-    def check_reply(self, response_id, receipt_id=None, body_hash=None, route=None):
+    def check_reply(self, response_id, receipt_id=None, body_hash=None, route=None,
+                    name_upstream=False):
         """Record and return what can be said about one reply. `receipt_id`,
         `body_hash` and `route` are what a TEE reply's stream said of itself: the
         receipt id and route nano-gpt's headers named, and the hash of every byte
-        it carried (TeeClient.check_reply).
+        it carried (TeeClient.check_reply). `name_upstream` (Settings → Privacy,
+        read by the request at each reply): and who ran a TEE reply's model, by
+        RedPill's record of its session (TeeClient.check), on the receipt; it
+        changes nothing else.
 
         With strict attestation, a TEE reply that proved less than a verified
         one - a check that failed, or, one the attested keys were to sign
@@ -1887,9 +1907,16 @@ class PrivacySession:
             receipt = Receipt(self.model, TEE, UNCHECKED,
                               "the enclave had not been attested")
         else:
-            state, detail = self._tee.check_reply(response_id, receipt_id=receipt_id,
-                                                  body_hash=body_hash, route=route)
-            receipt = Receipt(self.model, TEE, state, detail)
+            upstream = None
+            if name_upstream and callable(getattr(self._tee, "check", None)):
+                found = self._tee.check(response_id, receipt_id=receipt_id,
+                                        body_hash=body_hash, route=route,
+                                        name_upstream=True)
+                state, detail, upstream = found.state, found.detail, found.upstream
+            else:
+                state, detail = self._tee.check_reply(response_id, receipt_id=receipt_id,
+                                                      body_hash=body_hash, route=route)
+            receipt = Receipt(self.model, TEE, state, detail, upstream=upstream)
         with self._lock:
             self._receipts.append(receipt)
             signs = _signs(self.attestation, receipt_id)
@@ -1907,8 +1934,10 @@ class PrivacySession:
 
     # ---- what to show ---------------------------------------------------------------
 
-    def caveats(self):
-        """What was not checked, or stays visible, for this kind of model."""
+    def caveats(self, name_upstreams=False):
+        """What was not checked, or stays visible, for this kind of model. And,
+        with `name_upstreams` (Settings → Privacy), whom naming a TEE/ reply's
+        provider tells: RedPill, directly."""
         if self.kind == E2EE:
             return ("Before anything is sealed to it, the enclave's hardware report and "
                     "its software release, against Tinfoil's Sigstore record, are "
@@ -1931,7 +1960,14 @@ class PrivacySession:
                     "to their evidence; and which software the enclave runs - its quote "
                     "shows genuine, current hardware holding a live key bound to this "
                     "app's nonce, and no measurement in it is compared with a published "
-                    "one.")
+                    "one."
+                    + (" Naming the provider behind each TEE reply is on (Settings → "
+                       "Privacy): after a reply whose receipt holds, RedPill's record of "
+                       "its session is read from api.redpill.ai, directly, not through "
+                       "nano-gpt, so RedPill sees this computer's internet address (or the "
+                       "proxy's) and that one of its models was used around then. Only the "
+                       "session's id is sent, never what was sent to the model, nor the "
+                       "key. What it names is RedPill's word." if name_upstreams else ""))
         return ""
 
     def details(self):
@@ -2033,13 +2069,16 @@ def receipt_tip(receipt):
              "sent to it." if getattr(receipt, "doubted", False) else "")
     if receipt.state == SEALED:
         return f"End-to-end encrypted: {receipt.detail}. nano-gpt relayed ciphertext."
+    # Who ran the model, where Settings asked and the lookup was made (upstream_words).
+    upstream = getattr(receipt, "upstream", None)
+    named = " " + upstream_words(upstream) if upstream is not None else ""
     if receipt.state == VERIFIED:
         return (f"TEE verified: {receipt.detail}." + _GATEWAYS_WORD + " What was sent is "
                 "not covered: the record hashes the request as nano-gpt passed it on."
-                + _CLEAR)
+                + _CLEAR + named)
     if receipt.state == SIGNED:
         return (f"TEE signed, text not compared: {receipt.detail}. A change on its way "
-                "here would not show." + _GATEWAYS_WORD + again + _CLEAR)
+                "here would not show." + _GATEWAYS_WORD + again + _CLEAR + named)
     if receipt.state == FAILED:
         return (f"Check failed: {receipt.detail}. This reply does not match its record: "
                 "not signed by the attested key, not the text that was signed, or its "
@@ -2059,10 +2098,15 @@ def receipt_label(receipt):
         return "", OK
     if receipt.state == SEALED:
         return "✓ end-to-end encrypted", OK
+    # Who ran the model, where Settings asked and the lookup named one: beside a mark its
+    # receipt held under, the only marks a name rests on (SealedLore 44e145d).
+    upstream = getattr(receipt, "upstream", None)
+    run_by = (f" · run by {upstream_label(upstream)}"
+              if upstream is not None and upstream.name else "")
     if receipt.state == VERIFIED:
-        return "✓ TEE, verified", OK
+        return "✓ TEE, verified" + run_by, OK
     if receipt.state == SIGNED:
-        return "TEE, signed, text not compared", WARN
+        return "TEE, signed, text not compared" + run_by, WARN
     if receipt.state == FAILED:
         return "⚠ TEE, check failed", BAD
     return "⚠ TEE, not verified", WARN

@@ -70,6 +70,13 @@ SETTING_SEARCH = "ai_search"
 SETTING_PRIVACY_MODE = "ai_privacy_mode"
 SETTING_PRIVATE_MODEL = "ai_private_model"
 SETTING_STRICT = "ai_privacy_strict"
+# After a TEE/ reply whose receipt holds, name the provider that ran the model, from
+# RedPill's public record of its gateway's session (private_ai.TeeClient.served_by). Off
+# by default: it connects to api.redpill.ai directly, not through Nano-GPT, so RedPill
+# sees this computer's address (SealedLore's author, Nov 11 2026: a clear choice in
+# Settings, said plainly beside it). Read at each reply, as SealedLore and DA Assistant
+# read it (_names_upstreams): off, nothing more is looked up, in a run already going too.
+SETTING_NAME_UPSTREAMS = "ai_tee_name_upstreams"
 # Not settings: what settings_from adds for the operation they are loaded for.
 SESSION = "_privacy_session"    # its private_ai.PrivacySession, in Privacy Mode
 FROM_FORM = "_from_form"        # Settings' own form, which is newer than the file
@@ -157,6 +164,9 @@ def settings_from(app_settings: dict, form: bool = False) -> dict:
     settings[SETTING_PRIVATE_MODEL] = str(settings[SETTING_PRIVATE_MODEL]).strip()
     settings[SETTING_PRIVACY_MODE] = _on(app_settings.get(SETTING_PRIVACY_MODE))
     settings[SETTING_STRICT] = _on(app_settings.get(SETTING_STRICT))
+    # Unlike Privacy Mode and Strict, which only tighten, this one sends something more,
+    # to RedPill: on only when plainly on.
+    settings[SETTING_NAME_UPSTREAMS] = app_settings.get(SETTING_NAME_UPSTREAMS) is True
     settings[FROM_FORM] = form
     if settings[SETTING_PRIVACY_MODE] and settings[privacy.AI]:
         settings[SESSION] = _session(settings)
@@ -179,9 +189,53 @@ def _session(settings: dict) -> private_ai.PrivacySession:
     session = private_ai.PrivacySession(
         settings[SETTING_BASE_URL], settings[SETTING_KEY], settings[SETTING_PRIVATE_MODEL],
         request_timeout=TIMEOUT_SECONDS, strict=settings[SETTING_STRICT],
+        tee_factory=_tee_client,
     )
     session.listener = _attestation_listener(session)
     return session
+
+
+def _tee_client(api_url, api_key, model) -> private_ai.TeeClient:
+    """A TEE/ model's client, its requests through netguard as ever, and the one of
+    them that goes somewhere of its own listed on What Was Sent (_ListedLookups)."""
+    return private_ai.TeeClient(api_url, api_key, model, session=_ListedLookups())
+
+
+class _ListedLookups(netguard.Session):
+    """netguard's Session for a TEE/ model's checks, which lists on What Was Sent the
+    one request among them that goes to a service of its own: RedPill's record of a
+    reply's session, from api.redpill.ai (Settings → Privacy, "Name the provider behind
+    each TEE reply"). The attestations, Intel's and NVIDIA's included, are listed once
+    each by the session's listener."""
+
+    WHAT = ("a TEE reply's session id, to name the provider that ran the model: nothing "
+            "about your videos, and no key")
+    HOW = ("Asked RedPill's api.redpill.ai directly, not through Nano-GPT: it sees this "
+           "computer's internet address, or the proxy's")
+
+    def request(self, method, url, *args, **kwargs):
+        if not str(url).startswith(private_ai.SESSION_RECORDS):
+            return super().request(method, url, *args, **kwargs)
+        try:
+            response = super().request(method, url, *args, **kwargs)
+        except netguard.RequestError as exc:
+            refused = isinstance(exc.__cause__, netguard.REFUSALS)
+            outbound.record("RedPill", url, self.WHAT, outbound.CLEAR, self.HOW,
+                            outbound.REFUSED if refused else outbound.FAILED, str(exc))
+            raise
+        outbound.record("RedPill", url, self.WHAT, outbound.CLEAR, self.HOW, outbound.SENT,
+                        f"HTTP {response.status_code}")
+        return response
+
+
+def _names_upstreams(settings: dict) -> bool:
+    """Whether a TEE/ reply's provider is named now (SETTING_NAME_UPSTREAMS): read at
+    each reply, as SealedLore and DA Assistant read it, so that switching it off in
+    Settings stops the lookups at once, in a run already going too. Settings' own form
+    goes by what it shows."""
+    if settings.get(FROM_FORM):
+        return bool(settings.get(SETTING_NAME_UPSTREAMS))
+    return store.load_app_settings().get(SETTING_NAME_UPSTREAMS) is True
 
 
 def load_settings(app_settings: dict | None = None) -> dict:
@@ -627,7 +681,7 @@ def chat(messages, settings: dict, *, json_reply: bool = True, online: bool = Fa
     if json_reply:
         body["response_format"] = {"type": "json_object"}
     if session is not None:
-        return _private_chat(body, messages, session)
+        return _private_chat(body, messages, session, settings)
     if private_ai.sealed_only(body["model"]):
         raise Refused(f"Nothing was sent. {_sealed_only_message(body['model'])}")
     url = f"{settings[SETTING_BASE_URL]}/chat/completions"
@@ -689,7 +743,8 @@ def _checked_with(session) -> str:
             "for each, nothing about your videos")
 
 
-def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> str:
+def _private_chat(body: dict, messages, session: private_ai.PrivacySession,
+                  settings: dict | None = None) -> str:
     """One request in Privacy Mode. In order, each step before anything
     reaches the model:
 
@@ -702,7 +757,9 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
     against the record its attestation's keys signed, for the exact bytes its
     stream carried, with RedPill's receipt beside it, looked up by the receipt
     and the route its headers name - and the receipt kept on the session for
-    the window."""
+    the window; and, where Settings → Privacy asks for it as the reply comes,
+    who ran a TEE reply's model, from RedPill's record of its session
+    (_names_upstreams, private_ai.TeeClient.served_by)."""
     model = session.model
     text, pictures = outbound.text_of(messages)
     what = _what(text, pictures, model)
@@ -744,7 +801,8 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
                                  body)
             checked.append(session.check_reply(
                 result["id"], receipt_id=result["receipt_id"],
-                body_hash=result["body_hash"], route=result["route"]))
+                body_hash=result["body_hash"], route=result["route"],
+                name_upstream=_names_upstreams(settings or {})))
             answer = _answer_of(result)
     except private_ai.PrivacyError as exc:
         refused = "nothing was sent" in str(exc).lower()
