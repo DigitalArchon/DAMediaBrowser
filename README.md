@@ -734,6 +734,9 @@ chapter times, the tracklist and the frames. **Privacy Mode** (Settings →
 Privacy, under *Send videos to the AI*) sends them only to a private model
 running in a trusted execution environment, and only once that enclave has
 proved what it is. The checks are DA Assistant's, line for line.
+[Security and privacy](docs/security-and-privacy.md) explains in detail
+what each kind of model proves, what each mark means, and what is someone's
+word.
 
 There are two kinds, and the private model's name says which:
 
@@ -834,7 +837,10 @@ package; without it, nothing is sent to one.
 ## What leaves this computer
 
 Only what is ticked in Settings → Privacy, and never anything about a
-video or library marked Private:
+video or library marked Private. [Security and privacy](docs/security-and-privacy.md)
+goes through every service the app contacts, when and with what, the
+network rules, where keys and passwords are kept, and what the app can't
+protect you from.
 
 | To | What | When |
 |---|---|---|

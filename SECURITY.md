@@ -1,5 +1,9 @@
 # Security policy
 
+How DA Media Browser handles your security and privacy - what leaves your computer, where
+it goes, what is kept on it, and what the app cannot protect you from - is in
+[docs/security-and-privacy.md](docs/security-and-privacy.md).
+
 ## Reporting a vulnerability
 
 Please email **jason@digitalarchon.com.au** with the details and, if you can, steps to
