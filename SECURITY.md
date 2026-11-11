@@ -23,12 +23,16 @@ Anything that breaks one of DA Media Browser's promises, for example:
   attested `TEE/` model when a sealed `private/` one was chosen, or the ordinary model at all;
   a `private/` model's request leaving this computer unsealed; a web search being made;
 - flaws in the attestation checks: Intel's TDX quote verification, NVIDIA's GPU verdict, a
-  `TEE/` reply's signature, or the sealed client's check of Tinfoil's enclave and its release;
+  `TEE/` reply's check against its signed record and RedPill's receipt, or the sealed client's
+  check of Tinfoil's enclave and its release; a mark saying more than its check showed, or
+  naming what was attested as more than it was;
+- anything reaching RedPill's `api.redpill.ai` while *Name the provider behind each TEE reply*
+  is off, or anything but a reply's session id when it is on;
 - a request going over plain http anywhere but this computer, its local network or an onion
   service, a redirect followed from https to plain http or onto your own network, an API key
   carried to a server it wasn't sent to, or a certificate left unchecked;
-- an API key reaching `settings.json`, a library file, a backup, an export or a message on
-  screen;
+- an API key, or a password written into an address, reaching `settings.json`, a library
+  file, a backup, an export or a message on screen;
 - Help → What Was Sent leaving out a request the app made, or saying it travelled more safely
   than it did;
 - anything the app writes landing inside a library, or a media file being changed, moved or

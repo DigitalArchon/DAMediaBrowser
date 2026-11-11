@@ -752,51 +752,76 @@ There are two kinds, and the private model's name says which:
   this app's prompts as thoroughly as Claude Sonnet has.
 - **`TEE/` models are attested, not sealed.** Before the first request,
   and again once that is 15 minutes old, the app asks for a fresh Intel TDX
-  quote binding the enclave's signing key to a nonce of its own, and checks
+  quote binding the model's signing key to a nonce of its own, and checks
   it up to Intel's root (revocation and Intel's TCB information included),
   with the GPU evidence sent to NVIDIA's attestation service and its signed
   verdict checked in turn; and beside it, for a nonce of its own, RedPill's
   gateway's own report, whose quote binds every key the gateway signs
-  replies and their receipts with. Each request is streamed, and its reply
-  checked against the record nano-gpt keeps of it, found by the receipt the
-  reply names: signed by one of those keys, for the exact bytes that came,
-  with RedPill's receipt for it holding where there is one. Only then does
-  the reply read **verified**. Signed, but its text not compared (a stream
-  nano-gpt rebuilds, or one cut short), it reads **signed, text not
-  compared**; with no record to read, **not verified**; signed by another
-  key, for other bytes or with a receipt that doesn't hold, **check
-  failed**. The record hashes the request as nano-gpt passed it on, so
-  that it was what the app sent rests on nano-gpt. And Nano-GPT's gateway
-  reads what is sent on the way, and in Nov
-  2026 every `TEE/` model it attests but Chutes' own comes through
-  RedPill's gateway, whose attestation doesn't reach the model's own host:
-  it is used, and shown in amber as partial. `TEE/deepseek-v3.2` and
-  `TEE/qwen3.6-27b`, whose own evidence comes relayed for a nonce that
-  isn't the app's, were refused; since Nov 10 2026 they are attested
-  through the gateway alone, short of GPU evidence too. Chutes' models
-  attest every instance that could answer, and their replies are signed by
-  nothing; those Chutes serves first are answered by RedPill's gateway now
-  and then, which is attested and named as well. The Tinfoil-hosted ones
-  offer no attestation here, and are refused.
+  replies and their receipts with. But Nano-GPT's gateway reads what is
+  sent on the way. And what is attested is said, first of all:
+  - **RedPill's gateway**, for every `TEE/` model RedPill serves (all but
+    Chutes' own, in Nov 2026): it reads **TEE gateway attested**, in amber.
+    The gateway passes each request on to the machine that runs the model,
+    which the app doesn't attest: that it's a verified TEE is the gateway's
+    word, in each reply's signed receipt. The GPUs NVIDIA vouched for aren't
+    tied to the gateway's quote, so they may be another machine's (*GPUs not
+    tied to the quote*). A model whose own evidence comes relayed for a
+    nonce that isn't the app's, or times out, is attested through the
+    gateway alone, short of GPU evidence too; none was, on Nov 11 2026.
+  - **Chutes' instances**, for the models Chutes serves (`TEE/kimi-k3`):
+    every instance that could answer, each with its own GPUs. They sign no
+    replies. Those Chutes serves first are answered by RedPill's gateway now
+    and then, which is attested and named as well.
+  - The Tinfoil-hosted ones offer no attestation here, and are refused.
+
+  Each request is streamed, and its reply checked against the record
+  nano-gpt keeps of it, found by the receipt the reply names: signed by one
+  of the attested keys, for the exact bytes that came, with RedPill's
+  receipt for it holding where there is one. Only then does the reply read
+  **✓ TEE, verified**. Signed, but its text not compared (a stream nano-gpt
+  rebuilds, or one cut short), it reads **TEE, signed, text not compared**;
+  with no record to read (Chutes keeps none), **⚠ TEE, not verified** — as
+  does a reply of a model attested through the gateway alone whose receipt
+  doesn't hold; signed by another key, for other bytes or with a receipt
+  that doesn't hold, **⚠ TEE, check failed**. Each mark's tooltip says what
+  it means and what is someone's word. On Help → What Was Sent, the request
+  itself reads *received by the attested TEE* only once its reply's record
+  shows it, else *⚠ not shown to reach the attested enclave*. The record
+  hashes the request as nano-gpt passed it on, so that it was what the app
+  sent rests on nano-gpt.
+
+  **Name the provider behind each TEE reply** (under Strict, off by
+  default) shows who RedPill's gateway passed a reply on to — *✓ TEE,
+  verified · run by Phala* — from RedPill's public record of the session
+  its receipt names. That one request goes to `api.redpill.ai` directly, not
+  through Nano-GPT, so RedPill sees this computer's internet address and
+  that one of its models was used around then; it carries only the
+  session's id, never what was sent or the key, at most 1 MB once a session
+  (about an hour), and never for a model Chutes serves. What it names is
+  RedPill's word, believed only as the signed receipt names it. It is read
+  at each reply: switched off, nothing more is looked up.
 
 Nothing is sent if an enclave can't be attested, and nothing ever falls
 back to the ordinary model. There is no web search: Nano-GPT would have to
 read the request to run one. **Strict** refuses an enclave that proved less
 than it could — an older release, Intel's or NVIDIA's services out of
-reach, RedPill's gateway — rather than using it in amber; and after a
-`TEE/` reply its attested keys were to sign that reads less than verified,
-it attests the model again before anything more is sent to it. **Check
-Attestation** attests the enclave on the spot, sending nothing for it to
-read, for free; **Test** on the AI tab asks the private model one word,
-through the same checks. The private model's list is nano-gpt's, public: no
-key is sent to read it.
+reach, RedPill's gateway, GPUs not tied to the quote — rather than using it
+in amber: as nano-gpt's models are in Nov 2026, that leaves the `private/`
+ones and the `TEE/` ones Chutes alone serves. After a `TEE/` reply its
+attested keys were to sign that reads less than verified, it attests the
+model again before anything more is sent to it. **Check Attestation**
+attests the enclave on the spot, sending nothing for it to read, for free,
+and says what was attested; **Test** on the AI tab asks the private model
+one word, through the same checks. The private model's list is nano-gpt's,
+public: no key is sent to read it.
 
 An operation's privacy is fixed when it starts — a Detect Chapters window
 opened, an Identify Library run — and only ever tightens: switch Privacy
 Mode on, or the AI off, and a run already going sends nothing more to the
 ordinary model. While Privacy Mode is on the status bar says so ("AI,
-sealed end to end"), and after an answer, Detect Chapters says what the
-enclave proved and what the reply's check found; so does Test.
+sealed end to end", or "AI, TEE attested first"), and after an answer,
+Detect Chapters says what was attested and what the reply's check found;
+so does Test.
 
 The end-to-end encrypted models need Tinfoil's own client, which the
 AppImage carries and `tools/install-private-mode.sh` installs from source;
@@ -818,6 +843,7 @@ video or library marked Private:
 | setlist.fm, with your key | an artist and a date, year or place | a setlist is looked up |
 | Nano-GPT, or the endpoint on the AI tab | file and folder names, chapter times, tracklists, frames | the AI is asked; in Privacy Mode sealed to an attested enclave |
 | Nano-GPT; Intel; NVIDIA; Sigstore; Tinfoil's proxies for AMD's certificates and its GitHub releases | a fresh nonce and the enclave's own evidence: nothing about your videos | Privacy Mode attests an enclave |
+| RedPill (`api.redpill.ai`), directly | a `TEE/` reply's session id: nothing about your videos, no key | only with *Name the provider behind each TEE reply* on, after a reply whose receipt holds |
 
 Everything goes over https. Plain http is accepted only for this computer,
 its local network and Tor onion services — an endpoint of your own, say —
@@ -872,7 +898,7 @@ isn't on What Was Sent. A link that isn't https isn't opened at all.
 
 **Help → What Was Sent** lists every request since the app started, as it
 is made: to whom, what it carried, how it travelled (in the clear over
-https, to an attested enclave, or sealed end to end), whether it went, and
+https, to a TEE model attested first, or sealed end to end), whether it went, and
 which window or run it was for — and for the AI, the words it was sent,
 the frames left out. Above the list it says where things can go from now
 on. The list is kept in memory only, and is gone when the app closes.
@@ -978,11 +1004,11 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 1,236 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 1,323 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
 
-Thirteen of the Privacy Mode tests need Tinfoil's client, and skip without
+Fifteen of the Privacy Mode tests need Tinfoil's client, and skip without
 it: install it (`PYTHON=.venv/bin/python tools/install-private-mode.sh`) to
 run them too. Its verifiers (`core/dcap.py`, `nras.py`, `ethsig.py`,
 `private_ai.py`'s TEE client, `sealed.py`) are kept line for line with DA
