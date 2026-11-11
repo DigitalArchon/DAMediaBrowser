@@ -166,18 +166,26 @@ class ModelRetired(PrivacyError):
 # ---- which models qualify -------------------------------------------------------------
 
 def is_tee(model):
-    return bool(model) and model.startswith("TEE/")
+    """A TEE/ model, however it is written ("tee/...", a space before it)."""
+    return str(model or "").strip().lower().startswith("tee/")
 
 
 def is_private_mode(model):
-    return bool(model) and model.startswith("private/")
+    """A private/ model, however it is written ("Private/...", a space before it): only
+    ever sent sealed (sealed.py), and refused by the plain path (ai.chat).
+
+    Told by its exact prefix, a private/ model written another way was no TEE model at
+    all to Settings and Privacy Mode, which refused it, and sealed.py refused it as none
+    of its own, while the plain path took it for one. Every place asks this now: when in
+    doubt, sealed. From DA Assistant's fdf58c2, from DA Vibe Manager and DA Private
+    Coder (Nov 2026)."""
+    return str(model or "").strip().lower().startswith("private/")
 
 
 def sealed_only(model):
-    """Whether `model` may only ever be sent sealed: a private/ model however it is
-    written ("Private/...", a space before it), so that the plain path refuses it
-    (ai.chat). When in doubt, sealed. From DA Vibe Manager (Nov 2026)."""
-    return str(model or "").strip().lower().startswith("private/")
+    """Whether `model` may only ever be sent sealed, as the plain path asks it
+    (ai.chat): is_private_mode."""
+    return is_private_mode(model)
 
 
 def searches(model):

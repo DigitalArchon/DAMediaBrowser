@@ -59,6 +59,7 @@ from .private_ai import (
     Attestation,
     ModelRetired,
     PrivacyError,
+    is_private_mode,
     offers_private_mode,
     unsealed_words,
 )
@@ -583,7 +584,7 @@ class PrivateModeClient:
         import httpx
         from ehbp import EHBPError, KeyConfigMismatchError
 
-        if not model.startswith("private/"):
+        if not is_private_mode(model):
             raise PrivacyError(f"{model} is not a Private Mode model; nothing was sent")
         for attempt in (0, 1):
             verified = self.enclave.current()

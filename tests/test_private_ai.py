@@ -493,6 +493,29 @@ class TestNeverTheOrdinaryWayRound:
             ai.chat([], settings)
         assert endpoint == []
 
+    def test_however_it_is_written_a_model_counts_as_its_kind_everywhere(self, endpoint):
+        """Told by its exact prefix, "Private/glm-5-3" was no private model at all to
+        Settings and Privacy Mode, which refused it, while the plain path refused it as
+        end-to-end encrypted; and "tee/glm-5.3" ran in no enclave. Every place asks one
+        question now, the id stripped and in lower case, as DA Assistant's does
+        (fdf58c2, from DA Vibe Manager and DA Private Coder, Nov 2026)."""
+        for model in ("Private/glm-5-3", " private/glm-5-3", "PRIVATE/glm-5-3 "):
+            assert private_ai.is_private_mode(model) and private_ai.sealed_only(model), model
+            assert private_ai.kind_of(model) == private_ai.E2EE, model
+            assert private_ai.describe(model)[0] == "end-to-end encrypted"
+        for model in ("tee/glm-5.3", " TEE/glm-5.3"):
+            assert private_ai.kind_of(model) == private_ai.TEE, model
+        for model in ("privately/x", "openai/private/x", "glm-5.3", "", None):
+            assert private_ai.kind_of(model) is None, model
+        assert private_ai.problems(BASE, "Private/glm-5-3", wait=False) == []
+        assert private_ai.problems(BASE, "tee/glm-5.3", wait=False) == []
+        assert ai.not_ready(private_settings(model="Private/glm-5-3")) == ""
+        # Attested before anything is sent, however it is written; and never plain.
+        settings = private_settings(model="tee/glm-5.3", server=FakeNanoGpt(nonce_bound=False))
+        with pytest.raises(ai.Refused, match="did not bind its signing key"):
+            ai.chat([], settings)
+        assert endpoint == []
+
     def test_nor_listed_among_the_ordinary_models(self, monkeypatch):
         monkeypatch.setattr(netguard, "_transport", lambda r, t: Reply({"data": [
             {"id": "private/kimi-k3", "capabilities": {"vision": True}},
@@ -869,6 +892,28 @@ class TestTheRealSealedClient:
             routes=routes)
         ai.chat([], self.settings_with(client))
         assert routes == ["http://proxy.example:3128"]
+
+    def test_a_private_model_written_another_way_goes_sealed_and_only_sealed(self, endpoint):
+        """Privacy Mode refused "Private/glm-5-3" as no private model, and sealed.py as
+        no Private Mode model of its own: now it is one, sealed like the rest, and
+        nothing of it goes by the plain path. From DA Assistant's tests (fdf58c2)."""
+        import httpx
+        seen = []
+
+        def handler(request):
+            seen.append(request.headers)
+            return httpx.Response(200, headers={"x-nanogpt-private-mode": "tinfoil"},
+                                  content=self.stream_body())
+
+        client, _calls = self.make(handler)
+        model = "Private/glm-5-3"
+        settings = private_settings(model=model)
+        session = PrivacySession(BASE, "sk-1", model, sealed_factory=lambda *a: client)
+        settings[ai.SESSION] = session
+        assert ai.chat_json([{"role": "user", "content": "hi"}], settings) == {"ok": True}
+        assert len(seen) == 1
+        assert session.last_receipt().state == private_ai.SEALED
+        assert endpoint == [], "something went by the plain path"
 
     def test_nothing_ehbp_did_not_seal_is_sent_to_the_enclave(self, monkeypatch):
         """EHBP passes a request it finds no body in on as it came, unsealed, and the
