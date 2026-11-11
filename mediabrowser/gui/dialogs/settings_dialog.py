@@ -715,11 +715,17 @@ class SettingsDialog(QDialog):
         self.test_button.setEnabled(True)
         text = f"{ai.short_model_name(ai.active_model(settings))} answered: {word[:40]}"
         session = ai.session_of(settings)
+        tip = ""
         if session is not None:
             proved = private_ai.attestation_label(session.attestation)[0]
             reply = private_ai.receipt_label(session.last_receipt())[0]
             text += f" — {proved}; the reply {reply.lstrip('✓⚠ ')}"
+            # What was attested, and what the reply's mark means (receipt_tip).
+            tip = " ".join(part for part in (
+                private_ai.what_was_attested(session.attestation, clear=False),
+                private_ai.receipt_tip(session.last_receipt())) if part)
         self.status.setText(text)
+        self.status.setToolTip(tip)
 
     def check_attestation(self) -> None:
         settings = self.settings()

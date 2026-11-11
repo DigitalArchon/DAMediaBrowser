@@ -3,6 +3,8 @@
 """The AI in the windows: Ask AI in Detect Chapters, Romanise Titles, and
 the settings. The model is a stand-in; nothing leaves the machine."""
 
+import hashlib
+
 import pytest
 
 from mediabrowser.core import ai, ai_chapters, config, creds, library, methods, outbound, store
@@ -351,6 +353,76 @@ class TestSettings:
         dialog.test()
         assert pump(app, lambda: dialog.status.text().endswith("answered: OK"))
         assert pump(app, lambda: _finished(dialog._jobs[-1][0]))
+
+
+@pytest.fixture
+def attested_tee(monkeypatch):
+    """Privacy Mode with a TEE/ model, its sessions attesting against
+    tests/test_attestation.py's fake nano-gpt - RedPill's gateway with its own report -
+    and the chat endpoint streaming that fake's reply. Returns the fake."""
+    from mediabrowser.core import netguard, privacy, private_ai
+    from tests.test_attestation import FakeNanoGpt
+    from tests.test_private_ai import Reply
+
+    server = FakeNanoGpt(aci="bound", reply="OK")
+
+    def session(settings):
+        made = private_ai.PrivacySession(
+            settings[ai.SETTING_BASE_URL], settings[ai.SETTING_KEY],
+            settings[ai.SETTING_PRIVATE_MODEL], tee_factory=server.tee_client)
+        made.listener = ai._attestation_listener(made)
+        return made
+
+    monkeypatch.setattr(ai, "_session", session)
+    monkeypatch.setattr(netguard, "_transport", lambda request, timeout: Reply(
+        server.stream(), {"Content-Type": "text/event-stream"}))
+    monkeypatch.setenv(ai.API_KEY_ENV, "sk-1")
+    settings = store.load_app_settings()
+    settings.update({privacy.AI: True, ai.SETTING_PRIVACY_MODE: True,
+                     ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"})
+    store.save_app_settings(settings)
+    return server
+
+
+class TestTheMarksSayWhatTheyMean:
+    """Each place a TEE/ reply's check is shown says what was attested and what the
+    mark leaves to the gateway's word, in its tooltip (SealedLore 9af15c1)."""
+
+    def test_settings_test(self, app, window, attested_tee):
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(window)
+        dialog.test()
+        assert pump(app, lambda: "answered" in dialog.status.text())
+        said = dialog.status.text()
+        assert "TEE gateway attested (" in said and "the reply TEE, verified" in said
+        tip = dialog.status.toolTip()
+        assert tip.startswith("Attested: RedPill's TEE gateway, which passes this model's "
+                              "requests on")
+        assert "TEE verified: signed by the attested key" in tip
+        assert "in the clear" in tip
+        assert pump(app, lambda: _finished(dialog._jobs[-1][0]))
+
+    def test_detect_chapters_after_an_answer(self, app, window, tmp_path, measured,
+                                             no_searching, attested_tee, model):
+        def answered(situation):
+            # As the real one does on its way: the request's reply is checked.
+            session = ai.session_of(dialog._ai_settings)
+            session.ensure()
+            session.check_reply("chatcmpl-42", body_hash="sha256:" + hashlib.sha256(
+                attested_tee.stream()).hexdigest())
+            return names_reply("Paper Lanterns", "Northbound", "Song 7")(situation)
+
+        model["reply"] = answered
+        dialog = dialog_for(window, file_video(tmp_path, 900.0, starts=(0.0, 300.0, 600.0)))
+        dialog.ask_ai()
+        assert wait_for_answer(app, dialog)
+        said = dialog.ai_hint.text()
+        assert said.startswith("Answered by TEE/glm-5.3-flash: TEE gateway attested (")
+        assert "the reply TEE, verified" in said
+        tip = dialog.ai_hint.toolTip()
+        assert tip.startswith("Attested: RedPill's TEE gateway")
+        assert "TEE verified" in tip and "the gateway's word" in tip
 
 
 class TestTheDiscMenuTab:

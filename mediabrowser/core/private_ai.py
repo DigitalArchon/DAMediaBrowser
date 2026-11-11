@@ -405,6 +405,9 @@ class Receipt:
     kind: str
     state: str
     detail: str = ""
+    # Strict doubted it: its model is attested again before anything more is sent to it
+    # (PrivacySession.check_reply).
+    doubted: bool = False
 
 
 def _json(value):
@@ -1672,6 +1675,7 @@ class PrivacySession:
             if self.strict and (receipt.state == FAILED
                                 or (receipt.state in (UNCHECKED, SIGNED) and signs)):
                 self._doubted = True
+                receipt.doubted = True
         self._emit("receipt", receipt)
         return receipt
 
@@ -1787,6 +1791,42 @@ def sent_label(receipt):
             "request, and this model's provider signs no replies (Chutes) or the check "
             "could not be made. A model may be served elsewhere when its provider is "
             "busy." + _CLEAR)
+
+
+# What a TEE/ reply's verified or signed record leaves to RedPill's gateway's word.
+_GATEWAYS_WORD = (" For a model RedPill serves, the attested key is RedPill's gateway's, "
+                  "which passed the request on to the machine that runs the model: that "
+                  "machine is the gateway's word, in its signed receipt, not checked by "
+                  "this app (Check Attestation and What Was Sent say what was attested).")
+
+
+def receipt_tip(receipt):
+    """What one reply's mark means, for where it is shown: what the check showed, what
+    it leaves to the gateway's word, and that a TEE/ reply's text passed nano-gpt in the
+    clear, as SealedLore's marks say it (TEE_MARK_TIPS, 9af15c1); and, where Strict
+    doubted the reply (Receipt.doubted), that its model is attested again. "" for none.
+    From DA Assistant's receipt_badge (1a99042), in this app's words."""
+    if receipt is None:
+        return ""
+    again = (" Strict is on, so its model is attested again before anything more is "
+             "sent to it." if getattr(receipt, "doubted", False) else "")
+    if receipt.state == SEALED:
+        return f"End-to-end encrypted: {receipt.detail}. nano-gpt relayed ciphertext."
+    if receipt.state == VERIFIED:
+        return (f"TEE verified: {receipt.detail}." + _GATEWAYS_WORD + " What was sent is "
+                "not covered: the record hashes the request as nano-gpt passed it on."
+                + _CLEAR)
+    if receipt.state == SIGNED:
+        return (f"TEE signed, text not compared: {receipt.detail}. A change on its way "
+                "here would not show." + _GATEWAYS_WORD + again + _CLEAR)
+    if receipt.state == FAILED:
+        return (f"Check failed: {receipt.detail}. This reply does not match its record: "
+                "not signed by the attested key, not the text that was signed, or its "
+                "receipt does not hold (another key, another reply, or a model that was "
+                "not verified)." + again)
+    return (f"Not verified: {receipt.detail}. Nothing this app could check shows which "
+            "machine answered it: nano-gpt routes each request, and a model may be "
+            "served elsewhere when its provider is busy." + again + _CLEAR)
 
 
 def receipt_label(receipt):

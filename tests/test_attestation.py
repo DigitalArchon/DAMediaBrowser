@@ -2011,6 +2011,58 @@ class ReplyMarks(unittest.TestCase):
                                                          privacy.OK))
         self.assertEqual(privacy.receipt_label(None), ("", privacy.OK))
 
+    def test_a_replys_mark_says_what_is_the_gateways_word_and_what_passed_in_the_clear(
+            self):
+        """As SealedLore's marks say it (TEE_MARK_TIPS, 9af15c1): for a model RedPill
+        serves, the key that signed is its gateway's, and the machine that runs the
+        model is the gateway's word; the text passed nano-gpt in the clear; a private/
+        model is end-to-end encrypted instead. Ported from DA Assistant's (1a99042)."""
+        def tip(state, detail="d", **kwargs):
+            return privacy.receipt_tip(privacy.Receipt(TEXT, privacy.TEE, state, detail,
+                                                       **kwargs))
+
+        verified = tip(privacy.VERIFIED, "signed by the attested key 0xab, for the exact "
+                                         "bytes that came")
+        self.assertTrue(verified.startswith("TEE verified: signed by the attested key 0xab"))
+        self.assertIn("the attested key is RedPill's gateway's, which passed the request on "
+                      "to the machine that runs the model: that machine is the gateway's "
+                      "word, in its signed receipt, not checked by this app", verified)
+        self.assertIn("What was sent is not covered", verified)
+        self.assertIn("The text passed nano-gpt's servers in the clear; a private/ model is "
+                      "end-to-end encrypted instead.", verified)
+        signed = tip(privacy.SIGNED)
+        self.assertIn("A change on its way here would not show", signed)
+        self.assertIn("the gateway's word", signed)
+        unchecked = tip(privacy.UNCHECKED, "this model's provider signs no replies")
+        self.assertTrue(unchecked.startswith("Not verified: this model's provider signs no "
+                                             "replies."))
+        self.assertIn("Nothing this app could check shows which machine answered it: "
+                      "nano-gpt routes each request, and a model may be served elsewhere "
+                      "when its provider is busy.", unchecked)
+        self.assertIn("in the clear", unchecked)
+        self.assertNotIn("Strict", unchecked)
+        self.assertIn("Strict is on, so its model is attested again before anything more "
+                      "is sent to it", tip(privacy.UNCHECKED, doubted=True))
+        self.assertIn("This reply does not match its record", tip(privacy.FAILED))
+        sealed_one = privacy.receipt_tip(privacy.Receipt(
+            "private/x", privacy.E2EE, privacy.SEALED, "decrypted here"))
+        self.assertEqual(sealed_one, "End-to-end encrypted: decrypted here. nano-gpt "
+                                     "relayed ciphertext.")
+        self.assertEqual(privacy.receipt_tip(None), "")
+
+    def test_a_reply_strict_doubted_says_so_and_no_other_does(self):
+        server = GpusTied(tied="statement", signer=1)
+        strict = PrivacySession(API_URL, "k", TEXT, tee_factory=server.tee_client,
+                                strict=True)
+        strict.ensure()
+        failed = strict.check_reply("chatcmpl-1", body_hash=stream_hash(server.stream()))
+        self.assertEqual(failed.state, privacy.FAILED)
+        self.assertTrue(failed.doubted)
+        self.assertIn("Strict is on", privacy.receipt_tip(failed))
+        relaxed = PrivacySession(API_URL, "k", TEXT, tee_factory=server.tee_client)
+        relaxed.ensure()
+        self.assertFalse(relaxed.check_reply("chatcmpl-1").doubted)
+
     def test_what_was_sent_is_received_only_as_far_as_its_replys_check_shows(self):
         """What Was Sent said a TEE request went "to the model's attested enclave"
         whatever its reply showed: nano-gpt routes each request, Chutes signs no

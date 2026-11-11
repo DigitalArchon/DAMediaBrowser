@@ -1504,6 +1504,7 @@ class ChaptersDialog(QDialog):
         self.progress.setValue(0)
         self.progress.show()
         self.ai_hint.setText(f"Taking frames and asking {model}. This can take a minute.")
+        self.ai_hint.setToolTip("")
         cancel = self._cancel
 
         def work(progress_cb):
@@ -1530,6 +1531,11 @@ class ChaptersDialog(QDialog):
         proved = self._what_was_proved()
         if proved:
             self.ai_hint.setText(proved)
+            session = ai.session_of(self._ai_settings)
+            # What was attested, and what the reply's mark means (receipt_tip).
+            self.ai_hint.setToolTip(" ".join(part for part in (
+                private_ai.what_was_attested(session.attestation, clear=False),
+                private_ai.receipt_tip(session.last_receipt())) if part))
 
     def _what_was_proved(self) -> str:
         """In Privacy Mode, after an answer: what the enclave proved, and the
@@ -1547,6 +1553,7 @@ class ChaptersDialog(QDialog):
         self.progress.hide()
         self._update_ai_controls()
         self.ai_hint.setText(f"The model couldn't be asked: {message}")
+        self.ai_hint.setToolTip("")
 
     # --- the disc's menu -----------------------------------------------------
 

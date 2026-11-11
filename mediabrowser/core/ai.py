@@ -765,7 +765,8 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession) -> s
     outbound.record(service, session.api_url, what, protection, how("Sent it"),
                     outbound.SENT,
                     f"{private_ai.attestation_label(attestation)[0]}; reply: "
-                    f"{private_ai.receipt_label(receipt)[0]}", text)
+                    f"{private_ai.receipt_label(receipt)[0]}. "
+                    f"{private_ai.receipt_tip(receipt)}", text)
     return answer
 
 

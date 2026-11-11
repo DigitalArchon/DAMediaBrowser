@@ -250,6 +250,9 @@ class TestTee:
         assert listed.how == (f"Sent it to {TEE_MODEL}, attested first, through "
                               f"Nano-GPT's gateway, which can read it: received by the "
                               f"attested TEE")
+        # And what the reply's mark means.
+        assert "TEE verified: signed by the attested key" in listed.detail
+        assert "in the clear" in listed.detail
 
     def test_a_tee_request_is_streamed_and_exact_mode_is_not_asked_for(self, tee_stream):
         """nano-gpt rebuilds a whole (unstreamed) TEE reply, so its bytes never match
