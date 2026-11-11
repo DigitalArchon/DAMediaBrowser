@@ -339,12 +339,35 @@ def urlopen(request, timeout):
     return _transport(request, timeout)
 
 
-def reason(exc) -> str:
-    """What went wrong with a request, in words that never quote a key."""
+def reason(exc, url=None) -> str:
+    """What went wrong with a request to `url`, in words that never quote a
+    key, nor a user name or password written into its address.
+
+    urllib sends neither: an address with them in it fails before anything
+    is sent - "nonnumeric port: 'secret@host'", which quotes the password,
+    or a name no lookup finds - and that is said instead. The error is shown
+    in the window and on What Was Sent, whose Copy takes it to the
+    clipboard."""
     if isinstance(exc, urllib.error.HTTPError):
         return f"HTTP {exc.code}"
+    if _has_userinfo(url):
+        return ("its address has a user name or password written into it, which this "
+                "app cannot send: take it out of the address")
     found = getattr(exc, "reason", None) or exc
     return str(found) or type(exc).__name__
+
+
+def _has_userinfo(url) -> bool:
+    """Whether `url` has a user name or password written into it - as far as
+    can be told of an address that cannot be read: anything before an "@"
+    in it (shown)."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(str(url))
+        return parsed.username is not None or parsed.password is not None
+    except ValueError:
+        return shown(url) != str(url)
 
 
 # --- a small Session, for the attestation checks ---------------------------
@@ -412,7 +435,7 @@ class Session:
             return Response(exc.code, exc.headers.items() if exc.headers else (), body, url)
         except (urllib.error.URLError, OSError, ValueError,
                 http.client.HTTPException) as exc:
-            raise RequestError(f"{shown(url)}: {reason(exc)}") from exc
+            raise RequestError(f"{shown(url)}: {reason(exc, url)}") from exc
 
     def close(self) -> None:
         pass

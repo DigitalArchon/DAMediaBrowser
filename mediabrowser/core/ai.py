@@ -395,15 +395,16 @@ def _prepared(url: str, api_key: str | None, body: dict | None = None,
 _REQUEST_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException, ValueError)
 
 
-def _failed(exc: Exception) -> AIError:
-    """What a request that went wrong raises (_REQUEST_ERRORS): Refused when
-    netguard refused it before anything was sent, an AIError saying what went
-    wrong otherwise - listed by the caller (chat)."""
+def _failed(exc: Exception, url: str) -> AIError:
+    """What a request to `url` that went wrong raises (_REQUEST_ERRORS):
+    Refused when netguard refused it before anything was sent, an AIError
+    saying what went wrong otherwise - listed by the caller (chat) - in words
+    that quote no password written into the address (netguard.reason)."""
     if isinstance(exc, urllib.error.HTTPError):
         return AIError(_http_error_message(exc))
     if isinstance(exc, netguard.REFUSALS):
         return Refused(str(exc.reason))
-    return AIError(netguard.reason(exc))
+    return AIError(netguard.reason(exc, url))
 
 
 def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TIMEOUT_SECONDS):
@@ -413,7 +414,7 @@ def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TI
         with netguard.urlopen(req, timeout) as resp:
             raw = resp.read()
     except _REQUEST_ERRORS as exc:
-        raise _failed(exc) from exc
+        raise _failed(exc, url) from exc
     try:
         return json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -456,7 +457,7 @@ def _tee_stream(url: str, api_key: str, body: dict, timeout=TIMEOUT_SECONDS) -> 
                         for name, value in (headers.items() if headers else ())}
             landed = response.geturl() if hasattr(response, "geturl") else url
     except _REQUEST_ERRORS as exc:
-        raise _failed(exc) from exc
+        raise _failed(exc, url) from exc
     if not result["data"]:
         kind = answered.get("content-type", "").split(";")[0].strip() or "no content type"
         moved = f", sent on to {netguard.shown(landed)}," if landed and landed != url else ""

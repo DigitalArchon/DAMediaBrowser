@@ -6,13 +6,14 @@ faked at urllib."""
 import io
 import json
 import urllib.error
+from http.client import HTTPSConnection, InvalidURL
 
 import keyring
 import pytest
 from keyring.backends import fail
 from keyring.errors import KeyringLocked
 
-from mediabrowser.core import ai, config, creds, store
+from mediabrowser.core import ai, config, creds, netguard, outbound, privacy, store
 
 
 class FakeResponse(io.BytesIO):
@@ -254,6 +255,50 @@ class TestChat:
         part = ai.image_part(b"\xff\xd8jpeg")
         assert part["type"] == "image_url"
         assert part["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+class TestAPasswordInTheAddress:
+    """A user name or password written into the endpoint's address is never sent:
+    urllib fails such a request before anything goes. But its error quoted the
+    password - "nonnumeric port: 'Sekrit-77@nano-gpt.com'" - in the window and on
+    What Was Sent, whose Copy takes it to the clipboard. As SealedLore keeps one out
+    of what it saves beside the keyring's copy (0db15a2, Nov 2026), it is kept out of
+    what is shown and listed here."""
+
+    URL = "https://alice:Sekrit-77@nano-gpt.com/api/v1"
+
+    @pytest.fixture(autouse=True)
+    def as_urllib_has_it(self, monkeypatch):
+        # The first thing urllib does with an https address, before any connection.
+        monkeypatch.setattr(netguard, "_transport", lambda request, timeout:
+                            HTTPSConnection(request.host))
+
+    def test_the_request_says_why_it_failed_and_quotes_none_of_it(self):
+        with pytest.raises(ai.AIError) as caught:
+            ai.chat([{"role": "user", "content": "hi"}],
+                    settings(**{ai.SETTING_BASE_URL: self.URL}))
+        assert "user name or password written into it" in str(caught.value)
+        assert "Sekrit-77" not in str(caught.value)
+        (entry,) = outbound.entries()
+        assert entry.outcome == outbound.FAILED and "Sekrit-77" not in repr(entry)
+
+    def test_nor_does_privacy_modes_attestation(self):
+        private = ai.settings_from({privacy.AI: True, ai.SETTING_KEY: "sk-1",
+                                    ai.SETTING_BASE_URL: self.URL,
+                                    ai.SETTING_PRIVACY_MODE: True,
+                                    ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"})
+        with pytest.raises(ai.Refused) as caught:
+            ai.check_attestation(private)
+        assert "user name or password written into it" in str(caught.value)
+        assert "Sekrit-77" not in str(caught.value)
+        assert outbound.entries() and all("Sekrit-77" not in repr(entry)
+                                          for entry in outbound.entries())
+
+    def test_an_error_without_one_is_said_as_it_was(self):
+        error = InvalidURL("nonnumeric port: 'x'")
+        assert netguard.reason(error, "https://nano-gpt.com:x/v1") == "nonnumeric port: 'x'"
+        assert netguard.reason(error) == "nonnumeric port: 'x'"
+        assert "user name or password" in netguard.reason(error, "https://@nano-gpt.com/v1")
 
 
 class TestParsingReplies:
