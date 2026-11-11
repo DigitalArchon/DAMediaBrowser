@@ -84,9 +84,12 @@ SESSION = "_privacy_session"    # its private_ai.PrivacySession, in Privacy Mode
 FROM_FORM = "_from_form"        # Settings' own form, which is newer than the file
 
 # The private model Privacy Mode starts with: end-to-end encrypted, and it can
-# see the frames. Kimi K3 is the largest of nano-gpt's Private Mode models that
-# can (Nov 2026); it always reasons, which REASONING_EFFORT keeps short.
-DEFAULT_PRIVATE_MODEL = "private/kimi-k3"
+# see the frames. Kimi K3.1 Pro, post-trained from Kimi K3, chosen by the author
+# when nano-gpt retired private/kimi-k3 (Nov 11 2026); it always reasons, which
+# REASONING_EFFORT keeps short. Only for settings that name no private model: a
+# saved private/kimi-k3 stays as it is, refused as no longer offered
+# (private_ai.ModelRetired), never swapped for this unasked.
+DEFAULT_PRIVATE_MODEL = "private/kimi-k3-1-pro"
 
 # Who runs the web search when the model is asked to look a show up, as
 # Nano-GPT names them in a model's ":online/<provider>" suffix. Kagi and
@@ -352,8 +355,8 @@ def destination(settings: dict, online: bool = False) -> tuple[str, str]:
     SEALED): for the window to say before anything is sent.
 
     "to claude-sonnet-5 through Nano-GPT, which passes it on to whoever runs
-    the model: both can read it" ... "sealed end to end to kimi-k3's attested
-    enclave: Nano-GPT relays only ciphertext"."""
+    the model: both can read it" ... "sealed end to end to kimi-k3-1-pro's
+    enclave, once it has been attested: Nano-GPT relays only ciphertext"."""
     model = active_model(settings)
     short = short_model_name(model)
     if in_privacy_mode(settings):
@@ -1017,7 +1020,7 @@ RECOMMENDED = {
 }
 # The same, for Privacy Mode: the end-to-end encrypted models that can see.
 PRIVATE_RECOMMENDED = {
-    DEFAULT_PRIVATE_MODEL: "the largest that can see the frames - the default",
+    DEFAULT_PRIVATE_MODEL: "post-trained from Kimi K3, always reasons - the default",
     "private/deepseek-v4-1-flash": "quicker and far cheaper, less sure of a setlist",
 }
 # What nano-gpt charges for a private/ model over its TEE/ twin (Nov 2026).

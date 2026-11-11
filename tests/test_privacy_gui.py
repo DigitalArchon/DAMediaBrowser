@@ -252,7 +252,8 @@ class TestAskAi:
         save(**{privacy.AI: True, privacy.WEB_SEARCH: True, ai.SETTING_PRIVACY_MODE: True})
         dialog = dialog_for(window, file_video(tmp_path, 600.0, starts=(0.0, 200.0, 400.0)))
         hint = dialog.ai_hint.text()
-        assert "sealed end to end to kimi-k3's enclave" in hint
+        default = ai.short_model_name(ai.DEFAULT_PRIVATE_MODEL)    # none saved
+        assert f"sealed end to end to {default}'s enclave" in hint
         assert not dialog.ai_online_check.isEnabled()
         assert not dialog.ai_online_check.isChecked()
         assert "Not in Privacy Mode" in dialog.ai_online_check.toolTip()

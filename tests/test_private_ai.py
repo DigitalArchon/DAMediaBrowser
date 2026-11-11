@@ -826,15 +826,17 @@ class TestWhereItGoesInWords:
 class TestTheModelsOnOffer:
     def test_private_ones_first_priced_from_their_twins_and_able_to_see(self, monkeypatch):
         asked = []
+        default = ai.DEFAULT_PRIVATE_MODEL      # first, as Settings recommends it
+        twin = "TEE/" + default.split("/", 1)[1]
 
         def transport(request, timeout):
             asked.append(request)
             if request.full_url.endswith("/private/tinfoil/models"):
                 return Reply({"data": [{"id": "private/gpt-oss-120b"},
                                        {"id": "private/deepseek-v4-1-flash"},
-                                       {"id": "private/kimi-k3"}]})
+                                       {"id": default}]})
             return Reply({"data": [
-                {"id": "TEE/kimi-k3", "name": "Kimi K3", "capabilities": {"vision": True},
+                {"id": twin, "name": "The Default", "capabilities": {"vision": True},
                  "pricing": {"prompt": 2, "completion": 10}},
                 {"id": "TEE/deepseek-v4.1-flash", "capabilities": {"vision": True}},
                 {"id": "TEE/gpt-oss-120b", "capabilities": {"vision": False}},
@@ -844,9 +846,10 @@ class TestTheModelsOnOffer:
         models = ai.list_private_models(ai.settings_from({privacy.AI: True,
                                                           ai.SETTING_KEY: "sk-secret"}))
         assert [m["id"] for m in models] == [
-            "private/kimi-k3", "private/deepseek-v4-1-flash",
-            "TEE/deepseek-v4.1-flash", "TEE/kimi-k3"]
-        assert models[0]["name"] == "Kimi K3 (end-to-end encrypted)"
+            default, "private/deepseek-v4-1-flash",
+            *sorted(["TEE/deepseek-v4.1-flash", twin])]
+        assert models[0]["name"] == "The Default (end-to-end encrypted)"
+        assert models[0]["note"] == ai.PRIVATE_RECOMMENDED[default]
         assert models[0]["price"] == "$2.1 in / $10.5 out per million tokens"
         assert models[2]["kind"] == private_ai.TEE and "gateway can read" in models[2]["note"]
         assert all(r.get_header("Authorization") is None for r in asked), "no key is sent"

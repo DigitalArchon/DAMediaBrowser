@@ -749,10 +749,11 @@ There are two kinds, and the private model's name says which:
   ciphertext: it sees your account, the model, when, how much and the
   cost, never the frames or the names. The enclave is attested again once
   its proof is five minutes old, time asleep included. The default,
-  `private/kimi-k3`, is the largest of them that can see the frames;
-  `private/deepseek-v4-1-flash` is quicker and far cheaper. They cost about
-  5% more than the same model as `TEE/`. They haven't been tried against
-  this app's prompts as thoroughly as Claude Sonnet has.
+  `private/kimi-k3-1-pro` (Kimi K3.1 Pro, post-trained from Kimi K3), can
+  see the frames and always reasons, and is the dearest of them in Nov
+  2026; `private/deepseek-v4-1-flash` is quicker and far cheaper. They cost
+  about 5% more than the same model as `TEE/`. They haven't been tried
+  against this app's prompts as thoroughly as Claude Sonnet has.
 - **`TEE/` models are attested, not sealed.** Before the first request,
   and again once that is 15 minutes old, the app asks for a fresh Intel TDX
   quote binding the model's signing key to a nonce of its own, and checks
