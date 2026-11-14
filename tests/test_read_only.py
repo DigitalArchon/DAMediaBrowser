@@ -70,6 +70,7 @@ REVIEWED = {
     "core/library.py": 1,       # cached covers renamed within ARTWORK_DIR
     "core/player.py": 2,        # mpv's socket, in the session's runtime folder
     "core/store.py": 13,        # settings, library files and backups - all through config.own
+    "gui/app.py": 2,            # /proc/self/coredump_filter: no memory in a crash dump
     "gui/main_window.py": 1,    # the screenshot folder, in Pictures
 }
 

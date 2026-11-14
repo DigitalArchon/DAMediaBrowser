@@ -36,26 +36,47 @@ PR_SET_DUMPABLE = 4
 def no_core_dumps() -> None:
     """A native crash must not write the app's memory to disk: What Was Sent - the words
     and frames sent to the AI - and what each enclave proved are kept in memory alone,
-    and a key read from the keyring is there too. RLIMIT_CORE 0 stops a core file; not
-    dumpable stops the system's collector (systemd-coredump reads the flag, not the
-    limit) and, as a side effect, a debugger or another program of yours attaching to
-    the app or reading its memory through /proc. mpv and ffmpeg, started from here,
-    inherit the limit. Whatever fails is left as it was: nothing else depends on it.
-    SealedLore's gui/app.py _no_core_dumps (Nov 2026), on Linux alone."""
-    try:
-        import resource
+    and a key read from the keyring is there too. So, first thing, and in this order:
 
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    except (ImportError, ValueError, OSError):
-        pass
+    - /proc/self/coredump_filter 0: a dump, should one be made, holds none of the
+      app's memory. Written first: once the process is undumpable its /proc entries
+      are root's, and the write is refused (measured on Mint 22).
+    - not dumpable (PR_SET_DUMPABLE 0): the system's crash collector (systemd-coredump,
+      apport) keeps nothing of a process that isn't, and no debugger or other program of
+      yours can attach to it or read its memory through /proc.
+    - a core size limit of 1, not 0: with a pipe in the kernel's core_pattern, as
+      systemd-coredump's is, the kernel ignores a limit of 0 and hands the crash to the
+      collector, which kept the dump and wrote the command line, the environment and the
+      open files' paths into the journal (measured on MintDev, Nov 14 2026); at exactly
+      1 it gives the dump up altogether ("RLIMIT_CORE is set to 1, aborting core"). The
+      hard limit is left as it is; where it is 0 already, the soft one stays 0.
+
+    mpv and ffmpeg, started from here, inherit the filter and the limit (an exec makes a
+    program dumpable again). Whatever fails is left as it was: nothing else depends on
+    it. Linux alone. The standard every DA app keeps (cross-app security, Nov 2026)."""
     if not sys.platform.startswith("linux"):
         return
+    try:
+        with open("/proc/self/coredump_filter", "w", encoding="ascii") as f:
+            f.write("0")
+    except OSError:
+        pass
     try:
         import ctypes
 
         libc = ctypes.CDLL(None, use_errno=True)
         libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
     except (OSError, AttributeError):
+        pass
+    try:
+        import resource
+
+        _soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        if hard == resource.RLIM_INFINITY or hard >= 1:
+            resource.setrlimit(resource.RLIMIT_CORE, (1, hard))
+        else:
+            resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
+    except (ImportError, ValueError, OSError):
         pass
 
 

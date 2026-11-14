@@ -328,9 +328,11 @@ permissions any new file of yours has.
 
 Kept in memory only, and gone when the app quits: What Was Sent, the frames taken from
 a video, the audio levels and stage lighting measured, what each enclave proved, and
-the RedPill session records read (64 at most). A crash writes none of it to disk: the
-app turns core dumps off as it starts, and makes itself one the system's crash collector
-won't dump. mpv's control socket is kept in your session's own runtime folder, which no
+the RedPill session records read (64 at most). A crash writes none of it to disk: as it
+starts, the app asks that no dump of it hold its memory, makes itself one the system's
+crash collector won't dump, and sets its core size limit to 1, at which the kernel gives a
+dump up altogether (at 0 it still hands one to systemd-coredump); mpv and ffmpeg, started
+from it, keep the limit and the first of these. mpv's control socket is kept in your session's own runtime folder, which no
 other user can enter, where there is one.
 
 ## Other protections
