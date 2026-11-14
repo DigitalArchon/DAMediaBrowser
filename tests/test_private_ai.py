@@ -1415,10 +1415,15 @@ FAKE_SDK = {
         "        return fetch_latest_release('owner/repo')\n"),
     "github.py": (
         "import requests\n\n"
+        "_GITHUB_CACHE_DIR = '/home/someone/.cache/tinfoil'\n\n"
         "def fetch_latest_release(repo):\n"
         "    response = requests.get(f'https://github-proxy.example/repos/{repo}', timeout=5)\n"
         "    response.raise_for_status()\n"
         "    return response.text\n"),
+    # Where the SDK caches (sdk_guard.guard_files points them nowhere).
+    "attestation/__init__.py": "",
+    "attestation/verify_sev.py": "_VCEK_CACHE_DIR = '/home/someone/.cache/tinfoil'\n",
+    "attestation/collateral_tdx.py": "_TDX_CACHE_DIR = '/home/someone/.cache/tinfoil'\n",
     "later/__init__.py": "",
     "later/collateral.py": (
         "from requests import get\n\n"
@@ -1513,6 +1518,21 @@ class TestTheSdkFetchesThroughNetguard:
             importlib.import_module("tinfoil.later.collateral").fetch(
                 "https://kds.example/vcek")
         assert sdk["sent"] == ["https://kds.example/vcek"]
+
+    def test_the_sdks_caches_are_pointed_where_nothing_can_be_made(self, sdk, monkeypatch):
+        """sdk_guard.guard_files (SealedLore's ac2f7f3): the SDK's three cache folders, which
+        it reads at each use, at one under the null device, where nothing can be made, so it
+        writes nothing of its own; one not where expected refuses."""
+        import os
+        import sys
+        given = sealed.guard_sdk_requests()
+        assert {"tinfoil.github", "tinfoil.attestation.verify_sev"} <= set(given)
+        for name, attribute in sdk_guard._SDK_CACHES:
+            assert getattr(sys.modules[name], attribute) == os.path.join(os.devnull, "tinfoil")
+        assert sdk_guard.guard_files() == []
+        monkeypatch.delattr(sys.modules["tinfoil.attestation.verify_sev"], "_VCEK_CACHE_DIR")
+        with pytest.raises(sealed.Unguarded, match="verify_sev has no _VCEK_CACHE_DIR"):
+            sdk_guard.guard_files()
 
     def test_a_refused_redirect_is_named_as_one(self, sdk):
         """What the guard raises for a redirect it refused says it is one (the shared
