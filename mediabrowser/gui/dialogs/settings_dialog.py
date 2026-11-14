@@ -154,11 +154,17 @@ class SettingsDialog(QDialog):
         # The server a No was said to at an earlier Save (ai.SETTING_KEY_DECLINED): Save
         # asks no more about it; an action that sends the key now still does.
         self._key_declined = str(self._app_settings.get(ai.SETTING_KEY_DECLINED) or "")
-        # The key going over plain http to another machine as Settings opened, which is
-        # not asked about, and the servers said Yes to since (_may_send_plain).
+        # The key set to go over plain http to another machine as Settings opened: sent
+        # if it was confirmed for it (ai.SETTING_KEY_IN_CLEAR), else held back until it is
+        # (nothing is taken as confirmed: the author, Nov 14 2026), shown with Confirm….
+        # Save asks about neither again; Test, List Models and Check Attestation, which
+        # send it at once, ask about one held back. And those said Yes to since
+        # (_may_send_plain), which Save records.
         opened = ai.settings_from(dict(self._app_settings, **{
             ai.SETTING_KEY: self._stored_key, ai.KEY_ORIGIN: self._key_origin}))
-        self._plain_at_open = self._in_the_clear(opened)
+        self._plain_at_open = self._in_the_clear(opened, self._stored_key)
+        agreed = str(self._app_settings.get(ai.SETTING_KEY_IN_CLEAR) or "")
+        self._plain_confirmed = [entry for entry in self._plain_at_open if entry[1] == agreed]
         self._plain_allowed: list[tuple[str, str]] = []
         self._stored_setlist_key = setlistfm.stored_key()
 
@@ -616,7 +622,16 @@ class SettingsDialog(QDialog):
             ai.SETTING_PRIVATE_MODEL: self.private_model.currentText().strip(),
             ai.SETTING_STRICT: self.strict_check.isChecked(),
             ai.SETTING_NAME_UPSTREAMS: self.upstreams_check.isChecked(),
+            ai.SETTING_KEY_IN_CLEAR: self._form_in_clear(),
         }, form=True)
+
+    def _form_in_clear(self) -> str:
+        """The server the key on the form may go to over plain http (ai.
+        SETTING_KEY_IN_CLEAR): confirmed before or said Yes to here, else ""."""
+        key, there = self.key.text().strip(), ai.origin_of(self._address())
+        if (key, there) in self._plain_confirmed + self._plain_allowed:
+            return there
+        return ""
 
     def _address(self) -> str:
         return self.base_url.text().strip() or ai.DEFAULT_BASE_URL
@@ -685,6 +700,9 @@ class SettingsDialog(QDialog):
             return None
         there = ai.origin_of(self._app_settings.get(ai.SETTING_BASE_URL)
                              or ai.DEFAULT_BASE_URL)
+        held = [entry for entry in self._plain_at_open if entry not in self._plain_confirmed]
+        if there and there == self._key_origin and held:
+            return self._in_clear_row(held[0])
         if not there or there == self._key_origin:
             return None
         self.held_back = QLabel(self._held_back_words(there))
@@ -697,6 +715,34 @@ class SettingsDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.held_back, 1)
         row.addWidget(self.ask_again, 0, Qt.AlignTop)
+        return row
+
+    def _in_clear_row(self, entry: tuple[str, str]):
+        """Under the key, while it is held back from plain http to another machine as
+        Settings opened: where, and Confirm…, which asks (No the default; Save keeps
+        the answer)."""
+        there = entry[1]
+        words = (f"The saved key would go over plain http, unencrypted, to "
+                 f"{ai.shown_origin(there)}, another machine on your network, so it isn't "
+                 f"sent until you confirm it (or use the server's https:// address).")
+        self.held_back = QLabel(words)
+        self.held_back.setObjectName("warningLabel")
+        self.held_back.setWordWrap(True)
+        self.held_back.setTextFormat(Qt.PlainText)
+        self.confirm_in_clear = QPushButton("Confirm…")
+
+        def confirm() -> None:
+            before = list(self._plain_allowed)
+            if self._may_send_plain(self.settings(), "Save keeps your answer.", held_too=True) \
+                    and self._plain_allowed != before:
+                self.held_back.setText(f"With Save, the saved key is sent over plain http to "
+                                       f"{ai.shown_origin(there)}.")
+
+        self.confirm_in_clear.clicked.connect(confirm)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.held_back, 1)
+        row.addWidget(self.confirm_in_clear, 0, Qt.AlignTop)
         return row
 
     def _held_back_words(self, there: str) -> str:
@@ -714,24 +760,32 @@ class SettingsDialog(QDialog):
             self.held_back.setText(self._held_back_words(there))
 
     @staticmethod
-    def _in_the_clear(settings: dict) -> list[tuple[str, str]]:
-        """(the key, its server) where `settings` would send the AI key over plain http
-        to another machine on the local network (netguard.in_the_clear), else []."""
-        key = settings.get(ai.SETTING_KEY) or ""
+    def _in_the_clear(settings: dict, key: str) -> list[tuple[str, str]]:
+        """(the key, its server) where `settings` would send `key`, the AI key, over plain
+        http to another machine on the local network (netguard.in_the_clear), confirmed
+        for it or not, else [] (one held back from a moved address goes nowhere)."""
         address = settings.get(ai.SETTING_BASE_URL) or ""
-        if key and netguard.in_the_clear(address):
+        if settings.get(ai.KEY_HELD) and not settings.get(ai.KEY_IN_CLEAR_HELD):
+            return []
+        if key and (settings.get(ai.SETTING_KEY) or settings.get(ai.KEY_IN_CLEAR_HELD)) \
+                and netguard.in_the_clear(address):
             return [(key, ai.origin_of(address))]
         return []
 
-    def _may_send_plain(self, settings: dict, after_no: str) -> bool:
+    def _may_send_plain(self, settings: dict, after_no: str, held_too: bool = False) -> bool:
         """Before the AI key goes over plain http to another machine on the local
         network, where anyone on it can read it (a café's or a hotel's Wi-Fi too):
         asked first, No the default, as every DA app asks (SealedLore's
-        keys_in_the_clear, the DA apps' security standard, Nov 2026). Not when it was
-        going there already as Settings opened, nor once said Yes to in this dialog; to
-        this computer itself it never leaves it. True unless No."""
-        new = [entry for entry in self._in_the_clear(settings)
-               if entry not in self._plain_at_open + self._plain_allowed]
+        keys_in_the_clear, the DA apps' security standard, Nov 2026). Not once confirmed
+        for it, nor once said Yes to in this dialog, nor (unless `held_too`) when it was
+        set to go there as Settings opened: then it is held back, shown with Confirm…,
+        and Save doesn't ask again. To this computer itself it never leaves it. True
+        unless No."""
+        known = self._plain_confirmed + self._plain_allowed
+        if not held_too:
+            known = known + self._plain_at_open
+        new = [entry for entry in self._in_the_clear(settings, self.key.text().strip())
+               if entry not in known]
         if not new:
             return True
         shown = ai.shown_origin(new[0][1])
@@ -812,6 +866,11 @@ class SettingsDialog(QDialog):
             settings[ai.SETTING_KEY_DECLINED] = declined
         else:
             settings.pop(ai.SETTING_KEY_DECLINED, None)
+        in_clear = self._form_in_clear()
+        if in_clear:
+            settings[ai.SETTING_KEY_IN_CLEAR] = in_clear
+        else:
+            settings.pop(ai.SETTING_KEY_IN_CLEAR, None)
         settings[ai.SETTING_MODEL] = self.model.currentText().strip() or ai.DEFAULT_MODEL
         settings[ai.SETTING_BASE_URL] = self.base_url.text().strip() or ai.DEFAULT_BASE_URL
         settings[ai.SETTING_FRAMES] = self.frames.value()
@@ -836,9 +895,10 @@ class SettingsDialog(QDialog):
         if not ai.allowed(settings):
             self.status.setText(AI_OFF_HERE)
             return
-        if not self._may_send_plain(settings, NOTHING_SENT):
+        if not self._may_send_plain(settings, NOTHING_SENT, held_too=True):
             self.status.setText("Nothing was sent.")
             return
+        settings = self.settings()          # a Yes just given goes with it
         self.fetch_button.setEnabled(False)
         self.status.setText(f"Asking {self._endpoint_host()} for its models…")
         self._jobs.append(run_job(
@@ -900,9 +960,10 @@ class SettingsDialog(QDialog):
         if not ai.allowed(settings):
             self.status.setText(AI_OFF_HERE)
             return
-        if not self._may_send_plain(settings, NOTHING_SENT):
+        if not self._may_send_plain(settings, NOTHING_SENT, held_too=True):
             self.status.setText("Nothing was sent.")
             return
+        settings = self.settings()          # a Yes just given goes with it
         if not settings.get(ai.SETTING_KEY):
             self.status.setText(settings.get(ai.KEY_HELD) or "Paste an API key first.")
             return
@@ -943,9 +1004,10 @@ class SettingsDialog(QDialog):
     def check_attestation(self) -> None:
         self._ask_about_the_key()
         settings = self.settings()
-        if not self._may_send_plain(settings, NOTHING_SENT):
+        if not self._may_send_plain(settings, NOTHING_SENT, held_too=True):
             self._tone(self.attest_status, "Nothing was sent.", "")
             return
+        settings = self.settings()          # a Yes just given goes with it
         model = settings[ai.SETTING_PRIVATE_MODEL]
         self.attest_button.setEnabled(False)
         self._tone(self.attest_status, f"Attesting {model}'s enclave…", "")

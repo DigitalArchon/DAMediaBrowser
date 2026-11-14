@@ -83,9 +83,11 @@ not. The status bar's right-hand corner says where things can go now (see
   a hotel's Wi-Fi too. So before the key first goes that way to another machine,
   Settings asks *Send the key unencrypted?*, No the default: at Save, where No goes back
   to the settings, and before Test, List Models or Check Attestation, where No sends
-  nothing. One going there already when Settings was opened is not asked about, nor one
-  to this computer itself (`localhost`, `127.0.0.1`), which never leaves it. Give such
-  a server an https address if it can have one.
+  nothing. A Yes is kept for that server. A key that was going there before this was
+  asked is held back until you confirm it once (**Confirm…** under the key in Settings →
+  AI; Save doesn't keep asking): nothing is sent with it, and the AI says why. Nothing is
+  asked about one to this computer itself (`localhost`, `127.0.0.1`), which never leaves
+  it. Give such a server an https address if it can have one.
 - **An address is judged as written**, not by looking up where its name points. One
   with a space, a backslash or a control character in it is refused outright, and so is
   a plain http host with a `%` escape in it, since the parsers involved disagree on

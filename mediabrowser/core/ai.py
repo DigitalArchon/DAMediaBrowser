@@ -102,6 +102,14 @@ KEY_HELD = "_key_held"
 # says the key is held back there, with Ask again…. A key entered for that server, or
 # the address put back where the key was entered for, lets the No go.
 SETTING_KEY_DECLINED = "ai_key_declined"
+# In settings.json: the server the saved key was confirmed for going over plain http to
+# another machine on the local network (netguard.in_the_clear), where anyone on it can
+# read it (an origin; no key in it). Until then it is not sent there: nothing is taken as
+# confirmed, a key going there before this was asked included (the author, Nov 14 2026).
+# Settings asks (No the default), and shows one held back with Confirm….
+SETTING_KEY_IN_CLEAR = "ai_key_in_clear"
+# Given back by settings_from beside KEY_HELD: True when the key is held back for that.
+KEY_IN_CLEAR_HELD = "_key_in_clear_held"
 
 # The private model Privacy Mode starts with: end-to-end encrypted, and it can
 # see the frames. Kimi K3.1 Pro, post-trained from Kimi K3, chosen by the author
@@ -162,6 +170,15 @@ class SearchUnavailable(AIError):
     allows only LinkUp when Zero Data Retention is switched on."""
 
 
+def key_in_clear_held(address: str) -> str:
+    """Why the saved key is not sent to `address`: plain http to another machine, not
+    confirmed for it (SETTING_KEY_IN_CLEAR)."""
+    return (f"The Nano-GPT API key would go over plain http, unencrypted, to "
+            f"{shown_origin(origin_of(address))}, another machine on your network, where "
+            f"anyone on it can read it, so it is not sent until you confirm that once: in "
+            f"Settings → AI, Confirm… beside it; or use the server's https:// address.")
+
+
 def settings_from(app_settings: dict, form: bool = False) -> dict:
     """The AI settings in force: the stored ones over the defaults, with
     the environment's key over the stored one.
@@ -193,6 +210,14 @@ def settings_from(app_settings: dict, form: bool = False) -> dict:
         settings[SETTING_KEY] = ""
     if env_key and not on_nanogpt and not settings[SETTING_KEY] and not settings[KEY_HELD]:
         settings[KEY_HELD] = env_key_held(settings[SETTING_BASE_URL])
+    # Over plain http to another machine: only once confirmed for that server.
+    settings[KEY_IN_CLEAR_HELD] = False
+    address = settings[SETTING_BASE_URL]
+    if settings[SETTING_KEY] and netguard.in_the_clear(address) \
+            and app_settings.get(SETTING_KEY_IN_CLEAR) != origin_of(address):
+        settings[KEY_HELD] = key_in_clear_held(address)
+        settings[KEY_IN_CLEAR_HELD] = True
+        settings[SETTING_KEY] = ""
     try:
         settings[SETTING_FRAMES] = max(1, min(4, int(settings[SETTING_FRAMES])))
     except (TypeError, ValueError):

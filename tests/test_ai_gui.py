@@ -439,6 +439,52 @@ class TestSettings:
         local.accept()
         assert len(asked["questions"]) == 3
 
+    def test_a_key_already_going_over_plain_http_is_held_back_until_confirmed(
+            self, window, memory_keyring, asked):
+        """Nothing is taken as confirmed (the author, Nov 14 2026): a key set to go over
+        plain http to another machine before this was asked is not sent - refused in
+        words naming the server and where to confirm - until Confirm… is answered Yes and
+        saved. Test asks about it even so; to this computer nothing is held."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
+
+        settings = store.load_app_settings()
+        settings[ai.SETTING_BASE_URL] = "http://192.168.1.5:8080/v1"
+        store.save_app_settings(settings)
+        ai.store_key("sk-lan", "http://192.168.1.5:8080/v1")
+        held = ai.load_settings()
+        assert held[ai.SETTING_KEY] == "" and held[ai.KEY_IN_CLEAR_HELD]
+        assert "plain http, unencrypted, to http://192.168.1.5:8080" in ai.not_ready(held)
+        assert "Settings → AI, Confirm…" in ai.not_ready(held)
+        assert ai.stored_key() == "sk-lan", "never deleted"
+
+        dialog = SettingsDialog(window)
+        dialog.privacy_checks[privacy.AI].setChecked(True)
+        assert "would go over plain http" in dialog.held_back.text()
+        asked["answer"] = QMessageBox.No
+        dialog.test()
+        assert [q["text"].endswith("No sends nothing.") for q in asked["questions"]] == [True]
+        dialog.accept()
+        assert len(asked["questions"]) == 1, "Save doesn't ask about it again"
+        assert ai.SETTING_KEY_IN_CLEAR not in store.load_app_settings()
+        assert ai.load_settings()[ai.SETTING_KEY] == ""
+
+        again = SettingsDialog(window)
+        asked["answer"] = QMessageBox.Yes
+        again.confirm_in_clear.click()
+        assert len(asked["questions"]) == 2
+        assert "With Save, the saved key is sent" in again.held_back.text()
+        again.accept()
+        assert store.load_app_settings()[ai.SETTING_KEY_IN_CLEAR] == "http://192.168.1.5:8080"
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-lan"
+
+        settings = store.load_app_settings()
+        settings[ai.SETTING_BASE_URL] = "http://127.0.0.1:8080/v1"
+        store.save_app_settings(settings)
+        ai.store_key("sk-here", "http://127.0.0.1:8080/v1")
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-here"
+
     def test_nothing_is_asked_for_the_server_the_key_was_entered_for(
             self, window, memory_keyring, asked):
         from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog

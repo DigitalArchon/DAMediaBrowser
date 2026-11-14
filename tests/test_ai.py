@@ -188,7 +188,9 @@ class TestAKeyGoesOnlyWhereItWasEntered:
 
     def test_a_key_saved_beside_an_address_goes_there(self, data_dir, http):
         self.saved_for("http://192.168.1.5:8080/v1")
+        # Plain http to another machine: sent once confirmed for it (Settings asks).
         store.save_app_settings({ai.SETTING_BASE_URL: "http://192.168.1.5:8080/v1",
+                                 ai.SETTING_KEY_IN_CLEAR: "http://192.168.1.5:8080",
                                  privacy.AI: True})
         http["reply"] = {"choices": [{"message": {"content": "OK"}}]}
         ai.ping(ai.load_settings())
@@ -202,9 +204,15 @@ class TestAKeyGoesOnlyWhereItWasEntered:
             self, data_dir, memory_keyring):
         memory_keyring.store[("da-media-browser", ai.KEYRING_NAME)] = "sk-old"
         store.save_app_settings({ai.SETTING_BASE_URL: "http://192.168.1.5:8080/v1"})
-        assert ai.load_settings()[ai.SETTING_KEY] == "sk-old"
+        # Its server taken with no question; over plain http to another machine, it is
+        # held back all the same until confirmed (nothing is grandfathered, Nov 14 2026).
+        held = ai.load_settings()
+        assert held[ai.SETTING_KEY] == "" and held[ai.KEY_IN_CLEAR_HELD]
         assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
             "http://192.168.1.5:8080"
+        store.save_app_settings({ai.SETTING_BASE_URL: "http://192.168.1.5:8080/v1",
+                                 ai.SETTING_KEY_IN_CLEAR: "http://192.168.1.5:8080"})
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-old"
         # And from then on, only there.
         store.save_app_settings({ai.SETTING_BASE_URL: ai.DEFAULT_BASE_URL})
         assert ai.load_settings()[ai.SETTING_KEY] == ""
