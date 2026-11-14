@@ -174,3 +174,15 @@ def no_searching(monkeypatch):
     return calls
 
 
+
+
+@pytest.fixture(autouse=True)
+def no_desktop_program_starts(monkeypatch):
+    """A link or a folder is opened with the desktop's own program, started by
+    core/hostenv._start: never from a test, which would open the real browser."""
+    from mediabrowser.core import hostenv
+
+    def refused(argv, env):
+        raise AssertionError(f"a test would have started {argv[0]}")
+
+    monkeypatch.setattr(hostenv, "_start", refused)

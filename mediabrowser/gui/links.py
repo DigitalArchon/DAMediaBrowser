@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QLabel, QWidget
 
-from mediabrowser.core import netguard
+from mediabrowser.core import hostenv, netguard
 from mediabrowser.gui import plain
 
 
@@ -57,4 +57,7 @@ def open_link(parent: QWidget | None, url: str) -> bool:
     if why:
         plain.warning(parent, "Link Not Opened", f"{why}\n\nThe link wasn't opened: {url}")
         return False
-    return QDesktopServices.openUrl(QUrl(url))
+    # The browser is the computer's own program: started with the environment it
+    # would have had anyway (hostenv), not the app's.
+    opened = hostenv.open_with_desktop(url)
+    return QDesktopServices.openUrl(QUrl(url)) if opened is None else opened

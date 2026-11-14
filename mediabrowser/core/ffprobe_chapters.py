@@ -4,7 +4,7 @@
 import json
 import subprocess
 
-from . import safejson
+from . import hostenv, safejson
 
 
 class ProbeError(Exception):
@@ -27,7 +27,8 @@ def _run_ffprobe(args, cancel=None):
     """
     try:
         proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=hostenv.host_env(),
         )
     except OSError as exc:
         raise ProbeError(str(exc)) from exc

@@ -69,7 +69,10 @@ class TestEditing:
         player_module.Player().open_for_editing({"type": "file", "path": "/v.mkv"}, window_id=7)
         player_module.Player().open_for_editing({"type": "file", "path": "/v.mkv"})
         assert "WAYLAND_DISPLAY" not in envs[0]
-        assert envs[1] is None, "its own window: whatever suits the desktop"
+        # Its own window: whatever suits the desktop, in the host's environment
+        # (hostenv), not the app's.
+        assert envs[1] == player_module.hostenv.host_env()
+        assert envs[1]["WAYLAND_DISPLAY"] == "wayland-0"
 
     def test_exact_seeks_and_frame_steps(self, launched, monkeypatch):
         sent = []

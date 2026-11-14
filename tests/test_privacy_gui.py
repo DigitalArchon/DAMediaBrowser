@@ -350,8 +350,8 @@ class TestLinks:
         from mediabrowser.gui import links
 
         opened, warned = [], []
-        monkeypatch.setattr(links.QDesktopServices, "openUrl",
-                            lambda url: opened.append(url.toString()) or True)
+        monkeypatch.setattr(links.hostenv, "open_with_desktop",
+                            lambda url: opened.append(url) or True)
         monkeypatch.setattr(links.plain, "warning", lambda *a: warned.append(a))
         label = QLabel('<a href="https://www.setlist.fm/x">setlist.fm</a>')
         label.setToolTip("resting")

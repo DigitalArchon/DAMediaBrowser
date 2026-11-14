@@ -21,6 +21,7 @@ import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
+from . import hostenv
 from .audio_levels import Cancelled
 
 FRAME_WIDTH = 512
@@ -116,6 +117,7 @@ def run_ffmpeg(args, feed=None, timeout: float = TIMEOUT_SECONDS) -> tuple[int |
         proc = subprocess.Popen(
             args, stdin=subprocess.PIPE if feed else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=hostenv.host_env(),
         )
     except OSError:
         return None, b""

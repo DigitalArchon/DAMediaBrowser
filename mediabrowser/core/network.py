@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
+from . import hostenv
+
 NETWORK_SCHEMES = {
     "smb", "sftp", "ftp", "ftps", "dav", "davs", "webdav", "webdavs",
     "nfs", "afp", "fish",
@@ -69,6 +71,7 @@ def run(args, timeout=QUERY_TIMEOUT_SECONDS):
         proc = subprocess.run(
             args, capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL,
+            env=hostenv.host_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, "", str(exc)

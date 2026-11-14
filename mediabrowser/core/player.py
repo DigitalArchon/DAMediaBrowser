@@ -21,7 +21,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import config, safejson
+from . import config, hostenv, safejson
 
 # A live mpv answers in about a millisecond. This is the budget for one that
 # has died without the socket noticing yet, and it is spent on whichever
@@ -40,7 +40,7 @@ def x11_environment(environ=None) -> dict:
     Wayland desktop mpv otherwise picks its Wayland output first, which
     can't draw into another program's window: it ignores --wid and opens
     a window of its own. Without WAYLAND_DISPLAY it uses X11 (XWayland)."""
-    env = dict(os.environ if environ is None else environ)
+    env = hostenv.host_env(environ)
     env.pop("WAYLAND_DISPLAY", None)
     return env
 
@@ -149,7 +149,7 @@ class Player:
         window, which only opens for video."""
         extra = ["--idle=yes", "--prefetch-playlist=yes", "--keep-open=no",
                  "--force-window=no"]
-        env = None
+        env = hostenv.host_env()
         if window_id is not None:
             extra += [f"--wid={int(window_id)}", "--osc=no", "--osd-level=0",
                       "--input-default-bindings=no", "--input-vo-keyboard=no",
@@ -233,7 +233,7 @@ class Player:
         # blocks; starting the demuxer a couple of seconds early avoids it.
         extra = ["--keep-open=always", "--hr-seek=yes", "--hr-seek-demuxer-offset=2",
                  "--osd-level=0", "--osc=no", "--force-window=immediate"]
-        env = None
+        env = hostenv.host_env()
         if window_id is not None:
             # Keys belong to the editor around the picture, not to mpv.
             extra += [f"--wid={int(window_id)}", "--input-vo-keyboard=no",

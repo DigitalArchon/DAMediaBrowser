@@ -31,7 +31,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import bluray
+from . import bluray, hostenv
 
 TS_PACKET = 192  # a Blu-ray transport packet: 4-byte arrival stamp + 188
 IG_PIDS = range(0x1400, 0x1420)
@@ -521,6 +521,7 @@ def clip_seconds(path) -> float | None:
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", str(path)],
             capture_output=True, text=True, timeout=PICTURE_TIMEOUT_SECONDS,
+            env=hostenv.host_env(),
         )
         return float(proc.stdout.strip())
     except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -548,6 +549,7 @@ def background_frame(clip, width: int, height: int, at_seconds: float = 0.0) -> 
                  "-map", "0:v:0", "-frames:v", "1", "-vf", f"scale={width}:{height},setsar=1",
                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                 capture_output=True, timeout=PICTURE_TIMEOUT_SECONDS,
+                env=hostenv.host_env(),
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
@@ -585,6 +587,7 @@ def picture(menu: Menu, rgba: bytes, background: bytes | None = None, crop=None,
              "-filter_complex", ";".join(chain), "-frames:v", "1",
              "-q:v", "3", "-f", "image2pipe", "-c:v", "mjpeg", "-"],
             input=rgba, capture_output=True, timeout=PICTURE_TIMEOUT_SECONDS,
+            env=hostenv.host_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -605,6 +608,7 @@ def has_video(path) -> bool:
             ["ffprobe", "-v", "error", "-select_streams", "v",
              "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
             capture_output=True, text=True, timeout=PICTURE_TIMEOUT_SECONDS,
+            env=hostenv.host_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False

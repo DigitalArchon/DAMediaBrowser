@@ -8,6 +8,31 @@ set -e
 HERE="$(dirname "$(readlink -f "$0")")"
 PYTHON="$HERE/opt/python3.12/bin/python3.12"
 
+# What is set or unset below is for the app alone: mpv, ffmpeg, the browser a
+# link opens in are this computer's own programs, and get the environment they
+# would have had anyway (mediabrowser/core/hostenv.py). Each such variable is
+# named here, with its value from before beside it; one named with nothing
+# beside it was unset, and stays unset for them. Only variables set below.
+export APPIMAGE_HOST_ENV_KEYS="LD_LIBRARY_PATH PYTHONHOME PYTHONPATH SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE"
+if [ -n "${LD_LIBRARY_PATH+set}" ]; then
+    export APPIMAGE_HOST_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+fi
+if [ -n "${PYTHONHOME+set}" ]; then
+    export APPIMAGE_HOST_PYTHONHOME="$PYTHONHOME"
+fi
+if [ -n "${PYTHONPATH+set}" ]; then
+    export APPIMAGE_HOST_PYTHONPATH="$PYTHONPATH"
+fi
+if [ -n "${SSL_CERT_FILE+set}" ]; then
+    export APPIMAGE_HOST_SSL_CERT_FILE="$SSL_CERT_FILE"
+fi
+if [ -n "${SSL_CERT_DIR+set}" ]; then
+    export APPIMAGE_HOST_SSL_CERT_DIR="$SSL_CERT_DIR"
+fi
+if [ -n "${REQUESTS_CA_BUNDLE+set}" ]; then
+    export APPIMAGE_HOST_REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE"
+fi
+
 # X11 helper libraries many systems lack (libxcb-cursor above all, which Qt
 # 6.5+ needs before it will load the xcb plugin). Built for an old glibc, so
 # they work on any system this AppImage supports. Only this folder: the

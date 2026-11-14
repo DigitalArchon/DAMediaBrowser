@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 
-from mediabrowser.core import folders
+from mediabrowser.core import folders, hostenv
 
 
 def _show_items(item: Path) -> bool:
@@ -52,4 +52,7 @@ def show_in_file_manager(video) -> bool:
         return False
     if item.exists() and _show_items(item):
         return True
-    return QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+    # Started with the environment it would have had anyway (hostenv), not the app's.
+    address = QUrl.fromLocalFile(str(folder))
+    opened = hostenv.open_with_desktop(address.toString())
+    return QDesktopServices.openUrl(address) if opened is None else opened

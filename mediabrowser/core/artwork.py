@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import atomic, config, netguard, outbound, privacy
+from . import atomic, config, hostenv, netguard, outbound, privacy
 
 FFMPEG_TIMEOUT_SECONDS = 20
 FETCH_TIMEOUT_SECONDS = 15
@@ -272,6 +272,7 @@ def _run_ffmpeg(args) -> bool:
             stderr=subprocess.DEVNULL,
             timeout=FFMPEG_TIMEOUT_SECONDS,
             check=False,
+            env=hostenv.host_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False

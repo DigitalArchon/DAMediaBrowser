@@ -27,7 +27,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import atomic, chapter_export, frames, safejson, utils
+from . import atomic, chapter_export, frames, hostenv, safejson, utils
 
 FLAC = "flac"
 OPUS = "opus"
@@ -119,7 +119,8 @@ def has_encoder(fmt: str) -> bool:
     """Whether this machine's ffmpeg can write `fmt`."""
     try:
         proc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
-                              capture_output=True, text=True, timeout=20)
+                              capture_output=True, text=True, timeout=20,
+                              env=hostenv.host_env())
     except (OSError, subprocess.TimeoutExpired):
         return False
     name = "libopus" if fmt == OPUS else "flac"
@@ -185,6 +186,7 @@ def audio_streams(video) -> list[dict]:
             ["ffprobe", "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=channels,sample_fmt", "-of", "json", *args],
             capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS,
+            env=hostenv.host_env(),
         )
         streams = safejson.loads(proc.stdout or "{}").get("streams") or []
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
@@ -317,6 +319,7 @@ def _run(args, src: Source, duration: float, cancel, progress_cb) -> None:
         proc = subprocess.Popen(
             args, stdin=subprocess.PIPE if src.feed else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=hostenv.host_env(),
         )
     except OSError as exc:
         raise ExportError(f"could not run ffmpeg: {exc}") from exc

@@ -20,6 +20,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import hostenv
+
 STEP_SECONDS = 0.5
 BASS_CUTOFF_HZ = 150
 SAMPLE_RATE = 8000
@@ -113,7 +115,8 @@ def read_levels(path, duration=None, progress_cb=None, cancel: threading.Event |
     try:
         try:
             proc = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env=hostenv.host_env(),
             )
         except OSError as exc:
             raise LevelsError(f"could not run ffmpeg: {exc}") from exc

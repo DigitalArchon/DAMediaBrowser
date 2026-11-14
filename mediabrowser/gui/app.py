@@ -18,7 +18,7 @@ from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-from mediabrowser.core import depcheck, store
+from mediabrowser.core import depcheck, hostenv, store
 from mediabrowser.gui import plain
 
 APP_ID = "mediabrowser"
@@ -110,11 +110,17 @@ def prefer_x11(environ=os.environ) -> None:
 
     A list naming xcb as a fallback - "wayland;xcb", which many desktops
     export for every Qt app - says X11 will do, so it's taken.
+
+    For this process alone (hostenv.set_own): a browser or file manager the app
+    starts - a Qt program, maybe - gets the value it had before.
     """
     chosen = environ.get("QT_QPA_PLATFORM", "")
     allows_x11 = not chosen or (";" in chosen and "xcb" in chosen.split(";"))
     if allows_x11 and environ.get("WAYLAND_DISPLAY") and environ.get("DISPLAY"):
-        environ["QT_QPA_PLATFORM"] = "xcb"
+        if environ is os.environ:
+            hostenv.set_own("QT_QPA_PLATFORM", "xcb")
+        else:
+            environ["QT_QPA_PLATFORM"] = "xcb"
 
 
 def build_app(argv: Sequence[str]) -> QApplication:

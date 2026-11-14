@@ -17,6 +17,7 @@ import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from . import hostenv
 from .audio_levels import Cancelled
 
 # Seeks run this many at a time: each is mostly waiting on the disk or the
@@ -40,6 +41,7 @@ def brightness_at(path, seconds: float) -> float | None:
                 "-f", "null", "-",
             ],
             capture_output=True, text=True, timeout=TIMEOUT_SECONDS,
+            env=hostenv.host_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
