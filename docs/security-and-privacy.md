@@ -221,11 +221,15 @@ byte of the reply is hashed as it arrives, and the reply is checked against the 
 nano-gpt keeps of it, signed by the attested key:
 
 - *✓ TEE, verified*: the attested key signed the record of the exact bytes that came,
-  and RedPill's receipt for it, where one came, holds.
+  and RedPill's receipt for it, where one came, holds: for the same reply, served after
+  this request was sent (so not an earlier reply handed back), and saying the machine it
+  came from was verified. The receipt's time is held to this computer's clock, give or
+  take five minutes, so a clock that is far out makes replies fail their check.
 - *TEE, signed, text not compared*: signed by the attested key, but the bytes could not
   be compared (nano-gpt rebuilds some models' streams; a reply cut short has no whole).
 - *⚠ TEE, check failed*: signed by another key, for other bytes, or its receipt does not
-  hold.
+  hold (another key, another reply, one served before this request was sent, or a model
+  that was not verified).
 - *⚠ TEE, not verified*: no record could be read — Chutes signs none, or the check could
   not be made. A reply of a model attested through RedPill's gateway alone also reads
   this unless its receipt holds, since only the receipt says the model's own enclave

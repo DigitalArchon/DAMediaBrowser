@@ -42,6 +42,7 @@ import hashlib
 import http.client
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -510,8 +511,9 @@ def _tee_stream(url: str, api_key: str, body: dict, timeout=TIMEOUT_SECONDS) -> 
     _consume finds in it, with what the reply's check needs
     (private_ai.TeeClient.check_reply) - the hash of every byte the stream
     carried, [DONE] and whatever follows it too ("body_hash", None for a
-    stream that did not arrive whole), and the receipt and route its headers
-    name.
+    stream that did not arrive whole), the receipt and route its headers
+    name, and when the request was sent ("sent_at"), which the receipt must
+    have been served after.
 
     Streamed because the record nano-gpt keeps of a TEE reply hashes the
     bytes of its stream as they came, while a reply asked for whole it
@@ -530,6 +532,9 @@ def _tee_stream(url: str, api_key: str, body: dict, timeout=TIMEOUT_SECONDS) -> 
     llm._private_call and SealedLore's openai_compat (Nov 2026)."""
     request = _prepared(url, api_key, dict(body, stream=True), accept="text/event-stream")
     digest = hashlib.sha256()
+    # When the request went: the reply's receipt must have been served after it, or it
+    # was another request's (private_ai.TeeClient.check).
+    sent_at = time.time()
     try:
         with netguard.urlopen(request, timeout, follow_redirects=False) as response:
             lines = _hashed_lines(response, digest)
@@ -553,6 +558,7 @@ def _tee_stream(url: str, api_key: str, body: dict, timeout=TIMEOUT_SECONDS) -> 
     result["body_hash"] = "sha256:" + digest.hexdigest() if whole else None
     result["receipt_id"] = answered.get("x-receipt-id") or answered.get("x-tee-signature-id")
     result["route"] = answered.get("x-tee-verification-route")
+    result["sent_at"] = sent_at
     return result
 
 
@@ -818,7 +824,7 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession,
             checked.append(session.check_reply(
                 result["id"], receipt_id=result["receipt_id"],
                 body_hash=result["body_hash"], route=result["route"],
-                name_upstream=_names_upstreams(settings or {})))
+                sent_at=result["sent_at"], name_upstream=_names_upstreams(settings or {})))
             answer = _answer_of(result)
     except private_ai.PrivacyError as exc:
         refused = "nothing was sent" in str(exc).lower()

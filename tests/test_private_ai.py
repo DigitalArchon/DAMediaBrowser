@@ -495,6 +495,38 @@ class TestTee:
         ai.chat([], settings, json_reply=False)
         assert len(server.plain_reports()) == 2
 
+    def test_an_earlier_reply_handed_back_with_its_receipt_fails_its_check(self, tee_stream):
+        """The stream's receipt must have been served after this request was sent: a relay
+        handing back an earlier signed stream, bytes, hashes and receipt all as they were,
+        read "verified" (SealedLore 1a61096). The time the request went is the stream's
+        own; the receipt says the gateway served it a day before."""
+        import time
+        server = GpusTied(tied="statement", receipts=True, receipt_id="rcpt-1",
+                          served_at=int(time.time()) - 86_400)
+        sent = tee_stream(server)
+        settings = private_settings(server=server, strict=True)
+        ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.FAILED, receipt.detail
+        assert private_ai.receipt_label(receipt)[0] == "⚠ TEE, check failed"
+        assert "one served before this request was sent" in private_ai.receipt_tip(receipt)
+        *_check, listed = outbound.entries()
+        assert listed.how.endswith(": ⚠ not shown to reach the attested enclave")
+        # Strict doubts it: the model is attested again before the next request.
+        ai.chat([], settings, json_reply=False)
+        assert len(server.plain_reports()) == 2 and len(sent) == 2
+
+    def test_a_reply_served_while_its_request_ran_is_verified(self, tee_stream):
+        import time
+        server = GpusTied(tied="statement", receipts=True, receipt_id="rcpt-1",
+                          served_at=int(time.time()))
+        tee_stream(server)
+        settings = private_settings(server=server)
+        ai.chat([], settings, json_reply=False)
+        receipt = ai.session_of(settings).last_receipt()
+        assert receipt.state == private_ai.VERIFIED, receipt.detail
+        assert "RedPill's receipt for it holds" in receipt.detail
+
     def test_a_streamed_line_that_never_ends_is_refused_and_not_read_on(self, monkeypatch):
         """No line of a TEE stream is held past netguard.MAX_LINE_BYTES: a relay that
         sent a line with no end had it joined to each 512 bytes that came, in time and

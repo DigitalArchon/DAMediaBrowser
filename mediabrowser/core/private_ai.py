@@ -150,6 +150,11 @@ _UPSTREAM_LABELS = {
 # waits up to about 20 seconds): a reply that names one is looked up again meanwhile.
 RECEIPT_WAIT_SECONDS = 20
 RECEIPT_RETRY_SECONDS = 2
+# A receipt is this request's only if the gateway served it between the request being sent
+# and now: the response hash alone ties a receipt to a stream, and a relay could hand back
+# an earlier signed stream with its receipt. This much leeway either way, for this
+# computer's clock and the gateway's not quite agreeing. From SealedLore (1a61096).
+RECEIPT_CLOCK_SKEW_SECONDS = 5 * 60
 # Models whose streams nano-gpt rebuilds from the upstream's, so that their bytes never
 # match the record's hash (nano-gpt, Nov 2026).
 REBUILT_STREAMS = frozenset({"TEE/gemma-4-31b-it"})
@@ -817,7 +822,8 @@ def _session_record(session, session_id):
 class TeeClient:
     """Attestation and reply signatures for one TEE/ model."""
 
-    def __init__(self, api_url, api_key, model, session=None, intel=None, nvidia=None):
+    def __init__(self, api_url, api_key, model, session=None, intel=None, nvidia=None,
+                 wall=time.time):
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
@@ -843,6 +849,9 @@ class TeeClient:
         # The two verifiers, replaceable so tests can stand in for Intel and NVIDIA.
         self._intel = intel or dcap.verify
         self._nvidia = nvidia or nras.verify
+        # The time of day, which receipts are dated in (served_at, Unix seconds);
+        # replaceable for tests.
+        self._wall = wall
 
     def _get(self, path, params, route=None, timeout=TIMEOUT_SECONDS):
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -1455,14 +1464,15 @@ class TeeClient:
         except ValueError:
             return None
 
-    def check_reply(self, response_id, receipt_id=None, body_hash=None, route=None):
+    def check_reply(self, response_id, receipt_id=None, body_hash=None, route=None,
+                    sent_at=None):
         """(state, sentence): check()'s, nothing more looked up."""
         found = self.check(response_id, receipt_id=receipt_id, body_hash=body_hash,
-                           route=route)
+                           route=route, sent_at=sent_at)
         return found.state, found.detail
 
     def check(self, response_id, receipt_id=None, body_hash=None, route=None,
-              name_upstream=False):
+              sent_at=None, name_upstream=False):
         """Whether this reply was the attested enclave's, as it arrived: a ReplyCheck,
         VERIFIED, SIGNED, FAILED or UNCHECKED, with a sentence saying why.
 
@@ -1476,7 +1486,11 @@ class TeeClient:
             did not arrive whole (no `body_hash`), whose bytes are not compared;
           - RedPill's receipt, signed (Ed25519) by a key of the keyset kept at
             attestation (_take_keyset), for the same two hashes, saying its upstream was
-            verified, as nano-gpt requires (_receipt_holds).
+            verified, as nano-gpt requires, and served after `sent_at` (when the request
+            went, time.time()) and not after now, RECEIPT_CLOCK_SKEW_SECONDS either way:
+            this request's, not an earlier exchange's handed back (_receipt_holds). One
+            served outside that fails; with no `sent_at` a receipt cannot be dated, and
+            the reply is unchecked. From SealedLore (1a61096, Nov 12 2026).
 
         "The key the attestation bound" is any of `signers`: the attested signing key,
         or the keys of the keyset the gateway's quote binds (Nov 10 2026), of which a
@@ -1540,7 +1554,7 @@ class TeeClient:
         read = isinstance(receipt, dict) and self.keyset is not None
         if read:
             try:
-                holds = self._receipt_holds(receipt, request_hash, response_hash)
+                holds = self._receipt_holds(receipt, request_hash, response_hash, sent_at)
             except PrivacyError as e:
                 return ReplyCheck(UNCHECKED, str(e))
             if not holds:
@@ -1631,11 +1645,13 @@ class TeeClient:
                     raise
             time.sleep(RECEIPT_RETRY_SECONDS)
 
-    def _receipt_holds(self, receipt, request_hash, response_hash):
+    def _receipt_holds(self, receipt, request_hash, response_hash, sent_at):
         """Whether the receipt was signed by a key of the attested keyset, under that
-        keyset, for this exchange - the hashes the attested key signed - and says its
-        upstream was verified, as nano-gpt requires. PrivacyError when the gateway's
-        keys have changed since: not a reply that failed, one that cannot be judged."""
+        keyset, for this exchange - the hashes the attested key signed - says its
+        upstream was verified, as nano-gpt requires, and was served for this request,
+        after it was sent (RECEIPT_CLOCK_SKEW_SECONDS either way). PrivacyError when
+        the gateway's keys have changed since, or when the request was sent is not
+        known: not a reply that failed, one that cannot be judged."""
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -1667,7 +1683,18 @@ class TeeClient:
         if hashes != (f"sha256:{request_hash.lower()}", f"sha256:{response_hash.lower()}"):
             return False
         upstream = events.get("upstream.verified", {})
-        return upstream.get("result") == "verified" and upstream.get("required") is True
+        if upstream.get("result") != "verified" or upstream.get("required") is not True:
+            return False
+        if sent_at is None:
+            # Nothing dates the record's text, and the receipt cannot be held to a
+            # request whose time is not known.
+            raise PrivacyError("when this reply's request was sent is not known, so its "
+                               "receipt could not be dated")
+        # An exchange the attested gateway says it served before this request went (or
+        # long after now) is not this request's: a relay handing back an earlier signed
+        # stream, its bytes and hashes all as they were.
+        return (sent_at - RECEIPT_CLOCK_SKEW_SECONDS <= served
+                <= self._wall() + RECEIPT_CLOCK_SKEW_SECONDS)
 
 
 
@@ -1901,12 +1928,14 @@ class PrivacySession:
                      known is None or known.detail != attestation.detail)
 
     def check_reply(self, response_id, receipt_id=None, body_hash=None, route=None,
-                    name_upstream=False):
+                    sent_at=None, name_upstream=False):
         """Record and return what can be said about one reply. `receipt_id`,
         `body_hash` and `route` are what a TEE reply's stream said of itself: the
         receipt id and route nano-gpt's headers named, and the hash of every byte
-        it carried (TeeClient.check_reply). `name_upstream` (Settings → Privacy,
-        on when the run began and still on at this reply: ai._names_upstreams):
+        it carried (TeeClient.check_reply); `sent_at`, when its request went
+        (time.time()), which its receipt must have been served after.
+        `name_upstream` (Settings → Privacy, on when the run began and still on
+        at this reply: ai._names_upstreams):
         and who ran a TEE reply's model, by RedPill's record of its session
         (TeeClient.check), on the receipt; it changes nothing else.
 
@@ -1927,11 +1956,12 @@ class PrivacySession:
             if name_upstream and callable(getattr(self._tee, "check", None)):
                 found = self._tee.check(response_id, receipt_id=receipt_id,
                                         body_hash=body_hash, route=route,
-                                        name_upstream=True)
+                                        sent_at=sent_at, name_upstream=True)
                 state, detail, upstream = found.state, found.detail, found.upstream
             else:
                 state, detail = self._tee.check_reply(response_id, receipt_id=receipt_id,
-                                                      body_hash=body_hash, route=route)
+                                                      body_hash=body_hash, route=route,
+                                                      sent_at=sent_at)
             receipt = Receipt(self.model, TEE, state, detail, upstream=upstream)
         with self._lock:
             self._receipts.append(receipt)
@@ -2105,8 +2135,8 @@ def receipt_tip(receipt):
     if receipt.state == FAILED:
         return (f"Check failed: {receipt.detail}. This reply does not match its record: "
                 "not signed by the attested key, not the text that was signed, or its "
-                "receipt does not hold (another key, another reply, or a model that was "
-                "not verified)." + again)
+                "receipt does not hold (another key, another reply, one served before this "
+                "request was sent, or a model that was not verified)." + again)
     return (f"Not verified: {receipt.detail}. Nothing this app could check shows which "
             "machine answered it: nano-gpt routes each request, and a model may be "
             "served elsewhere when its provider is busy." + again + _CLEAR)

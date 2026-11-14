@@ -43,6 +43,12 @@ ADDRESS = "0x5ce9454909639D2D17A3F753ce7d93fa0b9aB12E"
 API_URL = "https://nano-gpt.com/api/v1/chat/completions"
 TEXT = "TEE/glm-5.3-flash"
 VISION = "TEE/qwen3.8-27b"
+# When the gateway served a reply (its receipt's served_at), when its request was sent,
+# and when the check is made, by the TEE client's clock (FakeNanoGpt.tee_client). As
+# SealedLore's tests have them (1a61096).
+SERVED = 1_800_000_000
+SENT = SERVED - 2.0
+CHECKED = SERVED + 3.0
 
 
 def jwt(claims):
@@ -171,7 +177,7 @@ class FakeNanoGpt:
                  signed_bytes=None, tied=None, receipts=False, upstream="verified",
                  receipt_key=None, digest=None, not_after=4_000_000_000, receipt_id=None,
                  route=None, not_ready=0, tail=b"", cut=False, aci=None, record=None,
-                 record_body=None, record_status=200, record_length=None):
+                 record_body=None, record_status=200, record_length=None, served_at=SERVED):
         if aci is not None and tied is None:
             tied = "e2ee"
         self.aci = aci
@@ -196,6 +202,7 @@ class FakeNanoGpt:
         self.record, self.record_body = record, record_body
         self.record_status, self.record_length = record_status, record_length
         self.records_asked = []
+        self.served_at = served_at
         self._keyset = None
         self.gets = []
         self.posts = []
@@ -274,7 +281,7 @@ class FakeNanoGpt:
         keyset = self.keyset
         receipt = {
             "api_version": "aci/1", "receipt_id": "rcpt-1",
-            "key_id": "dstack-kms-receipt-ed25519-v1", "served_at": 1_800_000_000,
+            "key_id": "dstack-kms-receipt-ed25519-v1", "served_at": self.served_at,
             "workload_keyset_digest": (self.digest or "sha256:"
                                        + hashlib.sha256(canonical(keyset)).hexdigest()),
             "event_log": [
@@ -303,7 +310,7 @@ class FakeNanoGpt:
 
     def tee_client(self, url, key, model):
         return TeeClient(url, key, model, session=self, intel=self.intel_verify,
-                         nvidia=self.nvidia_verify)
+                         nvidia=self.nvidia_verify, wall=lambda: CHECKED)
 
     def get(self, url, params=None, headers=None, timeout=None, stream=False,
             allow_redirects=True):
@@ -1592,6 +1599,7 @@ class GatewaysOwnReport(unittest.TestCase):
 
     def check(self, client, server, receipt_id="rcpt-1", **record):
         record.setdefault("body_hash", stream_hash(server.stream()))
+        record.setdefault("sent_at", SENT)
         return client.check_reply("chatcmpl-42", receipt_id=receipt_id, **record)
 
     def test_the_gateways_report_binds_the_receipt_keys(self):
@@ -2036,7 +2044,7 @@ class ProviderBehindAReply(unittest.TestCase):
         client = server.tee_client(API_URL, "k", model)
         client.attest()
         return client, client.check("chatcmpl-42", receipt_id=receipt_id,
-                                    body_hash=stream_hash(server.stream()),
+                                    body_hash=stream_hash(server.stream()), sent_at=SENT,
                                     name_upstream=True)
 
     def test_a_reply_names_its_provider_by_redpills_record_read_once_a_session(self):
@@ -2064,12 +2072,15 @@ class ProviderBehindAReply(unittest.TestCase):
         # The next reply in the same session reads no record again; one not asked to
         # name its provider asks nothing of RedPill at all.
         again = client.check("chatcmpl-42", receipt_id="rcpt-1",
-                             body_hash=stream_hash(server.stream()), name_upstream=True)
+                             body_hash=stream_hash(server.stream()), sent_at=SENT,
+                             name_upstream=True)
         self.assertEqual(again.upstream.name, "tinfoil")
         self.assertEqual(client.check_reply("chatcmpl-42", receipt_id="rcpt-1",
-                                            body_hash=stream_hash(server.stream()))[0],
+                                            body_hash=stream_hash(server.stream()),
+                                            sent_at=SENT)[0],
                          privacy.VERIFIED)
-        self.assertIsNone(client.check("chatcmpl-42", receipt_id="rcpt-1").upstream)
+        self.assertIsNone(client.check("chatcmpl-42", receipt_id="rcpt-1",
+                                       sent_at=SENT).upstream)
         self.assertEqual(len(server.records_asked), 1)
 
     def test_a_provider_label_is_redpills_name_without_its_number(self):
@@ -2182,6 +2193,7 @@ class Receipts(unittest.TestCase):
 
     def check(self, client, server, **record):
         record.setdefault("body_hash", stream_hash(server.stream()))
+        record.setdefault("sent_at", SENT)
         return client.check_reply("chatcmpl-42", **record)
 
     def test_a_streamed_reply_is_checked_to_its_exact_bytes_and_its_receipt(self):
@@ -2222,6 +2234,31 @@ class Receipts(unittest.TestCase):
         state, detail = self.check(client, server)
         self.assertEqual(state, privacy.UNCHECKED)
         self.assertIn("keys changed", detail)
+
+    def test_a_receipt_served_before_the_request_was_sent_fails(self):
+        """The response hash alone tied a receipt to the stream it came with, and its
+        served_at was held to the keys' expiry alone: a relay could hand back an earlier
+        signed stream with its receipt, and the reply read "verified". From SealedLore's
+        tests (1a61096)."""
+        skew = privacy.RECEIPT_CLOCK_SKEW_SECONDS
+        for served, state in ((SERVED, privacy.VERIFIED),
+                              (SENT - skew, privacy.VERIFIED),         # the clocks' leeway
+                              (CHECKED + skew, privacy.VERIFIED),
+                              (SENT - skew - 1, privacy.FAILED),       # an earlier reply
+                              (SENT - 86_400, privacy.FAILED),
+                              (CHECKED + skew + 1, privacy.FAILED)):   # one not served yet
+            with self.subTest(served=served):
+                client, server = self.client(served_at=int(served))
+                found, detail = self.check(client, server, receipt_id="rcpt-1")
+                self.assertEqual(found, state, detail)
+                if state == privacy.FAILED:
+                    self.assertEqual(detail, "RedPill's receipt for it does not hold")
+
+    def test_a_receipt_whose_request_has_no_time_is_unchecked(self):
+        client, server = self.client()
+        state, detail = self.check(client, server, receipt_id="rcpt-1", sent_at=None)
+        self.assertEqual(state, privacy.UNCHECKED)
+        self.assertIn("could not be dated", detail)
 
     def test_a_keyset_the_quote_binds_itself_is_taken_and_one_tied_neither_way_is_not(self):
         bound, _server = self.client(tied="statement")

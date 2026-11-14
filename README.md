@@ -781,7 +781,9 @@ There are two kinds, and the private model's name says which:
   Each request is streamed, and its reply checked against the record
   nano-gpt keeps of it, found by the receipt the reply names: signed by one
   of the attested keys, for the exact bytes that came, with RedPill's
-  receipt for it holding where there is one. Only then does the reply read
+  receipt for it holding where there is one — for this reply, served after
+  its request was sent (this computer's clock, give or take five minutes),
+  so an earlier reply handed back fails. Only then does the reply read
   **✓ TEE, verified**. Signed, but its text not compared (a stream nano-gpt
   rebuilds, or one cut short), it reads **TEE, signed, text not compared**;
   with no record to read (Chutes keeps none), **⚠ TEE, not verified** — as
