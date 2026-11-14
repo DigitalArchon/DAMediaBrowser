@@ -9,7 +9,7 @@ tests/test_attestation_limits.py. Nothing reaches the network."""
 
 import base64
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -43,7 +43,7 @@ def test_intels_json_is_read_to_200_levels_and_a_deeper_answer_is_refused():
         dcap._loads('{"a": ' + DEEP + "}")
     content = ('{"tcbInfo": {"id": "TDX", "deep": ' + DEEP + '}, "signature": "00"}').encode()
     with pytest.raises(dcap.DcapError, match="nested deeper"):
-        dcap._signed_json(content, "tcbInfo", "", dcap.intel_root(), datetime.now(timezone.utc))
+        dcap._signed_json(content, "tcbInfo", "", dcap.intel_root(), datetime.now(UTC))
 
 
 def test_nvidias_deeper_token_or_key_set_is_refused(monkeypatch):
