@@ -1078,7 +1078,7 @@ class EvidenceThatCannotBeRead(unittest.TestCase):
         with self.assertRaisesRegex(dcap.DcapError, "PCK chain could not be read"):
             dcap.verify(bytes.fromhex(fake_quote(bytes(64))), Unavailable())
 
-        def unreadable(raw, session, now):
+        def unreadable(raw, session, now, deadline=None):
             raise IndexError("index out of range")       # an extension cut short, say
 
         with mock.patch.object(dcap, "_verify", unreadable), \

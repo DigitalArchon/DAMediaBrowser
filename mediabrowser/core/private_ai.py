@@ -927,8 +927,13 @@ class TeeClient:
         self.keyset_digest = None
         self._base = None
         # The two verifiers, replaceable so tests can stand in for Intel and NVIDIA.
-        self._intel = intel or dcap.verify
-        self._nvidia = nvidia or nras.verify
+        # Intel's and NVIDIA's own fetches are given what is left of the attestation's
+        # time (_deadline), so none outlasts its ATTEMPT_SECONDS.
+        self._intel = intel or (
+            lambda raw, session: dcap.verify(raw, session, deadline=self._deadline))
+        self._nvidia = nvidia or (
+            lambda answer, nonce, session: nras.verify(answer, nonce, session,
+                                                       deadline=self._deadline))
         # The time of day, which receipts are dated in (`served_at`, Unix seconds):
         # replaceable for tests.
         self._wall = wall
