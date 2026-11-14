@@ -167,8 +167,15 @@ def _unescaped(host):
 
 
 def is_local(host) -> bool:
-    """Whether `host`, as written, is on this machine or its own network."""
-    host = _unescaped((host or "").strip().lower().rstrip("."))
+    """Whether `host`, as written, is on this machine or its own network.
+
+    An address written with a dot after it ("192.168.1.50.") is no address to
+    glibc's resolver but a name, and DNS says where it goes: not local. A name's
+    dot ("nas.local.") is the root's, and changes nothing. As DA Vibe Manager's
+    netpolicy.is_local_host (Nov 2026)."""
+    host = (host or "").strip().lower()
+    dotted = host.endswith(".")
+    host = _unescaped(host.rstrip("."))
     if not host:
         return False
     if host in LOCAL_NAMES or host.endswith(LOCAL_SUFFIXES):
@@ -176,6 +183,8 @@ def is_local(host) -> bool:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        return False
+    if dotted:
         return False
     mapped = getattr(address, "ipv4_mapped", None)
     if mapped is not None:

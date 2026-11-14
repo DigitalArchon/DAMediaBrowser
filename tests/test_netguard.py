@@ -116,6 +116,24 @@ class TestWhichAddresses:
     def test_these_may_not(self, url):
         assert netguard.problem(url)
 
+    @pytest.mark.parametrize("host", ["192.168.1.50.", "127.0.0.1.", "10.0.0.5..",
+                                      "::1.", "::ffff:192.168.1.50."])
+    def test_an_address_with_a_dot_after_it_is_a_name_not_that_address(self, host):
+        # glibc's resolver takes "192.168.1.50." for a name, which DNS answers for.
+        assert not netguard.is_local(host)
+        assert netguard.is_local(host.rstrip("."))
+
+    def test_plain_http_to_a_dotted_address_is_refused(self):
+        assert netguard.problem("http://192.168.1.50./v1")
+        assert netguard.problem("http://127.0.0.1.:8080/v1")
+        # And a redirect to one is judged as a redirect to a name out there.
+        assert netguard.redirect_problem("https://a.example/", "http://192.168.1.50./x")
+
+    @pytest.mark.parametrize("host", ["nas.local.", "localhost.", "models.localhost."])
+    def test_a_names_dot_changes_nothing(self, host):
+        assert netguard.is_local(host)
+        assert netguard.problem(f"http://{host}/v1") is None
+
     def test_plain_http_is_refused_in_words_that_say_why_and_how(self):
         found = netguard.problem("http://models.example/v1")
         assert "not https" in found and "https://" in found and "local network" in found
