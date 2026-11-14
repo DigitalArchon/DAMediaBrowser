@@ -615,3 +615,48 @@ class TestTheEnvironmentsProxy:
         with netguard.urlopen("http://glassharbor.onion/v1/models", 5) as reply:
             assert reply.read() == b"through tor"
         assert tor.seen[0]["path"] == "http://glassharbor.onion/v1/models"
+
+
+class TestAStreamsLines:
+    """lines_of: a stream's lines as bytes.splitlines would find them, wherever its
+    pieces fall, in time linear in its length, and none longer than MAX_LINE_BYTES."""
+
+    def test_they_are_split_as_the_whole_would_be_wherever_the_pieces_fall(self):
+        import random
+        text = b"data: a\r\ndata: b\n\ndata: c\rd\r\n\r\ne\n:\r" + b"f" * 50 + b"\n\n\nlast"
+        pieces = random.Random(7)
+        for _ in range(200):
+            cuts = sorted(pieces.sample(range(1, len(text)), pieces.randint(0, 12)))
+            chunks = [text[a:b] for a, b in zip([0, *cuts], [*cuts, len(text)], strict=True)]
+            assert list(netguard.lines_of(chunks)) == text.splitlines(), cuts
+
+    def test_a_line_past_the_most_is_refused_and_nothing_more_is_read(self, monkeypatch):
+        monkeypatch.setattr(netguard, "MAX_LINE_BYTES", 4096)
+        read = []
+
+        def chunks():
+            yield b"data: first\n"
+            while True:         # a server that never ends its line
+                read.append(512)
+                yield b"x" * 512
+
+        lines = netguard.lines_of(chunks())
+        assert next(lines) == b"data: first"
+        with pytest.raises(netguard.LineTooLong, match="with no end"):
+            next(lines)
+        assert sum(read) <= 4096 + 512
+
+    def test_a_line_just_at_the_most_is_read(self, monkeypatch):
+        monkeypatch.setattr(netguard, "MAX_LINE_BYTES", 4096)
+        line = b"y" * 4096
+        assert list(netguard.lines_of([line[:1000], line[1000:], b"\nz"])) == [line, b"z"]
+
+    def test_a_long_line_costs_its_length_and_no_more(self):
+        # 8 MB in the 512-byte pieces the AI's stream is read in: joined to every piece
+        # that came, as before Nov 2026, this took minutes; split once, a moment.
+        import time
+        piece = b"x" * 512
+        began = time.monotonic()
+        lines = list(netguard.lines_of(piece for _ in range(16 * 1024)))
+        assert lines == [piece * 16 * 1024]
+        assert time.monotonic() - began < 10

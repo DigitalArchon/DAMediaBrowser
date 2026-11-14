@@ -88,6 +88,9 @@ SECRET_HEADERS = ("Authorization", "X-api-key", "Proxy-Authorization")
 # The most of one answer that is read: Intel's revocation lists and an
 # enclave's attestation are a few hundred KB, the AI's reply far less.
 MAX_BODY_BYTES = 32 * 1024 * 1024
+# The longest line a stream may send (lines_of): an SSE event of the AI's is a few KB.
+MAX_LINE_BYTES = 32 * 1024 * 1024
+_NEWLINE = re.compile(rb"\r\n|\r|\n")
 
 
 class InsecureURL(urllib.error.URLError):
@@ -554,6 +557,48 @@ class StreamedResponse:
 
     def close(self) -> None:
         self._handle.close()
+
+
+class LineTooLong(ValueError):
+    """A stream sent a line longer than MAX_LINE_BYTES without ending it: not read on."""
+
+
+def lines_of(chunks):
+    """The lines of a stream that comes as `chunks` of bytes, split at CRLF, CR or LF,
+    without them. Each chunk is split once, so a long line costs its length and no more;
+    one past MAX_LINE_BYTES is LineTooLong, and nothing more is read. Before (Nov 2026),
+    the line not yet ended was joined to every piece that came, so a stream that never
+    sent a line break cost the square of its length, and held all of it. As SealedLore's
+    providers/streaming.read_lines."""
+    line = []               # the line not yet ended, in the pieces it came in
+    length = 0
+    held_cr = False         # a CR at a chunk's end may be the first half of a CRLF
+
+    def ended(piece, final):
+        nonlocal length, held_cr
+        if held_cr:
+            piece = b"\r" + piece
+        held_cr = not final and piece.endswith(b"\r")
+        if held_cr:
+            piece = piece[:-1]
+        parts = _NEWLINE.split(piece)
+        for index, part in enumerate(parts):
+            length += len(part)
+            if length > MAX_LINE_BYTES:
+                raise LineTooLong(f"the server sent a line of more than "
+                                  f"{MAX_LINE_BYTES // (1024 * 1024)} MB with no end; it "
+                                  f"was not read")
+            line.append(part)
+            if index < len(parts) - 1:
+                yield b"".join(line)
+                line.clear()
+                length = 0
+
+    for chunk in chunks:
+        yield from ended(chunk, final=False)
+    yield from ended(b"", final=True)
+    if line and length:
+        yield b"".join(line)
 
 
 def _read(handle) -> bytes:

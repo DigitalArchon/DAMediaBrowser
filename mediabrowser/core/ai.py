@@ -560,23 +560,18 @@ def _hashed_lines(response, digest):
     """A stream's lines, every byte fed to `digest` as it is read: a TEE
     reply's record names the hash of the exact bytes the stream carried. As
     DA Assistant's llm._hashed_lines reads requests' chunks (Nov 2026), from
-    urllib's answer."""
-    pending = None
-    while True:
-        chunk = response.read(512)
-        if not chunk:
-            break
-        digest.update(chunk)
-        if pending is not None:
-            chunk = pending + chunk
-        lines = chunk.splitlines()
-        if lines and lines[-1] and chunk and lines[-1][-1] == chunk[-1]:
-            pending = lines.pop()
-        else:
-            pending = None
-        yield from lines
-    if pending is not None:
-        yield pending
+    urllib's answer; split by netguard.lines_of, in time linear in the
+    stream's length, and no line longer than netguard.MAX_LINE_BYTES (a
+    ValueError past it, said as the request's failure)."""
+    def chunks():
+        while True:
+            chunk = response.read(512)
+            if not chunk:
+                return
+            digest.update(chunk)
+            yield chunk
+
+    yield from netguard.lines_of(chunks())
 
 
 def _read_to_the_end(lines) -> bool:

@@ -887,11 +887,15 @@ class PrivateModeClient:
 
     @staticmethod
     def lines(response):
-        """The decrypted lines of a sealed stream."""
+        """The decrypted lines of a sealed stream, as bytes: split by netguard.lines_of,
+        in time linear in the stream's length and none longer than
+        netguard.MAX_LINE_BYTES (httpx's iter_lines holds a line however long it runs)."""
         import httpx
         from ehbp import EHBPError
         try:
-            yield from response.iter_lines()
+            yield from netguard.lines_of(response.iter_bytes())
+        except netguard.LineTooLong as e:
+            raise PrivacyError(f"the sealed reply was refused: {e}") from e
         except EHBPError as e:
             raise PrivacyError(f"the encrypted reply could not be opened: {e}") from e
         except httpx.HTTPError as e:

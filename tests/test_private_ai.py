@@ -495,6 +495,18 @@ class TestTee:
         ai.chat([], settings, json_reply=False)
         assert len(server.plain_reports()) == 2
 
+    def test_a_streamed_line_that_never_ends_is_refused_and_not_read_on(self, monkeypatch):
+        """No line of a TEE stream is held past netguard.MAX_LINE_BYTES: a relay that
+        sent a line with no end had it joined to each 512 bytes that came, in time and
+        memory without a bound (SealedLore's providers/streaming.read_lines)."""
+        monkeypatch.setattr(netguard, "MAX_LINE_BYTES", 4096)
+        answer = Reply(b"data: " + b"x" * 65536 + b"\n\ndata: [DONE]\n\n",
+                       {"Content-Type": "text/event-stream"})
+        monkeypatch.setattr(netguard, "_transport", lambda request, timeout: answer)
+        with pytest.raises(ai.AIError, match="with no end"):
+            ai._tee_stream(f"{BASE}/chat/completions", "sk-1", {"model": TEE_MODEL})
+        assert answer._at <= 4096 + 512, "read no further than the line's limit"
+
 
 class TestNamingTheProvider:
     """Settings → Privacy's "Name the provider behind each TEE reply" (off by default):
@@ -1086,6 +1098,17 @@ class TestTheRealSealedClient:
                 "https://…@relay.example/preflight. Nothing was sent there: if the endpoint "
                 "has moved, put its new address in Settings → AI.") in str(caught.value)
         assert "pw" not in str(caught.value) and sent == []
+
+    def test_a_line_that_never_ends_is_refused(self, endpoint, monkeypatch):
+        """No line of the sealed stream is held past netguard.MAX_LINE_BYTES: httpx's
+        iter_lines held one however long it ran."""
+        import httpx
+        monkeypatch.setattr(netguard, "MAX_LINE_BYTES", 4096)
+        client, _ = self.make(lambda r: httpx.Response(
+            200, headers={"x-nanogpt-private-mode": "tinfoil"},
+            content=b"data: " + b"x" * 65536 + b"\n\n" + self.stream_body()))
+        with pytest.raises(ai.AIError, match="sealed reply was refused: .* with no end"):
+            ai.chat([], self.settings_with(client))
 
     def test_a_stream_cut_short_is_refused(self, endpoint):
         import httpx
