@@ -219,6 +219,40 @@ def is_local(host) -> bool:
                for network in LOCAL_NETWORKS)
 
 
+def is_loopback(host) -> bool:
+    """Whether `host`, as written, is this machine itself - 127.0.0.0/8, ::1, localhost
+    and a name under .localhost - where what is sent never leaves it. Any other local
+    host (is_local) is taken for another machine, nothing being looked up, and plain http
+    to it can be read by anyone on the network between, a café's or a hotel's Wi-Fi
+    included. As SealedLore's is_loopback_host and DA Assistant's (Nov 2026)."""
+    text = (host or "").strip().lower()
+    if not is_local(text):
+        return False
+    name = _unescaped(text.rstrip(".")) or ""
+    if name in LOCAL_NAMES or name.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback
+
+
+def in_the_clear(url) -> bool:
+    """Whether a request to `url` crosses a network unencrypted: plain http to another
+    machine on this one (is_local, not is_loopback). Allowed - problem() lets it go - but
+    anyone on that network can read it, a key with it. Anywhere else plain http is
+    refused outright (problem)."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        host = parsed.hostname or ""
+    except ValueError:
+        return False
+    scheme = parsed.scheme.lower()
+    return bool(scheme) and scheme != "https" and is_local(host) and not is_loopback(host)
+
+
 def is_onion(host) -> bool:
     """Whether `host` is a Tor onion service."""
     host = (host or "").strip().lower().rstrip(".")

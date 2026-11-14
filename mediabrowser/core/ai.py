@@ -50,6 +50,9 @@ from urllib.parse import urlparse
 from . import creds, netguard, outbound, privacy, private_ai, safejson, store
 
 DEFAULT_BASE_URL = "https://nano-gpt.com/api/v1"
+# Nano-GPT's own server, as a key is held to it (origin_of): the only one the key in
+# NANOGPT_API_KEY is sent to.
+NANOGPT_ORIGIN = "https://nano-gpt.com:443"
 NANO_GPT_HOST = "nano-gpt.com"
 # Sonnet reads captions and knows setlists well enough, at a fraction of
 # Opus's price; the model is a setting for anyone who wants to spend more.
@@ -93,6 +96,12 @@ FROM_FORM = "_from_form"        # Settings' own form, which is newer than the fi
 # Given back: why the saved key is not sent to the address in force, when it isn't.
 KEY_ORIGIN = "_key_origin"
 KEY_HELD = "_key_held"
+# In settings.json: the server the user said No to sending the saved key to, when
+# Settings asked (an origin, origin_of; no key in it). Save asks no more about it - a
+# question asked at every Save is soon answered Yes without reading - and Settings → AI
+# says the key is held back there, with Ask again…. A key entered for that server, or
+# the address put back where the key was entered for, lets the No go.
+SETTING_KEY_DECLINED = "ai_key_declined"
 
 # The private model Privacy Mode starts with: end-to-end encrypted, and it can
 # see the frames. Kimi K3.1 Pro, post-trained from Kimi K3, chosen by the author
@@ -165,19 +174,25 @@ def settings_from(app_settings: dict, form: bool = False) -> dict:
     for key in DEFAULT_SETTINGS:
         if app_settings.get(key) not in (None, ""):
             settings[key] = app_settings[key]
-    env_key = os.environ.get(API_KEY_ENV, "").strip()
-    if env_key:
-        settings[SETTING_KEY] = env_key
     settings[SETTING_BASE_URL] = str(settings[SETTING_BASE_URL]).rstrip("/")
+    # The environment's key is Nano-GPT's, and goes to Nano-GPT's own server alone
+    # (NANOGPT_ORIGIN), never to another endpoint the settings name: there the saved key,
+    # if it was entered for it, is used instead (the DA apps' security standard, Nov
+    # 2026). It used to go wherever the endpoint pointed.
+    env_key = os.environ.get(API_KEY_ENV, "").strip()
+    on_nanogpt = origin_of(settings[SETTING_BASE_URL]) == NANOGPT_ORIGIN
+    if env_key and on_nanogpt:
+        settings[SETTING_KEY] = env_key
     # The saved key goes only to the server it was entered for (KEYRING_ORIGIN_NAME): to
-    # another, it is not sent, and not_ready says why. The environment's key is the
-    # environment's to point.
+    # another, it is not sent, and not_ready says why.
     settings[KEY_HELD] = ""
     entered_for = app_settings.get(KEY_ORIGIN)
-    if not env_key and settings[SETTING_KEY] and entered_for is not None \
+    if not (env_key and on_nanogpt) and settings[SETTING_KEY] and entered_for is not None \
             and entered_for != origin_of(settings[SETTING_BASE_URL]):
         settings[KEY_HELD] = key_held(entered_for, settings[SETTING_BASE_URL])
         settings[SETTING_KEY] = ""
+    if env_key and not on_nanogpt and not settings[SETTING_KEY] and not settings[KEY_HELD]:
+        settings[KEY_HELD] = env_key_held(settings[SETTING_BASE_URL])
     try:
         settings[SETTING_FRAMES] = max(1, min(4, int(settings[SETTING_FRAMES])))
     except (TypeError, ValueError):
@@ -280,9 +295,12 @@ def load_settings(app_settings: dict | None = None) -> dict:
     locked, just means no key - the environment's, if it has one, doesn't
     need it."""
     app_settings = store.load_app_settings() if app_settings is None else dict(app_settings)
-    if os.environ.get(API_KEY_ENV, "").strip():
-        app_settings[SETTING_KEY] = ""
+    address = str(app_settings.get(SETTING_BASE_URL) or DEFAULT_BASE_URL).rstrip("/")
+    if os.environ.get(API_KEY_ENV, "").strip() and origin_of(address) == NANOGPT_ORIGIN:
+        app_settings[SETTING_KEY] = ""      # the environment's stands, the keyring unasked
     else:
+        # Another endpoint than Nano-GPT's is never sent the environment's key
+        # (settings_from): the saved key, if it was entered for it.
         app_settings[SETTING_KEY] = stored_key()
         if app_settings[SETTING_KEY]:
             app_settings[KEY_ORIGIN] = key_origin(app_settings.get(SETTING_BASE_URL))
@@ -358,6 +376,14 @@ def key_origin(address=None) -> str:
     return origin
 
 
+def env_key_held(address: str) -> str:
+    """Why the environment's key is not sent to `address`: it is Nano-GPT's own."""
+    there = shown_origin(origin_of(address)) or netguard.shown(address)
+    return (f"The key in {API_KEY_ENV} is Nano-GPT's, and goes only to "
+            f"{shown_origin(NANOGPT_ORIGIN)}, not {there}. Paste the key for {there} in "
+            f"Settings → AI.")
+
+
 def key_held(entered_for: str, address: str) -> str:
     """Why the saved key is not sent to `address`, and how to put it right: it was
     entered for another server (settings_from)."""
@@ -368,7 +394,8 @@ def key_held(entered_for: str, address: str) -> str:
                 f"the key again in Settings → AI.")
     return (f"The saved Nano-GPT API key was entered for {shown_origin(entered_for)}, not "
             f"{there}, so it isn't sent there. To use it with {there}, open Settings → "
-            f"AI and save, answering Yes when asked; or paste the key for {there} there.")
+            f"AI and save, answering Yes when asked (Ask again… there, if you said No); or "
+            f"paste the key for {there} there.")
 
 
 def allowed(settings: dict) -> bool:

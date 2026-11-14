@@ -161,7 +161,8 @@ class TestAKeyGoesOnlyWhereItWasEntered:
         assert said == ("The saved Nano-GPT API key was entered for https://nano-gpt.com, not "
                         "https://models.example, so it isn't sent there. To use it with "
                         "https://models.example, open Settings → AI and save, answering "
-                        "Yes when asked; or paste the key for https://models.example there.")
+                        "Yes when asked (Ask again… there, if you said No); or paste the key "
+                        "for https://models.example there.")
         with pytest.raises(ai.NotConfigured, match="entered for https://nano-gpt.com"):
             ai.chat([{"role": "user", "content": "Glass Harbor"}], settings)
         assert http["calls"] == [], "nothing sent"
@@ -231,11 +232,23 @@ class TestAKeyGoesOnlyWhereItWasEntered:
         assert settings[ai.SETTING_KEY] == ""
         assert "keyring didn't say which server" in ai.not_ready(settings)
 
-    def test_the_environments_key_goes_where_the_environment_points_it(self, data_dir,
+    def test_the_environments_key_goes_to_nano_gpts_own_server_alone(self, data_dir,
                                                                        monkeypatch):
-        self.saved_for(ai.DEFAULT_BASE_URL)
-        store.save_app_settings({ai.SETTING_BASE_URL: "https://models.example/v1"})
+        """NANOGPT_API_KEY is Nano-GPT's: bound to https://nano-gpt.com, never sent to
+        another endpoint the settings name (the DA apps' security standard, Nov 2026).
+        It went wherever the endpoint pointed."""
         monkeypatch.setenv(ai.API_KEY_ENV, "env-key")
+        store.save_app_settings({ai.SETTING_BASE_URL: "https://models.example/v1"})
+        settings = ai.load_settings()
+        assert settings[ai.SETTING_KEY] == ""
+        assert ai.not_ready(settings).startswith(
+            f"The key in {ai.API_KEY_ENV} is Nano-GPT's, and goes only to "
+            "https://nano-gpt.com, not https://models.example")
+        # There, the key saved for that server is sent, as ever.
+        self.saved_for("https://models.example/v1")
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-kept"
+        # And at Nano-GPT's own, the environment's, the saved key unasked.
+        store.save_app_settings({ai.SETTING_BASE_URL: "https://NANO-GPT.com:443/api/v1"})
         assert ai.load_settings()[ai.SETTING_KEY] == "env-key"
 
     def test_privacy_modes_tee_check_gets_no_key_for_another_server(self, data_dir,

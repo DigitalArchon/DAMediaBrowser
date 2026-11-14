@@ -345,27 +345,96 @@ class TestSettings:
         assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
             "https://nano-gpt.com:443"
 
+        # The No is remembered for that server: the next Save asks nothing (a question
+        # asked at every Save is soon answered Yes without reading), and Settings says
+        # the key is held back there, with Ask again….
+        assert store.load_app_settings()[ai.SETTING_KEY_DECLINED] == "https://models.example:443"
         asked["answer"] = QMessageBox.Yes
         dialog = SettingsDialog(window)
+        assert dialog.held_back.text() == (
+            "The saved key is for https://nano-gpt.com, not sent to https://models.example. "
+            "You said No to sending it there. To use a key there, paste it above, or ask "
+            "again.")
         dialog.accept()
+        assert len(asked["questions"]) == 1, "not asked again at Save"
+        assert ai.load_settings()[ai.SETTING_KEY] == ""
+        # Test, which sends it at once, asks all the same; and Ask again… does.
+        dialog = SettingsDialog(window)
+        dialog.privacy_checks[privacy.AI].setChecked(True)
+        dialog.test()
         assert len(asked["questions"]) == 2
+        dialog = SettingsDialog(window)
+        dialog.ask_again.click()
+        assert len(asked["questions"]) == 3
+        assert dialog.held_back.text() == ("With Save, the saved key goes to "
+                                           "https://models.example.")
+        dialog.accept()
+        assert len(asked["questions"]) == 3
         assert ai.load_settings()[ai.SETTING_KEY] == "sk-abc"
         assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
             "https://models.example:443"
+        assert ai.SETTING_KEY_DECLINED not in store.load_app_settings()
 
     def test_a_key_typed_beside_a_new_address_is_that_servers_with_no_question(
             self, window, memory_keyring, asked):
+        from PySide6.QtWidgets import QMessageBox
+
         from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
         ai.store_key("sk-abc", ai.DEFAULT_BASE_URL)
         dialog = SettingsDialog(window)
         dialog.base_url.setText("http://192.168.1.5:8080/v1")
         dialog.key.setText("sk-local")
+        asked["answer"] = QMessageBox.Yes     # to sending it unencrypted (below)
         dialog.accept()
-        assert asked["questions"] == []
+        assert [question["title"] for question in asked["questions"]] == [
+            "Send the key unencrypted?"], "not asked whether the saved key may go there"
         assert ai.load_settings()[ai.SETTING_KEY] == "sk-local"
         assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
             "http://192.168.1.5:8080"
+
+    def test_a_key_over_plain_http_to_another_machine_is_asked_about_first(
+            self, window, memory_keyring, asked):
+        """Plain http to another machine on the network is allowed, but anyone on that
+        network reads the key on the way: asked about first, No the default, as every DA
+        app asks (the DA apps' security standard, Nov 2026). At Save, No keeps the
+        dialog open; before Test, No sends nothing. Not asked about the key going there
+        as Settings opened, nor to this computer itself."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(window)
+        dialog.privacy_checks[privacy.AI].setChecked(True)
+        dialog.base_url.setText("http://192.168.1.5:8080/v1")
+        dialog.key.setText("sk-lan")
+        dialog.test()
+        (question,) = asked["questions"]
+        assert question["title"] == "Send the key unencrypted?"
+        assert "to another machine on your network: http://192.168.1.5:8080" in \
+            question["text"]
+        assert question["text"].endswith("No sends nothing.")
+        assert question["default"] == QMessageBox.No
+        assert "sk-lan" not in question["text"]
+        assert dialog._jobs == [] and dialog.status.text() == "Nothing was sent."
+        dialog.accept()
+        assert len(asked["questions"]) == 2
+        assert dialog.status.text().startswith("Not saved: the key would have gone "
+                                               "unencrypted")
+        assert ai.stored_key() == "", "nothing saved"
+        asked["answer"] = QMessageBox.Yes
+        dialog.accept()
+        assert len(asked["questions"]) == 3
+        assert ai.stored_key() == "sk-lan"
+        # Going there as Settings opened: not asked again; to this computer: never.
+        again = SettingsDialog(window)
+        again.accept()
+        assert len(asked["questions"]) == 3
+        local = SettingsDialog(window)
+        local.base_url.setText("http://127.0.0.1:8080/v1")
+        local.key.setText("sk-here")
+        local.accept()
+        assert len(asked["questions"]) == 3
 
     def test_nothing_is_asked_for_the_server_the_key_was_entered_for(
             self, window, memory_keyring, asked):
@@ -534,7 +603,9 @@ class TestTheMarksSayWhatTheyMean:
         said = dialog.ai_hint.text()
         assert said.startswith("Answered by TEE/glm-5.3-flash: TEE gateway attested (")
         assert "the reply TEE, verified" in said
-        tip = dialog.ai_hint.toolTip()
+        import html
+        tip = html.unescape(dialog.ai_hint.toolTip())      # gui/plain.tooltip's
+        tip = tip.removeprefix("<p style='white-space:pre-wrap'>").removesuffix("</p>")
         assert tip.startswith("Attested: RedPill's TEE gateway")
         assert "TEE verified" in tip and "the gateway's word" in tip
 

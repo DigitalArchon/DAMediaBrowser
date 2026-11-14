@@ -78,9 +78,14 @@ not. The status bar's right-hand corner says where things can go now (see
   a byte is sent. It is never rewritten to https for you, and certificates are always
   checked.
 - **Plain http on your own network is not encrypted.** The app allows it, because that
-  is how a model server on this computer or the one next to it is reached, and it does
-  not ask first: the key and everything sent cross that network as they are, readable
-  by anyone on it. Give such a server an https address if it can have one.
+  is how a model server on this computer or the one next to it is reached: the key and
+  everything sent cross that network as they are, readable by anyone on it, a café's or
+  a hotel's Wi-Fi too. So before the key first goes that way to another machine,
+  Settings asks *Send the key unencrypted?*, No the default: at Save, where No goes back
+  to the settings, and before Test, List Models or Check Attestation, where No sends
+  nothing. One going there already when Settings was opened is not asked about, nor one
+  to this computer itself (`localhost`, `127.0.0.1`), which never leaves it. Give such
+  a server an https address if it can have one.
 - **An address is judged as written**, not by looking up where its name points. One
   with a space, a backslash or a control character in it is refused outright, and so is
   a plain http host with a `%` escape in it, since the parsers involved disagree on
@@ -122,6 +127,9 @@ not. The status bar's right-hand corner says where things can go now (see
   `SETLISTFM_API_KEY` in the environment take their place. A key an older version left in
   `settings.json` is never read back, and goes the next time settings are saved. With no
   keyring, Settings says so, and the environment's key is the only one there is.
+  `NANOGPT_API_KEY` is Nano-GPT's: it goes only to `https://nano-gpt.com`, and an AI
+  endpoint elsewhere is sent the key saved for it instead, or none. `SETLISTFM_API_KEY`
+  goes to setlist.fm alone, whose address is the app's own.
 - **A password written into an address is never kept.** Settings won't save an AI
   endpoint whose address has one, and `settings.json` is always written without it,
   whichever window saves; the user name, if one is left, is still refused, and says how
@@ -141,9 +149,14 @@ not. The status bar's right-hand corner says where things can go now (see
   and the key goes only there. Change the AI endpoint to another server and Settings asks
   once, *Use the saved key with …?*, No the default; with No, or with the address changed
   by hand in `settings.json`, the key isn't sent, and the app says why and how to put it
-  right. A key saved by an older version takes the server of the address saved beside it.
-  The key itself is never deleted for it. `NANOGPT_API_KEY` in the environment goes
-  wherever the address points.
+  right. A No is remembered for that server, so a later Save doesn't ask again (a
+  question asked at every Save is soon answered Yes without reading): Settings → AI says
+  the key is held back there, with **Ask again…**, and a key pasted for the new address
+  is that address's. Test, List Models and Check Attestation, which send the key at
+  once, ask every time, a server said No to included. A key saved by an older version
+  takes the server of the address saved beside it. The key itself is never deleted for
+  it. (Up to 0.23.0 `NANOGPT_API_KEY` in the environment went wherever the address
+  pointed.)
 
 ## AI models
 

@@ -490,7 +490,11 @@ paste an API key on the *AI* tab and pick a model
 Opus is more careful and several times the price). A concert's chapters
 cost a few cents. The key is kept in the system keyring (GNOME Keyring,
 KWallet), never in a file; without one, set `NANOGPT_API_KEY` in the
-environment instead. Nothing is sent until you press Ask AI, and nothing
+environment instead (it goes to Nano-GPT's own server alone). The key goes
+only to the server it was entered for: change the endpoint and Settings asks
+once, remembering a No (**Ask again…** asks once more); and before it goes
+over plain http to another machine on your network, Settings asks too.
+Nothing is sent until you press Ask AI, and nothing
 is applied until Apply. Ask AI says, before you press it, what it will
 send and where to: through Nano-GPT to the model's maker, who can both
 read it — or in Privacy Mode, sealed to an attested enclave.

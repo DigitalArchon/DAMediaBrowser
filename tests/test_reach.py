@@ -58,10 +58,11 @@ def test_the_status_bar_names_each_and_how_the_ai_travels(monkeypatch):
 
 
 def test_web_search_is_nano_gpts_own(monkeypatch):
-    monkeypatch.setenv(ai.API_KEY_ENV, "sk")
+    # A key saved for that endpoint (NANOGPT_API_KEY is Nano-GPT's own, never sent there).
     elsewhere = settings(**{privacy.AI: True, privacy.WEB_SEARCH: True,
                             ai.SETTING_BASE_URL: "https://llm.example.net/v1"})
-    found = reach.services(elsewhere)
+    found = reach.services(elsewhere, ai.settings_from(dict(elsewhere,
+                                                            **{ai.SETTING_KEY: "sk"})))
     assert found[privacy.AI].on and "llm.example.net" in found[privacy.AI].where
     assert not found[privacy.WEB_SEARCH].on and "Nano-GPT's own" in found[privacy.WEB_SEARCH].off
 
