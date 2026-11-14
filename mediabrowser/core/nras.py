@@ -103,8 +103,12 @@ def check_claims(claims, nonce, now):
     take LEEWAY_SECONDS, and say it was made for `nonce`. Its signature is not looked
     at: private_ai.py holds an answer to this much even when NVIDIA's keys are out of
     reach."""
-    if not (claims.get("nbf", 0) - LEEWAY_SECONDS <= now
-            <= claims.get("exp", 0) + LEEWAY_SECONDS):
+    try:
+        current = (claims.get("nbf", 0) - LEEWAY_SECONDS <= now
+                   <= claims.get("exp", 0) + LEEWAY_SECONDS)
+    except TypeError:
+        raise NrasError("a token's validity window is not given as times")
+    if not current:
         raise NrasError("a token is outside its validity window")
     if claims.get("eat_nonce") != nonce:
         raise NrasError("NVIDIA's verdict was not made for this request's nonce")
@@ -124,6 +128,8 @@ def verify_token(token, session, nonce, now, signed=True):
         claims = json.loads(_b64(claims_part))
         signature = _b64(signature_part)
     except (ValueError, AttributeError):
+        raise NrasError("NVIDIA's answer held a malformed token")
+    if not isinstance(header, dict) or not isinstance(claims, dict):
         raise NrasError("NVIDIA's answer held a malformed token")
     if header.get("alg") != "ES384" or len(signature) != 96:
         raise NrasError(f"a token is signed with {header.get('alg')}, not ES384")
@@ -162,10 +168,18 @@ def verify(answer, nonce, session=None, now=None):
     session = session or netguard.Session(follow=True)     # public: carries no key
     now = now if now is not None else time.time()
     try:
-        return _verify(answer, nonce, session, now)
-    except KeysUnavailable:
-        _verify(answer, nonce, session, now, signed=False)     # NrasError, if it fails
+        try:
+            return _verify(answer, nonce, session, now)
+        except KeysUnavailable:
+            _verify(answer, nonce, session, now, signed=False)     # NrasError, if it fails
+            raise
+    except (NrasError, KeysUnavailable, netguard.RequestError, ImportError):
         raise
+    except Exception as e:  # noqa: BLE001
+        # An answer, a token or a key shaped so that reading it raises something else (a
+        # token that is no text, a key without its coordinates) is no verdict, and is
+        # refused as that: until Nov 2026 the error itself went up.
+        raise NrasError(f"NVIDIA's answer could not be read ({type(e).__name__})") from e
 
 
 def _verify(answer, nonce, session, now, signed=True):

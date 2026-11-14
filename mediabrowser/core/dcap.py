@@ -49,9 +49,9 @@ Checked live against TEE/glm-5.3-flash's quote (Sept 2026): version 4, ECDSA-256
 attestation key, TDX; PCK Platform CA; FMSPC 20a06f000000; TDX module TDX_03; every
 status UpToDate.
 
-Collateral is cached for an hour, on a clock that runs on while the machine sleeps
-(since_boot): it is the same for every quote from a platform, and Intel reissues it
-monthly.
+Collateral is cached for an hour, once it has been read and its signatures checked, on a
+clock that runs on while the machine sleeps (since_boot): it is the same for every quote
+from a platform, and Intel reissues it monthly.
 """
 
 import hashlib
@@ -379,9 +379,17 @@ _cache = {}
 _cache_lock = threading.Lock()
 
 
-def _fetch(session, url, params=None):
-    """(body bytes, headers) of Intel's collateral, cached for COLLATERAL_TTL."""
+def _fetch(session, url, params=None, unread=None):
+    """(body bytes, headers) of Intel's collateral, cached for COLLATERAL_TTL.
+
+    With `unread` (a quote's verification: _verify), what is fetched is put there and not
+    in the cache: _keep caches it once all of it has been read and its signatures
+    checked. Cached as it arrived, an answer that could not be read (a proxy's or a
+    portal's page with a 200) refused every quote for the hour, long after Intel's
+    service answered again."""
     key = (url, tuple(sorted((params or {}).items())))
+    if unread is not None and key in unread:
+        return unread[key]
     with _cache_lock:
         hit = _cache.get(key)
         if hit is not None and since_boot() - hit[0] < COLLATERAL_TTL:
@@ -394,9 +402,18 @@ def _fetch(session, url, params=None):
         raise CollateralUnavailable(f"{url}: HTTP {response.status_code}")
     content = response.content
     headers = dict(response.headers)
-    with _cache_lock:
-        _cache[key] = (since_boot(), content, headers)
+    if unread is None:
+        _keep({key: (content, headers)})
+    else:
+        unread[key] = (content, headers)
     return content, headers
+
+
+def _keep(read):
+    """Cache collateral that was fetched (_fetch), now that it has been read."""
+    with _cache_lock:
+        for key, (content, headers) in read.items():
+            _cache[key] = (since_boot(), content, headers)
 
 
 def _header(headers, name):
@@ -614,6 +631,15 @@ def verify(raw, session=None, now=None):
     now = now or datetime.now(UTC)
     try:
         return _verify(raw, session, now)
+    except (DcapError, netguard.RequestError, ImportError):
+        raise
+    except Exception as e:  # noqa: BLE001
+        # A quote, a certificate in it or collateral shaped so that reading it raises
+        # something else (a key of another kind, an extension cut short, JSON nested past
+        # reading) is not verified, and is refused as what it is: until Nov 2026 the
+        # error itself went up.
+        raise DcapError(f"the quote or Intel's collateral could not be read "
+                        f"({type(e).__name__})") from e
     finally:
         if own:
             session.close()
@@ -627,7 +653,10 @@ def _verify(raw, session, now):
         raise DcapError("it is a debug TD, whose memory the host can read")
 
     root = intel_root()
-    certs = x509.load_pem_x509_certificates(quote.pck_chain_pem)
+    try:
+        certs = x509.load_pem_x509_certificates(quote.pck_chain_pem)
+    except ValueError:
+        raise DcapError("the quote's PCK chain could not be read")
     if len(certs) < 2:
         raise DcapError("the quote's PCK chain is incomplete")
     pck, ca = certs[0], certs[1]
@@ -646,26 +675,30 @@ def _verify(raw, session, now):
     result = Result(fmspc=sgx["fmspc"],
                     notes=["Intel's certificate chain, the quoting enclave and the "
                            "quote's signature verify"])
+    # What is fetched for this quote, cached once all of it has been read and checked (_keep).
+    unread = {}
     try:
         stale = False
-        content, _headers = _fetch(session, ROOT_CRL_URL)
+        content, _headers = _fetch(session, ROOT_CRL_URL, unread=unread)
         stale |= _check_crl(_load_crl(content), root, now, ca)
         kind = "processor" if "Processor" in _common_name(ca) else "platform"
-        content, _headers = _fetch(session, PCK_CRL_URL, {"ca": kind, "encoding": "der"})
+        content, _headers = _fetch(session, PCK_CRL_URL, {"ca": kind, "encoding": "der"},
+                                   unread)
         stale |= _check_crl(_load_crl(content), ca, now, pck)
 
-        content, headers = _fetch(session, TCB_INFO_URL, {"fmspc": sgx["fmspc"]})
+        content, headers = _fetch(session, TCB_INFO_URL, {"fmspc": sgx["fmspc"]}, unread)
         tcb_info, signer = _signed_json(content, "tcbInfo",
                                         _header(headers, "TCB-Info-Issuer-Chain"), root, now)
-        content, _root_headers = _fetch(session, ROOT_CRL_URL)
+        content, _root_headers = _fetch(session, ROOT_CRL_URL, unread=unread)
         _check_crl(_load_crl(content), root, now, signer)
         if tcb_info.get("id") != "TDX" or tcb_info.get("fmspc", "").lower() != sgx["fmspc"]:
             raise DcapError("Intel's TCB info is not for this platform")
-        content, headers = _fetch(session, QE_IDENTITY_URL)
+        content, headers = _fetch(session, QE_IDENTITY_URL, unread=unread)
         identity, _signer = _signed_json(
             content, "enclaveIdentity",
             _header(headers, "SGX-Enclave-Identity-Issuer-Chain"), root, now)
         stale |= _stale(tcb_info, now) or _stale(identity, now)
+        _keep(unread)
     except CollateralUnavailable as e:
         result.collateral = False
         result.notes.append(f"Intel's revocation lists and TCB information could not be "

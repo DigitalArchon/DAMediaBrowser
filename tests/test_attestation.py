@@ -1005,6 +1005,110 @@ class RealEvidence(unittest.TestCase):
         self.assertIsNone(client.keyset)
 
 
+    # Intel's collateral is kept once it has been read (DA Toolkit's review, Nov 12 2026)
+
+    def test_collateral_that_cannot_be_read_is_not_kept_for_the_hour(self):
+        """A 200 that isn't Intel's (a proxy's page, a portal's) was cached as it came,
+        and refused every quote for an hour, however soon Intel's service answered
+        again. From DA Toolkit's copy of this module (Nov 2026)."""
+        class Portal(FixtureSession):
+            def get(self, url, params=None, headers=None, timeout=None, **_kwargs):
+                return FakeResponse(200, None, content=b"<html>Sign in to the network</html>")
+
+        with self.assertRaisesRegex(dcap.DcapError, "could not be read"):
+            self.intel(session=Portal(self.fixture))
+        self.assertEqual(dcap._cache, {})
+        self.assertEqual(self.intel().status, "UpToDate")      # Intel's own, a moment later
+        kept = len(dcap._cache)
+        self.assertEqual(kept, 4, "the two CRLs, the TCB info, the QE identity")
+
+        class Gone(FixtureSession):
+            def get(self, url, params=None, headers=None, timeout=None, **_kwargs):
+                raise AssertionError(f"fetched again: {url}")
+
+        self.assertEqual(self.intel(session=Gone(self.fixture)).status, "UpToDate")
+        self.assertEqual(len(dcap._cache), kept)
+
+    def test_collateral_whose_signature_fails_is_not_kept_either(self):
+        forged = json.loads(json.dumps(self.fixture))
+        body = base64.b64decode(forged["collateral"][2]["body"])
+        forged["collateral"][2]["body"] = base64.b64encode(
+            body.replace(b"UpToDate", b"UpToDatf", 1)).decode()
+        with self.assertRaisesRegex(dcap.DcapError, "signature"):
+            self.intel(session=FixtureSession(forged))
+        self.assertEqual(dcap._cache, {})
+
+
+class Unavailable:
+    """Every service out of reach: Intel's collateral, NVIDIA's keys."""
+
+    def get(self, url, params=None, headers=None, timeout=None, **_kwargs):
+        return FakeResponse(503, {})
+
+    def close(self):
+        pass
+
+
+def token(header, claims):
+    def part(data):
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+    return f"{part(header)}.{part(claims)}.{base64.urlsafe_b64encode(bytes(96)).decode()}"
+
+
+@unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+class EvidenceThatCannotBeRead(unittest.TestCase):
+    """Evidence in no shape to read failed closed, but as the Python error reading it
+    raised: dcap and nras now refuse it as a DcapError or an NrasError, the error kept
+    as its cause. From DA Toolkit's copies of these modules (Nov 12 2026 review)."""
+
+    def tearDown(self):
+        dcap._cache.clear()
+        nras._keys.update(at=0.0, keys={})
+
+    def test_a_quote_whose_certificates_cannot_be_read_is_one_intel_does_not_vouch_for(self):
+        with self.assertRaisesRegex(dcap.DcapError, "PCK chain could not be read"):
+            dcap.verify(bytes.fromhex(fake_quote(bytes(64))), Unavailable())
+
+        def unreadable(raw, session, now):
+            raise IndexError("index out of range")       # an extension cut short, say
+
+        with mock.patch.object(dcap, "_verify", unreadable), \
+                self.assertRaisesRegex(dcap.DcapError,
+                                       r"could not be read \(IndexError\)") as refused:
+            dcap.verify(b"", Unavailable())
+        self.assertIsInstance(refused.exception.__cause__, IndexError)
+
+    def test_a_token_whose_header_or_claims_are_no_such_thing_is_refused(self):
+        for header, claims, refusal in (
+                ([], {}, "malformed token"),
+                ({"alg": "ES384"}, [], "malformed token"),
+                ({"alg": "ES384"}, {"iss": nras.ISSUER, "nbf": "x", "exp": 9e12},
+                 "validity window is not given as times"),
+                ({"alg": "ES384"}, {"iss": nras.ISSUER, "nbf": 0, "exp": None},
+                 "validity window is not given as times")):
+            with self.subTest(refusal=refusal, claims=claims), \
+                    self.assertRaisesRegex(nras.NrasError, refusal):
+                nras._verify([["JWT", token(header, claims)], {}], "00", Unavailable(), 1.0,
+                             signed=False)
+
+    def test_claims_held_without_nvidias_keys_are_held_to_times_too(self):
+        # private_ai holds the time and nonce itself when NVIDIA's keys are out of reach.
+        with self.assertRaisesRegex(nras.NrasError, "not given as times"):
+            nras.check_claims({"nbf": [], "exp": 9e12, "eat_nonce": "00"}, "00", 1.0)
+
+    def test_an_answer_of_nvidias_that_cannot_be_read_is_no_verdict(self):
+        """Past the checks that name what is wrong: a GPU's token that is no text raised
+        AttributeError."""
+        claims = {"iss": nras.ISSUER, "nbf": 0, "exp": 9e12, "eat_nonce": "00",
+                  "x-nvidia-overall-att-result": True,
+                  "submods": {"GPU-0": ["DIGEST", ["SHA-256", "ab"]]}}
+        with self.assertRaisesRegex(nras.NrasError,
+                                    r"could not be read \(AttributeError\)") as refused:
+            nras.verify([["JWT", token({"alg": "ES384"}, claims)], {"GPU-0": 5}], "00",
+                        Unavailable(), now=1.0)
+        self.assertIsInstance(refused.exception.__cause__, AttributeError)
+
+
 @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
 class IntelsChainRules(unittest.TestCase):
     """verify_chain held a certificate to its issuer's name, signature and dates, and
