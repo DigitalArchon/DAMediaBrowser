@@ -13,7 +13,7 @@ import pytest
 from keyring.backends import fail
 from keyring.errors import KeyringLocked
 
-from mediabrowser.core import ai, config, creds, netguard, outbound, privacy, store
+from mediabrowser.core import ai, config, creds, netguard, outbound, privacy, private_ai, store
 
 
 class FakeResponse(io.BytesIO):
@@ -96,7 +96,10 @@ class TestTheKeyring:
     def test_the_key_comes_from_the_keyring(self, data_dir, memory_keyring, monkeypatch):
         monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
         ai.store_key("sk-kept")
-        assert memory_keyring.store == {("da-media-browser", ai.KEYRING_NAME): "sk-kept"}
+        # With the server it was entered for beside it (the default endpoint's).
+        assert memory_keyring.store == {
+            ("da-media-browser", ai.KEYRING_NAME): "sk-kept",
+            ("da-media-browser", ai.KEYRING_ORIGIN_NAME): "https://nano-gpt.com:443"}
         assert ai.load_settings()[ai.SETTING_KEY] == "sk-kept"
 
     def test_an_empty_key_is_forgotten(self, data_dir, memory_keyring, monkeypatch):
@@ -130,6 +133,132 @@ class TestTheKeyring:
         assert creds.backend_error() is None
         keyring.set_keyring(fail.Keyring())
         assert "GNOME Keyring" in creds.backend_error()
+
+
+class TestAKeyGoesOnlyWhereItWasEntered:
+    """The saved key goes only to the server (scheme, host, port) it was entered for, kept
+    beside it in the keyring: an address changed to another server - by hand in
+    settings.json, or in Settings answered No - sends it nowhere, and says why and how to
+    put it right. A key saved before this takes its address's server, with no question.
+    The key itself is never deleted. As DA Private Coder keys a server's key by host and
+    port (Nov 2026)."""
+
+    @pytest.fixture(autouse=True)
+    def no_environment_key(self, monkeypatch):
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+
+    def saved_for(self, address, key="sk-kept"):
+        ai.store_key(key, address)
+
+    def test_an_address_changed_by_hand_to_another_server_gets_no_key(self, data_dir, http,
+                                                                     memory_keyring):
+        self.saved_for(ai.DEFAULT_BASE_URL)
+        store.save_app_settings({ai.SETTING_BASE_URL: "https://models.example/v1",
+                                 privacy.AI: True})
+        settings = ai.load_settings()
+        assert settings[ai.SETTING_KEY] == "" and not ai.is_configured(settings)
+        said = ai.not_ready(settings)
+        assert said == ("The saved Nano-GPT API key was entered for https://nano-gpt.com, not "
+                        "https://models.example, so it isn't sent there. To use it with "
+                        "https://models.example, open Settings → AI and save, answering "
+                        "Yes when asked; or paste the key for https://models.example there.")
+        with pytest.raises(ai.NotConfigured, match="entered for https://nano-gpt.com"):
+            ai.chat([{"role": "user", "content": "Glass Harbor"}], settings)
+        assert http["calls"] == [], "nothing sent"
+        assert ai.stored_key() == "sk-kept", "never deleted"
+
+    @pytest.mark.parametrize("address", ["https://nano-gpt.com:8443/api/v1",
+                                         "http://nano-gpt.com/api/v1",
+                                         "https://api.nano-gpt.com/api/v1",
+                                         "http://localhost:11434/v1"])
+    def test_another_port_scheme_or_host_is_another_server(self, data_dir, address):
+        self.saved_for(ai.DEFAULT_BASE_URL)
+        store.save_app_settings({ai.SETTING_BASE_URL: address, privacy.AI: True})
+        assert ai.load_settings()[ai.SETTING_KEY] == ""
+
+    def test_another_path_on_the_same_server_takes_it(self, data_dir, http):
+        self.saved_for(ai.DEFAULT_BASE_URL)
+        store.save_app_settings({ai.SETTING_BASE_URL: "https://NANO-GPT.com:443/api/v2",
+                                 privacy.AI: True})
+        http["reply"] = {"choices": [{"message": {"content": "OK"}}]}
+        ai.ping(ai.load_settings())
+        (request,) = http["calls"]
+        assert request.get_header("Authorization") == "Bearer sk-kept"
+
+    def test_a_key_saved_beside_an_address_goes_there(self, data_dir, http):
+        self.saved_for("http://192.168.1.5:8080/v1")
+        store.save_app_settings({ai.SETTING_BASE_URL: "http://192.168.1.5:8080/v1",
+                                 privacy.AI: True})
+        http["reply"] = {"choices": [{"message": {"content": "OK"}}]}
+        ai.ping(ai.load_settings())
+        assert http["calls"][0].get_header("Authorization") == "Bearer sk-kept"
+        store.save_app_settings({ai.SETTING_BASE_URL: ai.DEFAULT_BASE_URL,
+                                 privacy.AI: True})
+        assert "entered for http://192.168.1.5:8080, not https://nano-gpt.com" in \
+            ai.not_ready(ai.load_settings())
+
+    def test_a_key_saved_before_takes_its_addresss_server_with_no_question(
+            self, data_dir, memory_keyring):
+        memory_keyring.store[("da-media-browser", ai.KEYRING_NAME)] = "sk-old"
+        store.save_app_settings({ai.SETTING_BASE_URL: "http://192.168.1.5:8080/v1"})
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-old"
+        assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
+            "http://192.168.1.5:8080"
+        # And from then on, only there.
+        store.save_app_settings({ai.SETTING_BASE_URL: ai.DEFAULT_BASE_URL})
+        assert ai.load_settings()[ai.SETTING_KEY] == ""
+        assert memory_keyring.store[("da-media-browser", ai.KEYRING_NAME)] == "sk-old"
+
+    def test_with_no_settings_a_key_saved_before_is_the_default_endpoints(
+            self, data_dir, memory_keyring):
+        memory_keyring.store[("da-media-browser", ai.KEYRING_NAME)] = "sk-old"
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-old"
+        assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
+            "https://nano-gpt.com:443"
+
+    def test_a_key_whose_server_the_keyring_cant_say_is_sent_nowhere(self, data_dir,
+                                                                    monkeypatch):
+        self.saved_for(ai.DEFAULT_BASE_URL)
+        real = creds.get_secret
+
+        def origin_locked(name):
+            if name == ai.KEYRING_ORIGIN_NAME:
+                raise KeyringLocked("dismissed")
+            return real(name)
+
+        monkeypatch.setattr(creds, "get_secret", origin_locked)
+        settings = ai.load_settings()
+        assert settings[ai.SETTING_KEY] == ""
+        assert "keyring didn't say which server" in ai.not_ready(settings)
+
+    def test_the_environments_key_goes_where_the_environment_points_it(self, data_dir,
+                                                                       monkeypatch):
+        self.saved_for(ai.DEFAULT_BASE_URL)
+        store.save_app_settings({ai.SETTING_BASE_URL: "https://models.example/v1"})
+        monkeypatch.setenv(ai.API_KEY_ENV, "env-key")
+        assert ai.load_settings()[ai.SETTING_KEY] == "env-key"
+
+    def test_privacy_modes_tee_check_gets_no_key_for_another_server(self, data_dir,
+                                                                    monkeypatch):
+        self.saved_for(ai.DEFAULT_BASE_URL)
+        store.save_app_settings({ai.SETTING_BASE_URL: "https://relay.example/api/v1",
+                                 privacy.AI: True, ai.SETTING_PRIVACY_MODE: True,
+                                 ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"})
+        monkeypatch.setattr(private_ai, "problems", lambda *a, **k: [])
+        settings = ai.load_settings()
+        with pytest.raises(ai.Refused, match="entered for https://nano-gpt.com, not "
+                                             "https://relay.example"):
+            ai.check_attestation(settings)
+        assert ai.session_of(settings).api_key == ""
+
+    def test_an_origin_is_scheme_host_and_port(self):
+        assert ai.origin_of("https://Nano-GPT.com/api/v1") == "https://nano-gpt.com:443"
+        assert ai.origin_of("http://[::1]:8080/v1") == "http://[::1]:8080"
+        assert ai.origin_of("http://nas.local/v1") == "http://nas.local:80"
+        assert ai.origin_of("https://host:99999/") == ""
+        assert ai.origin_of("nano-gpt.com/api/v1") == ""
+        assert ai.shown_origin("https://nano-gpt.com:443") == "https://nano-gpt.com"
+        assert ai.shown_origin("http://nas.local:8080") == "http://nas.local:8080"
 
 
 class TestChat:

@@ -952,7 +952,8 @@ settings.json           app preferences
 ```
 
 The Nano-GPT and setlist.fm keys are in the system keyring, under
-`da-media-browser`. Run from source, Privacy Mode's client is installed
+`da-media-browser`; beside the Nano-GPT key, the server it was entered
+for, the only one it goes to (Settings asks before it goes to another). Run from source, Privacy Mode's client is installed
 into `private-mode/` there. The data folder is readable only by you (its
 permissions are set to `0700`): it names every video in every library.
 

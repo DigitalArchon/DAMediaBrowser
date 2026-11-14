@@ -17,6 +17,8 @@ here, not after forty frames have been sent.
 
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -108,7 +111,8 @@ ATTEST_TEE = (
 )
 KEY_NOTE = (
     "The key is kept in the system keyring (GNOME Keyring or KWallet), not in "
-    f"a file. Setting {ai.API_KEY_ENV} in the environment overrides it."
+    "a file, and goes only to the server it was entered for: changing the endpoint to "
+    f"another asks first. Setting {ai.API_KEY_ENV} in the environment overrides it."
 )
 
 
@@ -138,6 +142,13 @@ class SettingsDialog(QDialog):
         self._app_settings = store.load_app_settings()
         settings = ai.settings_from(self._app_settings)
         self._stored_key = ai.stored_key()
+        # The server the saved key was entered for (ai.key_origin), and those it was said
+        # here it may go to, or not (_ask_about_the_key): an address changed to another
+        # server never takes the saved key along unasked.
+        self._key_origin = (ai.key_origin(self._app_settings.get(ai.SETTING_BASE_URL))
+                            if self._stored_key else None)
+        self._key_may_go: set[str] = set()
+        self._key_may_not_go: set[str] = set()
         self._stored_setlist_key = setlistfm.stored_key()
 
         self.tabs = QTabWidget()
@@ -582,6 +593,7 @@ class SettingsDialog(QDialog):
         return ai.settings_from({
             **{choice: self.allowed(choice) for choice in privacy.CHOICES},
             ai.SETTING_KEY: self.key.text().strip(),
+            ai.KEY_ORIGIN: self._form_key_origin(),
             ai.SETTING_MODEL: self.model.currentText().strip() or ai.DEFAULT_MODEL,
             ai.SETTING_BASE_URL: self.base_url.text().strip() or ai.DEFAULT_BASE_URL,
             ai.SETTING_FRAMES: self.frames.value(),
@@ -591,6 +603,52 @@ class SettingsDialog(QDialog):
             ai.SETTING_STRICT: self.strict_check.isChecked(),
             ai.SETTING_NAME_UPSTREAMS: self.upstreams_check.isChecked(),
         }, form=True)
+
+    def _address(self) -> str:
+        return self.base_url.text().strip() or ai.DEFAULT_BASE_URL
+
+    def _keeps_the_saved_key(self) -> bool:
+        """Whether the key field holds the saved key as it was: not one typed here, which
+        is for the address as the form has it, and not the environment's, which goes
+        wherever the environment points it."""
+        key = self.key.text().strip()
+        return bool(key) and key == self._stored_key and not os.environ.get(
+            ai.API_KEY_ENV, "").strip()
+
+    def _form_key_origin(self):
+        """The server the key on the form may go to (ai.KEY_ORIGIN): the saved key's own,
+        or the form's address's where it was said here that it may go there. None for a
+        key typed here, which goes with the address it was typed beside."""
+        if not self._keeps_the_saved_key():
+            return None
+        address = ai.origin_of(self._address())
+        return address if address in self._key_may_go else self._key_origin
+
+    def _ask_about_the_key(self) -> None:
+        """Ask once, for an address on another server than the saved key was entered for,
+        whether the key may go there, No the default (before anything would send it:
+        Test, List Models, Check Attestation, Save). With No the key isn't sent there,
+        and says why where it would have been."""
+        if not self._keeps_the_saved_key():
+            return
+        there = ai.origin_of(self._address())
+        if not there or there == self._key_origin or there in self._key_may_go \
+                or there in self._key_may_not_go:
+            return
+        shown, entered = ai.shown_origin(there), ai.shown_origin(self._key_origin or "")
+        answer = QMessageBox.question(
+            self, "Use the saved key?",
+            f"Use the saved key with {shown}?\n\n"
+            f"The Nano-GPT API key kept in the keyring was entered for "
+            f"{entered or 'a server the keyring does not name'}. Yes sends it to {shown} "
+            f"from now on, with everything sent to the AI. No keeps it for "
+            f"{entered or 'that server'}: nothing is sent to {shown} with it, and you can "
+            f"paste the key for {shown} in its place.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            self._key_may_go.add(there)
+        else:
+            self._key_may_not_go.add(there)
 
     def accept(self) -> None:
         problem = ai.endpoint_problem(self.base_url.text().strip() or ai.DEFAULT_BASE_URL)
@@ -612,10 +670,22 @@ class SettingsDialog(QDialog):
             return
         if key != self._stored_key:
             try:
-                ai.store_key(key)
+                # Kept for the server it was entered beside, and sent only there.
+                ai.store_key(key, self._address())
             except Exception as e:  # noqa: BLE001 - keyring locked or unavailable
                 self.status.setText(f"Couldn't keep the key in the keyring: {e}")
                 return
+        else:
+            self._ask_about_the_key()
+            there = ai.origin_of(self._address())
+            if self._keeps_the_saved_key() and there in self._key_may_go \
+                    and there != self._key_origin:
+                try:
+                    ai.let_key_go_to(self._address())
+                except Exception as e:  # noqa: BLE001 - keyring locked or unavailable
+                    self.status.setText(f"Couldn't keep in the keyring where the key may "
+                                        f"go: {e}")
+                    return
         setlist_key = self.setlist_key.text().strip()
         if setlist_key != self._stored_setlist_key:
             try:
@@ -646,6 +716,7 @@ class SettingsDialog(QDialog):
     # --- asking Nano-GPT ---------------------------------------------------
 
     def fetch_models(self) -> None:
+        self._ask_about_the_key()
         settings = self.settings()
         if not ai.allowed(settings):
             self.status.setText(AI_OFF_HERE)
@@ -706,12 +777,13 @@ class SettingsDialog(QDialog):
             "goes with it, if there is one, so that the prices are yours.")
 
     def test(self) -> None:
+        self._ask_about_the_key()
         settings = self.settings()
         if not ai.allowed(settings):
             self.status.setText(AI_OFF_HERE)
             return
         if not settings.get(ai.SETTING_KEY):
-            self.status.setText("Paste an API key first.")
+            self.status.setText(settings.get(ai.KEY_HELD) or "Paste an API key first.")
             return
         if not ai.is_configured(settings):
             self.status.setText(ai.not_ready(settings))
@@ -746,6 +818,7 @@ class SettingsDialog(QDialog):
         self.status.setToolTip(tip)
 
     def check_attestation(self) -> None:
+        self._ask_about_the_key()
         settings = self.settings()
         model = settings[ai.SETTING_PRIVATE_MODEL]
         self.attest_button.setEnabled(False)

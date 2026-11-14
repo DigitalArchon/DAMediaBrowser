@@ -61,6 +61,12 @@ DEFAULT_FRAMES_PER_CHAPTER = 2
 API_KEY_ENV = "NANOGPT_API_KEY"
 # The key's name in the keyring.
 KEYRING_NAME = "nanogpt-api-key"
+# Beside it in the keyring: the origin (scheme, host, port) of the address the key was
+# entered for. A request carries the saved key only there (settings_from): an address
+# changed to another server, in Settings or by hand in settings.json, never takes the key
+# along unasked. In the keyring, not settings.json, so that an edit of the file alone
+# can't move it either.
+KEYRING_ORIGIN_NAME = "nanogpt-api-key-origin"
 
 SETTING_KEY = "ai_api_key"
 SETTING_MODEL = "ai_model"
@@ -83,6 +89,10 @@ SETTING_NAME_UPSTREAMS = "ai_tee_name_upstreams"
 # Not settings: what settings_from adds for the operation they are loaded for.
 SESSION = "_privacy_session"    # its private_ai.PrivacySession, in Privacy Mode
 FROM_FORM = "_from_form"        # Settings' own form, which is newer than the file
+# Given to settings_from with the saved key: the origin it was entered for (key_origin).
+# Given back: why the saved key is not sent to the address in force, when it isn't.
+KEY_ORIGIN = "_key_origin"
+KEY_HELD = "_key_held"
 
 # The private model Privacy Mode starts with: end-to-end encrypted, and it can
 # see the frames. Kimi K3.1 Pro, post-trained from Kimi K3, chosen by the author
@@ -159,6 +169,15 @@ def settings_from(app_settings: dict, form: bool = False) -> dict:
     if env_key:
         settings[SETTING_KEY] = env_key
     settings[SETTING_BASE_URL] = str(settings[SETTING_BASE_URL]).rstrip("/")
+    # The saved key goes only to the server it was entered for (KEYRING_ORIGIN_NAME): to
+    # another, it is not sent, and not_ready says why. The environment's key is the
+    # environment's to point.
+    settings[KEY_HELD] = ""
+    entered_for = app_settings.get(KEY_ORIGIN)
+    if not env_key and settings[SETTING_KEY] and entered_for is not None \
+            and entered_for != origin_of(settings[SETTING_BASE_URL]):
+        settings[KEY_HELD] = key_held(entered_for, settings[SETTING_BASE_URL])
+        settings[SETTING_KEY] = ""
     try:
         settings[SETTING_FRAMES] = max(1, min(4, int(settings[SETTING_FRAMES])))
     except (TypeError, ValueError):
@@ -256,11 +275,17 @@ def _names_upstreams(settings: dict) -> bool:
 
 def load_settings(app_settings: dict | None = None) -> dict:
     """The AI settings in force: settings.json's (or the app's settings
-    given, already loaded), with the key from the keyring. A keyring that
-    can't be reached, or stays locked, just means no key - the
-    environment's, if it has one, doesn't need it."""
+    given, already loaded), with the key from the keyring, for the server it
+    was entered for (key_origin). A keyring that can't be reached, or stays
+    locked, just means no key - the environment's, if it has one, doesn't
+    need it."""
     app_settings = store.load_app_settings() if app_settings is None else dict(app_settings)
-    app_settings[SETTING_KEY] = "" if os.environ.get(API_KEY_ENV, "").strip() else stored_key()
+    if os.environ.get(API_KEY_ENV, "").strip():
+        app_settings[SETTING_KEY] = ""
+    else:
+        app_settings[SETTING_KEY] = stored_key()
+        if app_settings[SETTING_KEY]:
+            app_settings[KEY_ORIGIN] = key_origin(app_settings.get(SETTING_BASE_URL))
     return settings_from(app_settings)
 
 
@@ -271,13 +296,79 @@ def stored_key() -> str:
         return ""
 
 
-def store_key(key: str) -> None:
-    """Keep the key in the keyring, or forget it when empty. Raises when
-    the keyring can't be written."""
+def store_key(key: str, address: str = DEFAULT_BASE_URL) -> None:
+    """Keep the key in the keyring, for the server of `address` - the one it
+    was entered for, and the only one it is sent to (KEYRING_ORIGIN_NAME) - or
+    forget it when empty. Raises when the keyring can't be written."""
     if key:
         creds.set_secret(KEYRING_NAME, key)
+        creds.set_secret(KEYRING_ORIGIN_NAME, origin_of(address or DEFAULT_BASE_URL))
     else:
         creds.delete_secret(KEYRING_NAME)
+        creds.delete_secret(KEYRING_ORIGIN_NAME)
+
+
+def let_key_go_to(address: str) -> None:
+    """Send the saved key to the server of `address` from now on, in place of the one
+    it was entered for: the user said yes to it (Settings). The key itself is left as
+    it is. Raises when the keyring can't be written."""
+    creds.set_secret(KEYRING_ORIGIN_NAME, origin_of(address))
+
+
+def origin_of(address) -> str:
+    """The server an address names, as a key is held to it: "scheme://host:port", in
+    lower case, the scheme's own port written out; "" for one that can't be read."""
+    try:
+        parsed = urlparse(str(address or "").strip())
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower()
+        port = parsed.port or {"https": 443, "http": 80}.get(scheme)
+    except ValueError:
+        return ""
+    if not scheme or not host or port is None:
+        return ""
+    return f"{scheme}://{f'[{host}]' if ':' in host else host}:{port}"
+
+
+def shown_origin(origin: str) -> str:
+    """An origin (origin_of) as it is said: its port only when it isn't the scheme's own."""
+    for scheme, port in (("https", 443), ("http", 80)):
+        if origin.startswith(f"{scheme}://") and origin.endswith(f":{port}"):
+            return origin[:-len(f":{port}")]
+    return origin
+
+
+def key_origin(address=None) -> str:
+    """The server the saved key was entered for (KEYRING_ORIGIN_NAME). A key saved by a
+    version that kept none takes the server of the address saved beside it (`address`,
+    settings.json's, else the default), once and with no question, and is kept so from
+    then on. "" when the keyring can't say (locked, or gone since the key was read): a
+    key whose server isn't known is sent nowhere."""
+    try:
+        origin = creds.get_secret(KEYRING_ORIGIN_NAME)
+    except Exception:  # noqa: BLE001 - keyring locked or unavailable
+        return ""
+    if origin:
+        return origin
+    origin = origin_of(address or DEFAULT_BASE_URL)
+    try:
+        creds.set_secret(KEYRING_ORIGIN_NAME, origin)
+    except Exception:  # noqa: BLE001 - kept next time; the address stands for now
+        pass
+    return origin
+
+
+def key_held(entered_for: str, address: str) -> str:
+    """Why the saved key is not sent to `address`, and how to put it right: it was
+    entered for another server (settings_from)."""
+    there = shown_origin(origin_of(address)) or netguard.shown(address)
+    if not entered_for:
+        return ("The keyring didn't say which server the saved Nano-GPT API key was "
+                f"entered for, so it isn't sent to {there}. Unlock the keyring, or paste "
+                f"the key again in Settings → AI.")
+    return (f"The saved Nano-GPT API key was entered for {shown_origin(entered_for)}, not "
+            f"{there}, so it isn't sent there. To use it with {there}, open Settings → "
+            f"AI and save, answering Yes when asked; or paste the key for {there} there.")
 
 
 def allowed(settings: dict) -> bool:
@@ -316,7 +407,7 @@ def not_ready(settings: dict) -> str:
     if not allowed(settings):
         return privacy.OFF[privacy.AI]
     if not settings.get(SETTING_KEY):
-        return "Set a Nano-GPT API key in Settings → AI."
+        return settings.get(KEY_HELD) or "Set a Nano-GPT API key in Settings → AI."
     unfit = netguard.key_problem(settings.get(SETTING_KEY), "Nano-GPT")
     if unfit:
         return unfit
@@ -943,6 +1034,10 @@ def check_attestation(settings: dict) -> private_ai.PrivacySession:
                                 settings.get(SETTING_PRIVATE_MODEL), wait=True)
     if found:
         raise Refused(" ".join(found))
+    if settings.get(KEY_HELD) and private_ai.kind_of(
+            settings.get(SETTING_PRIVATE_MODEL)) == private_ai.TEE:
+        # A TEE/ model's report is nano-gpt's to give, with the key: not to this server.
+        raise Refused(settings[KEY_HELD])
     session = _session(settings)
     try:
         session.ensure()

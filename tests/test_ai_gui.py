@@ -7,7 +7,17 @@ import hashlib
 
 import pytest
 
-from mediabrowser.core import ai, ai_chapters, config, creds, library, methods, outbound, store
+from mediabrowser.core import (
+    ai,
+    ai_chapters,
+    config,
+    creds,
+    library,
+    methods,
+    outbound,
+    privacy,
+    store,
+)
 from tests.test_chapters_dialog import (
     _finished,
     detect,
@@ -251,7 +261,9 @@ class TestSettings:
         assert dialog.key.text() == "", "a key in the file isn't shown, or used"
         dialog.key.setText("sk-abc")
         dialog.accept()
-        assert memory_keyring.store == {("da-media-browser", ai.KEYRING_NAME): "sk-abc"}
+        assert memory_keyring.store == {
+            ("da-media-browser", ai.KEYRING_NAME): "sk-abc",
+            ("da-media-browser", ai.KEYRING_ORIGIN_NAME): "https://nano-gpt.com:443"}
         assert "sk-" not in config.APP_SETTINGS_FILE.read_text(encoding="utf-8")
 
         dialog = SettingsDialog(window)
@@ -285,6 +297,104 @@ class TestSettings:
         dialog.base_url.setText("http://192.168.1.5:8080/v1")
         dialog.accept()
         assert ai.load_settings()[ai.SETTING_BASE_URL] == "http://192.168.1.5:8080/v1"
+
+    @pytest.fixture
+    def asked(self, monkeypatch):
+        """QMessageBox.question, answered `answer` ("No" unless set), every question kept."""
+        from PySide6.QtWidgets import QMessageBox
+
+        state = {"answer": QMessageBox.No, "questions": []}
+
+        def question(parent, title, text, buttons, default):
+            state["questions"].append({"title": title, "text": text, "buttons": buttons,
+                                       "default": default})
+            return state["answer"]
+
+        monkeypatch.setattr(QMessageBox, "question", question)
+        monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
+        return state
+
+    def test_a_saved_key_goes_to_another_server_only_when_asked_and_told_yes(
+            self, window, memory_keyring, asked):
+        """Asked once where the address is changed, No the default; with No the key stays
+        the server's it was entered for, and says why where it would have gone."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
+
+        ai.store_key("sk-abc", ai.DEFAULT_BASE_URL)
+        dialog = SettingsDialog(window)
+        dialog.base_url.setText("https://models.example/v1")
+        dialog.privacy_checks[privacy.AI].setChecked(True)
+        dialog.test()
+        (question,) = asked["questions"]
+        assert question["title"] == "Use the saved key?"
+        assert question["text"].startswith("Use the saved key with https://models.example?")
+        assert "entered for https://nano-gpt.com" in question["text"]
+        assert question["default"] == QMessageBox.No
+        assert dialog.status.text().startswith("The saved Nano-GPT API key was entered for "
+                                               "https://nano-gpt.com, not "
+                                               "https://models.example")
+        dialog.accept()
+        assert len(asked["questions"]) == 1, "asked once"
+        settings = ai.load_settings()
+        assert settings[ai.SETTING_BASE_URL] == "https://models.example/v1", "saved"
+        assert settings[ai.SETTING_KEY] == "" and "isn't sent there" in ai.not_ready(settings)
+        assert memory_keyring.store[("da-media-browser", ai.KEYRING_NAME)] == "sk-abc"
+        assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
+            "https://nano-gpt.com:443"
+
+        asked["answer"] = QMessageBox.Yes
+        dialog = SettingsDialog(window)
+        dialog.accept()
+        assert len(asked["questions"]) == 2
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-abc"
+        assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
+            "https://models.example:443"
+
+    def test_a_key_typed_beside_a_new_address_is_that_servers_with_no_question(
+            self, window, memory_keyring, asked):
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
+
+        ai.store_key("sk-abc", ai.DEFAULT_BASE_URL)
+        dialog = SettingsDialog(window)
+        dialog.base_url.setText("http://192.168.1.5:8080/v1")
+        dialog.key.setText("sk-local")
+        dialog.accept()
+        assert asked["questions"] == []
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-local"
+        assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
+            "http://192.168.1.5:8080"
+
+    def test_nothing_is_asked_for_the_server_the_key_was_entered_for(
+            self, window, memory_keyring, asked):
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
+
+        ai.store_key("sk-abc", ai.DEFAULT_BASE_URL)
+        dialog = SettingsDialog(window)
+        dialog.base_url.setText("https://nano-gpt.com/api/v1/")
+        dialog.model.setCurrentText("anthropic/claude-opus-5.5")
+        dialog.accept()
+        assert asked["questions"] == []
+        assert ai.load_settings()[ai.SETTING_KEY] == "sk-abc"
+
+    def test_list_models_said_no_to_goes_without_the_key(self, window, memory_keyring,
+                                                         asked, monkeypatch):
+        from mediabrowser.gui.dialogs import settings_dialog
+        from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
+
+        ai.store_key("sk-abc", ai.DEFAULT_BASE_URL)
+        jobs, keys = [], []
+        monkeypatch.setattr(settings_dialog, "run_job",
+                            lambda parent, work, **kwargs: jobs.append(work) or None)
+        monkeypatch.setattr(ai, "list_models", lambda settings: keys.append(
+            settings[ai.SETTING_KEY]) or [])
+        dialog = SettingsDialog(window)
+        dialog.privacy_checks[privacy.AI].setChecked(True)
+        dialog.base_url.setText("https://models.example/v1")
+        dialog.fetch_models()
+        jobs[-1]()
+        assert len(asked["questions"]) == 1 and keys == [""], "listed with no key"
 
     def test_a_keyring_that_refuses_keeps_the_dialog_open(self, window, monkeypatch):
         from keyring.errors import KeyringLocked

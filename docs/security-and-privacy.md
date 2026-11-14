@@ -34,8 +34,8 @@ What does not:
   that goes by itself is a cover: once a video has been matched to a MusicBrainz release,
   its sleeve is fetched in the background if cover art is allowed.
 - **No telemetry, no crash reports, no update check.** The app does not call home.
-- **An API key goes only to its own service.** Nano-GPT's to the AI endpoint, setlist.fm's
-  to setlist.fm, and never to anyone else.
+- **An API key goes only to its own service.** Nano-GPT's to the AI endpoint it was
+  entered for, setlist.fm's to setlist.fm, and never to anyone else.
 - **Your videos stay where they are.** The app only reads media files — ffprobe, ffmpeg,
   libbluray and mpv all only read — and writes nothing into a library folder.
 - **What Was Sent is never written to disk.** Help → What Was Sent lists every request as
@@ -134,6 +134,14 @@ not. The status bar's right-hand corner says where things can go now (see
   the requests, its model list, the TEE checks and Private Mode's relay — and never to
   Intel, NVIDIA, Tinfoil, Sigstore or RedPill. setlist.fm's goes to setlist.fm alone.
   MusicBrainz and the Cover Art Archive are sent no key.
+- **A saved key doesn't follow a changed address.** The keyring keeps, beside the
+  Nano-GPT key, the server (scheme, host and port) whose address it was entered with,
+  and the key goes only there. Change the AI endpoint to another server and Settings asks
+  once, *Use the saved key with …?*, No the default; with No, or with the address changed
+  by hand in `settings.json`, the key isn't sent, and the app says why and how to put it
+  right. A key saved by an older version takes the server of the address saved beside it.
+  The key itself is never deleted for it. `NANOGPT_API_KEY` in the environment goes
+  wherever the address points.
 
 ## AI models
 
@@ -303,7 +311,7 @@ NEAR AI, 0G, Tinfoil's router — beside its mark: *✓ TEE, verified · run by 
 | Your libraries' records: chapters, names, what was matched | `~/.local/share/da-media-browser/libraries/` (or under `$XDG_DATA_HOME`), with a backup of a record before it is merged, moved, restored into or forgotten |
 | Covers | `~/.local/share/da-media-browser/artwork/` |
 | Settings | `~/.local/share/da-media-browser/settings.json` |
-| The Nano-GPT and setlist.fm keys | your desktop's keyring, under `da-media-browser` |
+| The Nano-GPT and setlist.fm keys, and the server the Nano-GPT key was entered for | your desktop's keyring, under `da-media-browser` |
 | Tinfoil's client, when the app runs from source | `~/.local/share/da-media-browser/private-mode/` |
 | Sigstore's trust root, once a `private/` model has been attested | Tinfoil's client keeps it in `sigstore-python`'s own folders, `~/.local/share/sigstore-python` and `~/.cache/sigstore-python` |
 | Screenshots you take (`S`) | `Pictures/DA Media Browser` |
