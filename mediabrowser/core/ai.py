@@ -588,7 +588,7 @@ def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TI
     req = _prepared(url, api_key, body)
     try:
         with netguard.urlopen(req, timeout, follow_redirects=False) as resp:
-            raw = resp.read()
+            raw = netguard.read_body(resp)
     except _REQUEST_ERRORS as exc:
         raise _failed(exc, url) from exc
     try:
@@ -688,7 +688,7 @@ def _http_error_message(exc: urllib.error.HTTPError) -> str:
     service's words go on one line, without what a reader cannot see."""
     detail = ""
     try:
-        body = safejson.loads(exc.read().decode("utf-8"))
+        body = safejson.loads(netguard.read_error(exc).decode("utf-8"))
         error = body.get("error") if isinstance(body, dict) else None
         if isinstance(error, dict):
             detail = error.get("message") or ""

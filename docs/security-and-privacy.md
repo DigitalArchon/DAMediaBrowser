@@ -344,7 +344,11 @@ other user can enter, where there is one.
 - **What comes from outside is read with limits.** JSON — a server's answer, a catalog
   you import, a settings file edited by hand — nested deeper than 200 levels is refused
   as JSON that couldn't be read, never a crash; a settings file in another shape reads as
-  the defaults.
+  the defaults. An answer is read only so far: 32 MB at most (a cover 20 MB), an error's
+  64 KB, a line of a stream 32 MB, and a redirect's body not at all. The app asks for
+  answers compressed with gzip or deflate alone, and every limit counts the bytes
+  unpacked, so a small download can't unpack to gigabytes; one compressed any other way,
+  or damaged, is refused.
 - **What nano-gpt's TEE gateway or Private Mode's relay writes** in an error is shown on
   one short line, without line breaks or characters you could not see, and never as the
   model's words: nothing vouches for it.

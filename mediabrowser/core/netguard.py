@@ -70,6 +70,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from urllib.parse import urljoin, urlparse
 
 from . import safejson
@@ -88,8 +89,18 @@ _UP_TO_AT = re.compile(r"^((?:[^:/?#]+:)?//)?[^?#]*@")
 # Headers that carry a secret, and so never follow a redirect to another server.
 SECRET_HEADERS = ("Authorization", "X-api-key", "Proxy-Authorization")
 # The most of one answer that is read: Intel's revocation lists and an
-# enclave's attestation are a few hundred KB, the AI's reply far less.
+# enclave's attestation are a few hundred KB, the AI's reply far less. Counted
+# as the bytes are once decoded (Accept-Encoding, below).
 MAX_BODY_BYTES = 32 * 1024 * 1024
+# The most of an error's answer that is read: its words are a few hundred bytes.
+MAX_ERROR_BYTES = 64 * 1024
+# What a request says it takes compressed: gzip and deflate, whose decoders can be
+# stopped at any size (zlib's max_length), so that every cap here counts decoded
+# bytes - a few KB of gzip can unpack to gigabytes. Never br or zstd, whose output
+# for one piece of input has no bound a reader can set. Without it urllib asks for
+# none, and a server that compresses anyway is refused (Undecodable).
+ACCEPT_ENCODING = "gzip, deflate"
+_READ_PIECE = 64 * 1024
 # The longest line a stream may send (lines_of): an SSE event of the AI's is a few KB.
 MAX_LINE_BYTES = 32 * 1024 * 1024
 _NEWLINE = re.compile(rb"\r\n|\r|\n")
@@ -156,6 +167,16 @@ class ProxyRefused(urllib.error.URLError):
 # Every way a request is refused before it is sent, for a caller to tell
 # "nothing was sent" from "the network failed".
 REFUSALS = (InsecureURL, RedirectRefused, ProxyRefused)
+
+
+class TooLarge(urllib.error.URLError):
+    """An answer far larger than any it should be, decoded: not read on. A URLError,
+    so that every caller already says it; not a refusal - the request was sent."""
+
+
+class Undecodable(urllib.error.URLError):
+    """An answer that couldn't be decoded: compressed in a way it wasn't asked for,
+    or its gzip or deflate damaged or cut short. A URLError, like TooLarge."""
 
 
 def _unescaped(host):
@@ -363,6 +384,10 @@ class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
         if found:
             raise RedirectRefused(found)
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            # Closed unread: urllib reads a redirect's whole body before it goes on,
+            # with no end to how much (and nothing in it is wanted).
+            fp.close()
         if new is not None and _origin(newurl) != _origin(req.full_url):
             for name in SECRET_HEADERS:
                 new.remove_header(name)
@@ -433,6 +458,129 @@ def _transport(request, timeout):
     return _opener().open(request, timeout=timeout)
 
 
+def _coding_of(headers) -> str | None:
+    """The one compression an answer's Content-Encoding names - "gzip" or
+    "deflate" - or None for none. Undecodable for any other, or more than one:
+    nothing else was asked for (ACCEPT_ENCODING)."""
+    value = headers.get("Content-Encoding") if hasattr(headers, "get") else None
+    codings = [part.strip().lower() for part in str(value or "").split(",")]
+    codings = [part for part in codings if part and part != "identity"]
+    if not codings:
+        return None
+    if len(codings) == 1 and codings[0] in ("gzip", "x-gzip", "deflate"):
+        return "deflate" if codings[0] == "deflate" else "gzip"
+    raise Undecodable(f"the server answered compressed as {', '.join(codings)[:40]!r}, "
+                      f"which it wasn't asked for; it was not read")
+
+
+class _Decoded:
+    """An answer that came compressed (gzip or deflate), read as the bytes it
+    stands for: read(n) gives at most `n` of them, decoded a piece at a time with
+    zlib's max_length, so that no more is ever unpacked than was asked for -
+    every cap on an answer counts decoded bytes. Everything else - the status,
+    the headers, geturl, close - is the answer's own. As urllib3 and httpx decode
+    what they asked for (gzip of several members, deflate with or without its
+    zlib wrapper)."""
+
+    def __init__(self, handle, coding):
+        self._handle = handle
+        self._coding = coding
+        self._inflater = self._new()
+        self._input = b""           # compressed bytes not yet decoded
+        self._before = b""          # what was fed before anything came out (deflate)
+        self._out = False           # whether anything has come out yet
+        self._done = False
+
+    def _new(self, raw=False):
+        if self._coding == "gzip":
+            return zlib.decompressobj(16 + zlib.MAX_WBITS)
+        return zlib.decompressobj(-zlib.MAX_WBITS if raw else zlib.MAX_WBITS)
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def close(self):
+        self._handle.close()
+
+    def read(self, amt=None):
+        if amt is None or amt < 0:
+            body = self.read(MAX_BODY_BYTES + 1)
+            if len(body) > MAX_BODY_BYTES:
+                raise TooLarge("the answer was far larger than any it should be, "
+                               "once unpacked; it was not read")
+            return body
+        pieces, got = [], 0
+        while got < amt and not self._done:
+            if not self._input:
+                raw = self._handle.read(_READ_PIECE)
+                if not raw:
+                    self._end()
+                    break
+                self._input = raw
+                if not self._out and len(self._before) < _READ_PIECE:
+                    self._before += raw
+            try:
+                piece = self._inflater.decompress(self._input, amt - got)
+            except zlib.error as exc:
+                if self._coding == "deflate" and not self._out and self._before:
+                    # deflate without its zlib wrapper, as some servers send it
+                    self._coding = "raw"
+                    self._inflater = zlib.decompressobj(-zlib.MAX_WBITS)
+                    self._input, self._before = self._before, b""
+                    continue
+                raise Undecodable(f"the answer's compression was damaged ({exc}); it "
+                                  f"was not read") from exc
+            self._input = self._inflater.unconsumed_tail
+            if piece:
+                self._out = True
+                pieces.append(piece)
+                got += len(piece)
+            if self._inflater.eof:
+                rest = self._inflater.unused_data
+                if self._coding == "gzip" and rest[:2] == b"\x1f\x8b":
+                    self._inflater, self._input = self._new(), rest     # another member
+                else:
+                    self._input, self._done = b"", True
+        return b"".join(pieces)
+
+    def _end(self):
+        """The compressed answer has ended: it must have ended whole."""
+        self._done = True
+        if not self._inflater.eof:
+            raise Undecodable("the answer's compression was cut short; it was not read")
+
+
+def _decoded(handle):
+    """`handle`, read decoded when its answer came compressed (_Decoded)."""
+    coding = _coding_of(getattr(handle, "headers", None))
+    return _Decoded(handle, coding) if coding else handle
+
+
+def read_body(handle, limit=MAX_BODY_BYTES) -> bytes:
+    """An answer's body, whole: at most `limit` decoded bytes, TooLarge past them,
+    and nothing read beyond the first byte too many."""
+    body = handle.read(limit + 1)
+    if len(body) > limit:
+        raise TooLarge(f"the answer was larger than {limit // (1024 * 1024)} MB, far "
+                       f"larger than any it should be; it was not read")
+    return body
+
+
+def read_error(exc) -> bytes:
+    """What an error's answer says: at most MAX_ERROR_BYTES of it, read only that
+    far; b"" when it can't be read."""
+    try:
+        return exc.read(MAX_ERROR_BYTES) or b""
+    except Exception:  # noqa: BLE001 - its status is what matters
+        return b""
+
+
 def urlopen(request, timeout, follow_redirects=True):
     """urllib.request.urlopen, held to this module's rules. Raises
     InsecureURL (a URLError) before anything is sent to an address that may
@@ -453,7 +601,22 @@ def urlopen(request, timeout, follow_redirects=True):
         found = key_problem(secret, urlparse(request.full_url).hostname)
         if found:
             raise InsecureURL(found)
-    return _transport(request, timeout)
+    if not request.has_header("Accept-encoding"):
+        request.add_header("Accept-Encoding", ACCEPT_ENCODING)
+    try:
+        handle = _transport(request, timeout)
+    except urllib.error.HTTPError as exc:
+        # An error's answer is read decoded too (read_error).
+        coding = _coding_of(exc.headers) if exc.fp is not None else None
+        if coding is None:
+            raise
+        raise urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers,
+                                     _Decoded(exc.fp, coding)) from None
+    try:
+        return _decoded(handle)
+    except Undecodable:
+        handle.close()
+        raise
 
 
 def reason(exc, url=None) -> str:
@@ -603,13 +766,6 @@ def lines_of(chunks):
         yield b"".join(line)
 
 
-def _read(handle) -> bytes:
-    body = handle.read(MAX_BODY_BYTES + 1)
-    if len(body) > MAX_BODY_BYTES:
-        raise RequestError("the answer was far larger than any it should be")
-    return body
-
-
 class Session:
     """GET and POST as requests has them, over this module's urlopen: an
     answer with an error status comes back as a Response, as requests gives
@@ -657,14 +813,11 @@ class Session:
             if stream:
                 return StreamedResponse(handle, handle.geturl())
             with handle:
-                return Response(handle.status, handle.headers.items(), _read(handle),
+                return Response(handle.status, handle.headers.items(), read_body(handle),
                                 handle.geturl())
         except urllib.error.HTTPError as exc:
-            try:
-                body = _read(exc)
-            except Exception:  # noqa: BLE001 - the status is what matters
-                body = b""
-            return Response(exc.code, exc.headers.items() if exc.headers else (), body, url)
+            return Response(exc.code, exc.headers.items() if exc.headers else (),
+                            read_error(exc), url)
         except Redirected as exc:
             raise RequestError(exc.said()) from exc
         except (urllib.error.URLError, OSError, ValueError,
@@ -740,4 +893,8 @@ def requests_session(follow=False):
                 request.headers.pop("Proxy-Authorization", None)
             return super().send(request, **kwargs)
 
-    return GuardedSession()
+    made = GuardedSession()
+    # requests asks for br and zstd too where their libraries are installed, whose
+    # output has no bound a reader can set (ACCEPT_ENCODING).
+    made.headers["Accept-Encoding"] = ACCEPT_ENCODING
+    return made

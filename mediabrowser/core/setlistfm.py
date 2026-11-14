@@ -242,7 +242,7 @@ def _get(path: str, params: dict, key: str | None = None,
             time.sleep(wait)
         try:
             with netguard.urlopen(request, TIMEOUT_SECONDS) as response:
-                body = response.read()
+                body = netguard.read_body(response)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 outbound.record("setlist.fm", url, what, outbound.CLEAR, HOW,
