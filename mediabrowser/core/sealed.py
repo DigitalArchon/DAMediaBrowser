@@ -796,6 +796,7 @@ class PrivateModeClient:
         """
         import httpx
         from ehbp import EHBPError, KeyConfigMismatchError
+        from ehbp.protocol import RESPONSE_NONCE_HEADER
 
         if not is_private_mode(model):
             raise PrivacyError(f"{model} is not a Private Mode model; nothing was sent")
@@ -848,7 +849,12 @@ class PrivateModeClient:
                 response.read()
                 text = _error_text(response)
                 response.close()
+                # Resent only as the relay's own refusal before dispatch: one carrying
+                # the enclave's nonce came back the encrypted way, so the request may
+                # have run, and been paid for (the proxy's
+                # isMissingEncryptedBodyHeaderResponse won't resend it either).
                 if attempt == 0 and response.status_code == 400 \
+                        and RESPONSE_NONCE_HEADER not in response.headers \
                         and "missing_encrypted_body_header" in text:
                     self.enclave.invalidate(verified)
                     continue

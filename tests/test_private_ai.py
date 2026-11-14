@@ -1111,6 +1111,39 @@ class TestTheRealSealedClient:
             sealed.PrivateModeClient(plain, "k", enclave=sealed.Enclave(
                 sealed.relay_url(plain), verifier=lambda r, s: pytest.fail("attested")))
 
+    def refusing(self, nonce):
+        import httpx
+        posts = []
+
+        def handler(request):
+            posts.append(request)
+            if len(posts) == 1:
+                headers = {"Ehbp-Response-Nonce": "ab" * 32} if nonce else {}
+                return httpx.Response(400, headers=headers,
+                                      json={"error": "missing_encrypted_body_header"})
+            return httpx.Response(200, headers={"x-nanogpt-private-mode": "tinfoil"},
+                                  content=self.stream_body())
+
+        return handler, posts
+
+    def test_an_unsealed_refusal_is_sent_once_more_after_attesting_again(self, endpoint):
+        handler, posts = self.refusing(nonce=False)
+        client, calls = self.make(handler)
+        with client.request(self.MODEL, {"messages": []}) as response:
+            response.read()
+        assert len(posts) == 2 and calls["verify"] == 2
+
+    def test_a_refusal_the_enclave_sealed_is_never_sent_again(self, endpoint):
+        """With the enclave's nonce on it the request went the encrypted way and may
+        have run (and been paid for): the proxy never resends it
+        (isMissingEncryptedBodyHeaderResponse), and neither do we."""
+        handler, posts = self.refusing(nonce=True)
+        client, calls = self.make(handler)
+        with pytest.raises(PrivacyError, match="HTTP 400"):
+            with client.request(self.MODEL, {"messages": []}) as response:
+                response.read()
+        assert len(posts) == 1 and calls["verify"] == 1
+
     def test_a_failed_attestation_sends_nothing(self, endpoint):
         def refuse():
             raise RuntimeError("bad measurement")
