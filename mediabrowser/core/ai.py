@@ -47,7 +47,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
-from . import creds, netguard, outbound, privacy, private_ai, store
+from . import creds, netguard, outbound, privacy, private_ai, safejson, store
 
 DEFAULT_BASE_URL = "https://nano-gpt.com/api/v1"
 NANO_GPT_HOST = "nano-gpt.com"
@@ -592,7 +592,7 @@ def _request(url: str, api_key: str | None, body: dict | None = None, timeout=TI
     except _REQUEST_ERRORS as exc:
         raise _failed(exc, url) from exc
     try:
-        return json.loads(raw.decode("utf-8"))
+        return safejson.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise AIError(f"the reply wasn't JSON: {exc}") from exc
 
@@ -688,7 +688,7 @@ def _http_error_message(exc: urllib.error.HTTPError) -> str:
     service's words go on one line, without what a reader cannot see."""
     detail = ""
     try:
-        body = json.loads(exc.read().decode("utf-8"))
+        body = safejson.loads(exc.read().decode("utf-8"))
         error = body.get("error") if isinstance(body, dict) else None
         if isinstance(error, dict):
             detail = error.get("message") or ""
@@ -996,7 +996,7 @@ def _consume(lines) -> dict:
             done = True
             break
         try:
-            chunk = json.loads(line)
+            chunk = safejson.loads(line)
         except json.JSONDecodeError:
             continue
         if not isinstance(chunk, dict):
@@ -1101,13 +1101,13 @@ def parse_json_reply(text: str) -> dict:
     ``` fence or said a few words first."""
     text = text.strip()
     try:
-        value = json.loads(text)
+        value = safejson.loads(text)
     except json.JSONDecodeError:
         start, end = text.find("{"), text.rfind("}")
         if start < 0 or end <= start:
             raise AIError("the model's reply wasn't JSON") from None
         try:
-            value = json.loads(text[start:end + 1])
+            value = safejson.loads(text[start:end + 1])
         except json.JSONDecodeError as exc:
             raise AIError(f"the model's reply wasn't valid JSON: {exc}") from None
     if not isinstance(value, dict):

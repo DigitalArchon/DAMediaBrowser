@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from . import config, netguard, outbound, privacy
+from . import config, netguard, outbound, privacy, safejson
 
 _last_request_time = 0.0
 # Held from one request's turn to the next's: an Identify run and a search in
@@ -99,7 +99,7 @@ def _get_in_turn(path: str, params: dict, fmt: str) -> dict:
     try:
         if fmt == "xml":
             return _xml_to_dict(ET.fromstring(body))
-        return json.loads(body.decode("utf-8"))
+        return safejson.loads(body.decode("utf-8"))
     except (ET.ParseError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise MusicBrainzError(str(exc) or repr(exc)) from exc
 

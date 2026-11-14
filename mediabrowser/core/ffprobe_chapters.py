@@ -4,6 +4,8 @@
 import json
 import subprocess
 
+from . import safejson
+
 
 class ProbeError(Exception):
     pass
@@ -67,7 +69,7 @@ def read_regular_file_info(path, cancel=None) -> dict:
         raise ProbeError(stderr.strip() or "ffprobe failed")
 
     try:
-        data = json.loads(stdout)
+        data = safejson.loads(stdout)
     except json.JSONDecodeError as exc:
         raise ProbeError(f"could not parse ffprobe output: {exc}") from exc
 

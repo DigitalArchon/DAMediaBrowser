@@ -27,7 +27,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import chapter_export, frames, utils
+from . import chapter_export, frames, safejson, utils
 
 FLAC = "flac"
 OPUS = "opus"
@@ -186,7 +186,7 @@ def audio_streams(video) -> list[dict]:
              "-show_entries", "stream=channels,sample_fmt", "-of", "json", *args],
             capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS,
         )
-        streams = json.loads(proc.stdout or "{}").get("streams") or []
+        streams = safejson.loads(proc.stdout or "{}").get("streams") or []
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return []
     return [{"channels": int(s.get("channels") or 0), "sample_fmt": s.get("sample_fmt") or ""}

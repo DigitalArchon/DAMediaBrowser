@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
-from . import config, creds, netguard, outbound, privacy, utils
+from . import config, creds, netguard, outbound, privacy, safejson, utils
 
 BASE_URL = "https://api.setlist.fm/rest/1.0"
 SITE_URL = "https://www.setlist.fm"
@@ -261,7 +261,7 @@ def _get(path: str, params: dict, key: str | None = None,
             _last_request_time = time.monotonic()
     outbound.record("setlist.fm", url, what, outbound.CLEAR, HOW)
     try:
-        return json.loads(body.decode("utf-8"))
+        return safejson.loads(body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise SetlistError(f"the reply wasn't JSON: {exc}") from exc
 

@@ -341,6 +341,10 @@ other user can enter, where there is one.
   goes nowhere, as above.
 - **Links** say on hover what they open, and open in your web browser only when you
   click them; one to plain http on the internet is not opened at all.
+- **What comes from outside is read with limits.** JSON — a server's answer, a catalog
+  you import, a settings file edited by hand — nested deeper than 200 levels is refused
+  as JSON that couldn't be read, never a crash; a settings file in another shape reads as
+  the defaults.
 - **What nano-gpt's TEE gateway or Private Mode's relay writes** in an error is shown on
   one short line, without line breaks or characters you could not see, and never as the
   model's words: nothing vouches for it.

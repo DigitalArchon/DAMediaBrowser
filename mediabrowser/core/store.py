@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import config, naming, netguard, protection
+from . import config, naming, netguard, protection, safejson
 
 # The AI endpoint's address (core.ai.SETTING_BASE_URL), kept free of a password.
 AI_ENDPOINT = "ai_base_url"
@@ -31,8 +31,11 @@ def load_app_settings() -> dict:
         return dict(DEFAULT_APP_SETTINGS)
     try:
         with open(config.APP_SETTINGS_FILE, encoding="utf-8") as f:
-            settings = json.load(f)
-    except (json.JSONDecodeError, OSError):
+            settings = safejson.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return dict(DEFAULT_APP_SETTINGS)
+    if not isinstance(settings, dict):
+        # A file edited into another shape (a list, a string) is as good as none.
         return dict(DEFAULT_APP_SETTINGS)
     merged = dict(DEFAULT_APP_SETTINGS)
     merged.update(settings)
@@ -100,8 +103,8 @@ def _file_for_root(root) -> Path:
 def _read_json(path: Path):
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
+            return safejson.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
 
 

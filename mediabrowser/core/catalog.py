@@ -26,7 +26,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import library, network, playlists, protection, store
+from . import library, network, playlists, protection, safejson, store
 
 # How many of a catalog's videos are looked for, and what share of them
 # must be found, for a folder to be its folder (see library.located).
@@ -145,7 +145,7 @@ def read(path) -> dict:
     straight out of another device's data folder."""
     try:
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+            data = safejson.load(f)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise CatalogError(f"That file couldn't be read as a catalog ({exc}).") from exc
     if (not isinstance(data, dict) or not isinstance(data.get("videos"), dict)

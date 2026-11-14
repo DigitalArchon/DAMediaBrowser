@@ -72,6 +72,8 @@ import urllib.parse
 import urllib.request
 from urllib.parse import urljoin, urlparse
 
+from . import safejson
+
 LOCAL_NAMES = ("localhost",)
 LOCAL_SUFFIXES = (".localhost", ".local")
 ONION_SUFFIX = ".onion"
@@ -524,7 +526,7 @@ class Response:
 
     def json(self):
         """The body as JSON; ValueError when it isn't."""
-        return _json.loads(self.content.decode("utf-8", errors="replace"))
+        return safejson.loads(self.content.decode("utf-8", errors="replace"))
 
     def close(self) -> None:
         pass

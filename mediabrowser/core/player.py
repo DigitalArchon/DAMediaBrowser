@@ -21,7 +21,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import config
+from . import config, safejson
 
 # A live mpv answers in about a millisecond. This is the budget for one that
 # has died without the socket noticing yet, and it is spent on whichever
@@ -456,7 +456,7 @@ def _reply(sock, request_id):
 
 def _parse(line):
     try:
-        message = json.loads(line)
+        message = safejson.loads(line)
     except (ValueError, TypeError):
         return None
     return message if isinstance(message, dict) else None
