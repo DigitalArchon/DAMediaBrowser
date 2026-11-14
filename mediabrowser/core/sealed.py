@@ -219,11 +219,12 @@ TUF_MAX_REDIRECTS = sdk_guard.TUF_MAX_REDIRECTS
 
 
 def guard_sdk_requests(package="tinfoil"):
-    """Have Tinfoil's SDK fetch only over https, following no redirect off https and none
-    from the internet into this machine or its network (sdk_guard.guard), and what it
-    verifies with - sigstore-python, its trust root through TUF's own client - too. Returns
-    the names of the modules changed. Raises Unguarded where sigstore's or TUF's internals
-    are not as the guard expects, rather than leave a fetch unguarded.
+    """Have Tinfoil's SDK fetch only over https, following no redirect off https, none
+    from the internet into this machine or its network and none to an address netguard
+    would refuse (sdk_guard.guard), and reading a reply only so far, and what it verifies
+    with - sigstore-python, its trust root through TUF's own client - too. Returns the
+    names of the modules changed. Raises Unguarded where sigstore's or TUF's internals are
+    not as the guard expects, rather than leave a fetch unguarded.
 
     The SDK fetches with bare requests.get and .post - the router's latest release and its
     Sigstore bundle from GitHub's proxy (tinfoil.github), AMD's VCEK and Intel's collateral
@@ -231,13 +232,13 @@ def guard_sdk_requests(package="tinfoil"):
     redirect anywhere, https to http included: a 30x from any of them, or from whatever
     answered at their address, sent the next fetch in the clear, through no check of the
     app's. It is not changed on disk."""
-    return sorted(sdk_guard.guard(netguard.is_local, package))
+    return sorted(sdk_guard.guard(netguard.is_local, package, check=netguard.check))
 
 
 def guard_sigstore():
     """sigstore-python, as Tinfoil's SDK verifies the router's release with it, guarded
     (sdk_guard.guard_sigstore). Raises Unguarded where it cannot be."""
-    return sdk_guard.guard_sigstore(netguard.is_local)
+    return sdk_guard.guard_sigstore(netguard.is_local, check=netguard.check)
 
 
 def tinfoil_verify(relay, cache_secret):
@@ -284,23 +285,10 @@ def tinfoil_verify(relay, cache_secret):
 
 
 def _not_followed(error):
-    """What a redirect the guard did not follow says (sdk_guard: a TUF download error of
-    Sigstore's trust root, or the SDK's requests refused), found among the causes of what
-    the SDK raised - sigstore says only "Failed to refresh TUF metadata" - or ''."""
-    try:
-        from tuf.api.exceptions import DownloadError, DownloadHTTPError
-    except ImportError:             # no TUF: nothing fetched through it either
-        DownloadError = DownloadHTTPError = ()
-    seen = set()
-    while error is not None and id(error) not in seen:
-        seen.add(id(error))
-        refused = (isinstance(error, DownloadError)
-                   and not isinstance(error, DownloadHTTPError)
-                   or type(error).__name__ == "RedirectRefused")
-        if refused and "not followed" in str(error):
-            return str(error)
-        error = error.__cause__ or error.__context__
-    return ""
+    """What a redirect the guard did not follow says (sdk_guard.not_followed: one of
+    Sigstore's trust root, or of the SDK's requests, named as one), found among the causes
+    of what the SDK raised - sigstore says only "Failed to refresh TUF metadata" - or ''."""
+    return sdk_guard.not_followed(error)
 
 
 def _proxy_hint(error):

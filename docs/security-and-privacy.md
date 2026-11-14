@@ -105,8 +105,11 @@ not. The status bar's right-hand corner says where things can go now (see
   an address that could have been used in the first place: never from https to plain
   http, and never from a server on the internet onto this computer or its network.
   Tinfoil's client's own fetches, and Sigstore's trust root, which Tinfoil's client checks
-  the router's release with, follow one only to https, and never from the internet onto
-  this computer or its network (the module every DA app that uses the client shares).
+  the router's release with, follow one only to https, never from the internet onto
+  this computer or its network, and never to an address the app would refuse (the module
+  every DA app that uses the client shares); a refused one is named in the error. Those
+  fetches ask for gzip or deflate only, and read a reply to 32 MB at most (an error's or a
+  redirect's text to 64 KB).
   Sigstore's trust root follows five at most, and if the versions of its client that the
   app expects are not the ones installed, so that its fetches cannot be held to this, the
   enclave is not attested and nothing is sent.

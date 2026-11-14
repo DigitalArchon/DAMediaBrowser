@@ -1514,6 +1514,56 @@ class TestTheSdkFetchesThroughNetguard:
                 "https://kds.example/vcek")
         assert sdk["sent"] == ["https://kds.example/vcek"]
 
+    def test_a_refused_redirect_is_named_as_one(self, sdk):
+        """What the guard raises for a redirect it refused says it is one (the shared
+        guard's RedirectNotFollowed), and _not_followed finds it among the causes."""
+        import importlib
+        sealed.guard_sdk_requests()
+        sdk["answers"][self.URL] = "http://evil.example/release"
+        with pytest.raises(sdk_guard.RedirectNotFollowed) as refused:
+            importlib.import_module("tinfoil.github").fetch_latest_release("owner/repo")
+        assert refused.value.redirect_refused
+        try:
+            raise RuntimeError("Failed to refresh TUF metadata") from refused.value
+        except RuntimeError as wrapped:
+            assert sealed._not_followed(wrapped) == str(refused.value)
+
+    def test_a_redirect_is_held_to_netguards_whole_rule(self, sdk, monkeypatch):
+        """Not to its scheme alone, as DA Assistant's own guard held it (up to Nov 14
+        2026): an address that cannot be read, 0.0.0.0, or one netguard refuses."""
+        import importlib
+        sealed.guard_sdk_requests()
+        github = importlib.import_module("tinfoil.github")
+        for target in ("https://exa mple.com/release", "https://0.0.0.0/release",
+                       "https://127.0.0.1%2eevil.example/release"):
+            sdk["sent"].clear()
+            sdk["answers"][self.URL] = target
+            with pytest.raises(sdk_guard.RedirectNotFollowed):
+                github.fetch_latest_release("owner/repo")
+            assert sdk["sent"] == [self.URL]
+        sdk["sent"].clear()
+        sdk["answers"][self.URL] = "https://objects.example/release"
+        monkeypatch.setattr(netguard, "problem", lambda url: "Not one of ours.")
+        with pytest.raises(sdk_guard.RedirectNotFollowed, match="Not one of ours"):
+            github.fetch_latest_release("owner/repo")
+        assert sdk["sent"] == [self.URL]
+
+    def test_every_request_asks_for_gzip_or_deflate_alone(self, sdk, monkeypatch):
+        import importlib
+
+        import requests
+        sealed.guard_sdk_requests()
+        asked, real = [], requests.adapters.HTTPAdapter.send
+
+        def adapter_send(adapter, request, **kwargs):
+            asked.append(request.headers.get("Accept-Encoding"))
+            return real(adapter, request, **kwargs)
+
+        monkeypatch.setattr("requests.adapters.HTTPAdapter.send", adapter_send)
+        importlib.import_module("tinfoil.github").requests.get(
+            self.URL, headers={"Accept-Encoding": "br"})
+        assert asked == ["gzip, deflate"]
+
     @needs_sigstore
     def test_sigstores_own_requests_users_are_guarded_as_the_sdks_are(self, sdk):
         """Rekor's, Fulcio's, a timestamp authority's and OIDC's clients: none fetches
@@ -1691,13 +1741,10 @@ class TestSigstoresTrustRoot:
         assert all(url.startswith(SIGSTORE_TUF + "/") for url in self.wire.sent), \
             self.wire.sent
 
-    @pytest.mark.xfail(strict=True, reason="the canonical sdk_guard gives no guarded fetcher "
-                       "for a None given in the fetcher's place: its copy's to fix")
     def test_a_fetcher_given_as_none_in_its_place_is_the_guarded_one_too(self):
-        """Not yet: SealedLore's sdk_guard, the canonical copy, gives the guarded fetcher
-        only where none is given by name or position, and a None in the fetcher's place
-        is left to TUF's own, unguarded. This app's own guard (up to Nov 14 2026) gave it
-        there too. sigstore's TrustUpdater names no fetcher, so the SDK never meets it."""
+        """As DA Assistant's own guard gave it (up to Nov 14 2026), and SealedLore's
+        canonical copy does since its final pass: None in the fetcher's place is no
+        fetcher, and TUF's own would fetch unguarded."""
         from sigstore._internal import tuf as sigstore_tuf
         from sigstore._utils import read_embedded
         sealed.guard_sigstore()
