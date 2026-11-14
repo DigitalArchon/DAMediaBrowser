@@ -20,6 +20,17 @@ def _video(tmp_path, name, n=3):
                           "end": (i + 1) * 100.0, "source": "manual"} for i in range(n)]}
 
 
+def shown_as(tip: str) -> str:
+    """The words a tooltip shows: Qt reads one that looks like HTML as HTML."""
+    from PySide6.QtGui import Qt, QTextDocument
+
+    if not Qt.mightBeRichText(tip):
+        return tip
+    document = QTextDocument()
+    document.setHtml(tip)
+    return document.toPlainText()
+
+
 @pytest.fixture
 def playing(window, tmp_path):
     window.data = store.default_library(str(tmp_path / "media"))
@@ -347,10 +358,37 @@ class TestSeekBar:
                 Qt.NoButton, Qt.NoButton, Qt.NoModifier))
 
         hover(x)
-        assert QToolTip.isVisible() and QToolTip.text() == "Chapter 3 · Budokan 3"
+        assert QToolTip.isVisible() and shown_as(QToolTip.text()) == "Chapter 3 · Budokan 3"
         hover(x - 40)
         QTest.qWait(500)  # Qt takes its tooltips down after a moment
         assert not QToolTip.isVisible()
+
+    def test_a_marks_title_is_shown_as_it_is_never_as_html(self, app):
+        # A chapter's title is the AI's or the disc's: one that looks like HTML is
+        # shown as its text, never taken for markup (gui/plain.py).
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication, QToolTip
+
+        from mediabrowser.gui.now_playing import ChapterSlider
+
+        slider = ChapterSlider()
+        slider.resize(600, 30)
+        slider.setRange(0, 300)
+        title = "<b>Live</b> & <img src='file:///etc/passwd'> encore"
+        slider.set_chapters([(0, "Opening"), (150, title)])
+        slider.show()
+        try:
+            [(index, x)] = slider.marks()
+            point = QPointF(x, slider.height() / 2)
+            QApplication.sendEvent(slider, QMouseEvent(
+                QEvent.MouseMove, point, QPointF(slider.mapToGlobal(point.toPoint())),
+                Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+            assert QToolTip.isVisible()
+            assert shown_as(QToolTip.text()) == f"Chapter 2 · {title}"
+        finally:
+            QToolTip.hideText()
+            slider.close()
 
     def test_audio_has_no_marks(self, playing):
         window, _mpv = playing

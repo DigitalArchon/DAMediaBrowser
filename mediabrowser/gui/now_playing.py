@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import utils
 from mediabrowser.gui import covers
+from mediabrowser.gui.plain import tooltip
 
 THUMB = 48
 # A chapter's mark on the seek slider: its colour, how far it stands out
@@ -341,7 +342,10 @@ class ChapterSlider(QSlider):
         super().mouseMoveEvent(event)
         index = self.mark_at(event.position().x())
         if index is not None:
-            QToolTip.showText(event.globalPosition().toPoint(), self.tooltip_for(index), self)
+            # As text: a chapter's title is the AI's or the disc's, and Qt takes a
+            # tooltip that looks like HTML for HTML (plain.tooltip).
+            QToolTip.showText(event.globalPosition().toPoint(),
+                              tooltip(self.tooltip_for(index)), self)
         elif self._hovered is not None:
             QToolTip.hideText()
         self._hovered = index

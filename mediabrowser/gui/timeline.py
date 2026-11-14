@@ -28,6 +28,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from mediabrowser.core import utils
+from mediabrowser.gui.plain import tooltip
 
 # How near (pixels) a press must be to a boundary to take hold of it.
 GRAB_PIXELS = 6
@@ -365,7 +366,9 @@ class Timeline(QWidget):
             tip = f"{utils.format_seconds(seconds)} · {utils.title_or_number(index, title)}"
             if self.mark_at(x) is not None:
                 tip += "\nDrag to move where this chapter starts"
-        QToolTip.showText(event.globalPosition().toPoint(), tip, self)
+        # As text, line break and all: a chapter's title is the AI's or the disc's,
+        # and Qt takes a tooltip that looks like HTML for HTML (plain.tooltip).
+        QToolTip.showText(event.globalPosition().toPoint(), tooltip(tip), self)
 
     def mouseReleaseEvent(self, event) -> None:
         if self._dragging_mark is not None:

@@ -136,3 +136,29 @@ class TestLevels:
         timeline.set_levels(None)
         assert not timeline.has_levels()
         timeline.grab()
+
+
+class TestTheTooltip:
+    def test_a_chapters_title_is_shown_as_it_is_never_as_html(self, timeline):
+        # A chapter's title is the AI's or the disc's: one that looks like HTML is
+        # shown as its text, line break and all, never taken for markup (gui/plain.py).
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QMouseEvent, QTextDocument
+        from PySide6.QtWidgets import QApplication, QToolTip
+
+        title = "<b>Live</b> & <img src='file:///etc/passwd'>"
+        timeline.set_marks([0.0, 1800.0, 3600.0], [None, title, "Song 7"], 7200.0)
+        timeline.show()
+        try:
+            x = timeline.x_for(2700.0)
+            point = QPointF(x, 25)
+            QApplication.sendEvent(timeline, QMouseEvent(
+                QEvent.MouseMove, point, QPointF(timeline.mapToGlobal(point.toPoint())),
+                Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+            assert QToolTip.isVisible()
+            document = QTextDocument()
+            document.setHtml(QToolTip.text())
+            assert document.toPlainText() == f"45:00 · {title}"
+        finally:
+            QToolTip.hideText()
+            timeline.close()
