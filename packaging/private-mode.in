@@ -31,3 +31,8 @@ socksio
 # it stood still on 0.6.4 and 2.8.0 (Nov 2 2026).
 pyasn1>=0.6.5
 dnspython>=2.9.0
+# cryptography, which the TEE checks (core/dcap.py, nras.py), tinfoil and sigstore verify
+# with: 50.0.2, what both locks ship (appimage/requirements.txt too), as a floor the
+# author's other apps share, so that a relock can't stand still on an older one (Nov 14
+# 2026).
+cryptography>=50.0.2

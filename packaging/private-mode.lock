@@ -360,6 +360,7 @@ cryptography==50.0.2 \
     --hash=sha256:fdd28f912fccfec1846a94e2e1e8f9b0012f557f0c46fe4f3eb0d7a87afcf90b
     # via
     #   -c appimage/requirements.txt
+    #   -r private-mode.in
     #   pyhpke
     #   pyopenssl
     #   rfc3161-client

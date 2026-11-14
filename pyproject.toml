@@ -17,6 +17,10 @@ dependencies = [
     "PySide6-Essentials>=6.6",
     # The Nano-GPT key's home: the Secret Service (core/creds.py).
     "keyring>=25",
+    # The TEE checks verify Intel's and NVIDIA's signatures with it (core/dcap.py,
+    # nras.py), and keyring's SecretStorage opens its session with it: a floor for a
+    # source install, at what the AppImage ships (packaging/appimage/requirements.txt).
+    "cryptography>=50.0.2",
 ]
 
 [project.urls]

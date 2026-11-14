@@ -78,3 +78,22 @@ def test_the_build_stops_on_one_it_does_not_carry(tmp_path):
     assert done.returncode == 1
     assert "Qt's xcb plugins need libxcb-xkb.so.1, which the AppImage doesn't carry" \
         in done.stderr
+
+
+def test_a_source_install_takes_no_cryptography_older_than_the_appimage_ships():
+    """The TEE checks verify Intel's and NVIDIA's signatures with cryptography (and
+    tinfoil, sigstore and keyring's SecretStorage use it): wherever dependencies are
+    declared for a source install, it is floored at what both locks ship, 50.0.2, as the
+    author's other apps floor it (Nov 14 2026)."""
+    import tomllib
+
+    floor = "cryptography>=50.0.2"
+    dependencies = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"][
+        "dependencies"]
+    assert floor in dependencies
+    private_in = (ROOT / "packaging" / "private-mode.in").read_text().splitlines()
+    assert floor in private_in
+    for lock in ("packaging/private-mode.lock", "packaging/appimage/requirements.txt"):
+        pinned = re.search(r"^cryptography==([\d.]+)", (ROOT / lock).read_text(), re.M)
+        assert pinned, lock
+        assert tuple(int(n) for n in pinned.group(1).split(".")) >= (50, 0, 2), lock

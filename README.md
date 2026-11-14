@@ -48,7 +48,7 @@ External programs, installed with your package manager:
 | `mpv` | playback |
 | `libbluray` | Blu-ray disc folders (optional) |
 | GNOME Keyring or KWallet | keeping the AI's API key (optional; any Secret Service provider) |
-| `python3-cryptography` | checking a `TEE/` model's attestation, in [Privacy Mode](#privacy-mode) (from source; the AppImage carries it) |
+| `python3-cryptography` | checking a `TEE/` model's attestation, in [Privacy Mode](#privacy-mode) (from source, `pip install` brings it into the virtualenv, 50.0.2 or newer; the AppImage carries it) |
 
 ```
 # Debian/Ubuntu
