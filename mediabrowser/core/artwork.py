@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import config, netguard, outbound, privacy
+from . import atomic, config, netguard, outbound, privacy
 
 FFMPEG_TIMEOUT_SECONDS = 20
 FETCH_TIMEOUT_SECONDS = 15
@@ -94,6 +94,7 @@ def forget_all() -> None:
     """Every cached cover, found or not."""
     if not config.ARTWORK_DIR.is_dir():
         return
+    # The *.jpg take in what a find cut short by a crash left (atomic.temp_beside).
     for path in [*config.ARTWORK_DIR.glob("*.jpg"), *config.ARTWORK_DIR.glob(f"*{MISS_SUFFIX}")]:
         config.own(path).unlink(missing_ok=True)
 
@@ -107,31 +108,39 @@ def find(video_id: str, video: dict, release_id: str | None = None) -> Path | No
     if existing is not None:
         return existing
 
-    # Every file written below is this one, or the miss marker beside it.
+    # Every file written below is this one, or the miss marker beside it - by
+    # way of a file of its own beside it (`work`), put in its place whole once a
+    # source has made it: ffmpeg writes as it goes, and a cover cut short by a
+    # crash was there to be shown, half drawn, at every launch after.
     target = config.own(cached_path(video_id))
     config.own(_miss_path(video_id))
+    work = config.own(atomic.temp_beside(target))
     source = Path(video["path"])
     is_disc = video.get("type") in ("bluray", "dvd")
     folder = source if is_disc else source.parent
 
-    for attempt in (
-        lambda: _from_sibling_file(folder, target),
-        lambda: (_from_disc_artwork(source, target) if video.get("type") == "bluray"
-                 else False if is_disc else _from_embedded_art(source, target)),
-        lambda: _from_cover_art_archive(release_id, target),
-        # A frame grab is last: it always produces something, so anything
-        # better than it must be tried first.
-        lambda: _from_disc_frame(video, target) if is_disc
-        else _from_frame(source, video.get("duration"), target),
-    ):
-        try:
-            if attempt() and target.exists() and target.stat().st_size > 0:
-                _miss_path(video_id).unlink(missing_ok=True)
-                return target
-        except Exception:
-            # One source failing is ordinary - a file with no embedded art,
-            # a release with no scan - and must not stop the others.
-            continue
+    try:
+        for attempt in (
+            lambda: _from_sibling_file(folder, work),
+            lambda: (_from_disc_artwork(source, work) if video.get("type") == "bluray"
+                     else False if is_disc else _from_embedded_art(source, work)),
+            lambda: _from_cover_art_archive(release_id, work),
+            # A frame grab is last: it always produces something, so anything
+            # better than it must be tried first.
+            lambda: _from_disc_frame(video, work) if is_disc
+            else _from_frame(source, video.get("duration"), work),
+        ):
+            try:
+                if attempt() and work.exists() and work.stat().st_size > 0:
+                    atomic.replace(work, target)
+                    _miss_path(video_id).unlink(missing_ok=True)
+                    return target
+            except Exception:
+                # One source failing is ordinary - a file with no embedded art,
+                # a release with no scan - and must not stop the others.
+                continue
+    finally:
+        work.unlink(missing_ok=True)
 
     target.unlink(missing_ok=True)
     _miss_path(video_id).touch()
@@ -247,7 +256,7 @@ def _rescale_bytes(data: bytes, target: Path) -> bool:
     """An image downloaded or grabbed, scaled into the cache. It goes by way
     of a file of its own beside the target: ffmpeg won't read and write
     the same file ("Output same as Input"), so scaling it in place failed."""
-    part = config.own(target.with_name(target.stem + ".part" + target.suffix))
+    part = config.own(atomic.temp_beside(target))
     try:
         part.write_bytes(data)
         return _rescale(part, target)

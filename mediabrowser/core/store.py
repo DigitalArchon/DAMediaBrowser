@@ -5,12 +5,11 @@ import copy
 import hashlib
 import json
 import os
-import shutil
 import threading
 import time
 from pathlib import Path
 
-from . import config, naming, netguard, protection, safejson
+from . import atomic, config, naming, netguard, protection, safejson
 
 # The AI endpoint's address (core.ai.SETTING_BASE_URL), kept free of a password.
 AI_ENDPOINT = "ai_base_url"
@@ -56,10 +55,7 @@ def save_app_settings(settings: dict) -> None:
     if isinstance(settings.get(AI_ENDPOINT), str):
         settings = dict(settings, **{AI_ENDPOINT: netguard.without_password(
             settings[AI_ENDPOINT])})
-    tmp_path = config.own(config.APP_SETTINGS_FILE.with_suffix(".json.tmp"))
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2, sort_keys=True)
-    tmp_path.replace(config.own(config.APP_SETTINGS_FILE))
+    atomic.write_json(config.own(config.APP_SETTINGS_FILE), settings)
 
 
 def make_video_id(kind: str, path, title_idx=None) -> str:
@@ -270,11 +266,8 @@ def _write(tree: dict) -> None:
         raw[NESTED_KEY] = nested
     config.ensure_data_dir()
     path = config.own(_file_for_root(tree["root"]))
-    tmp_path = config.own(path.with_suffix(".json.tmp"))
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2, sort_keys=True)
-        tmp_path.replace(path)
+        atomic.write_json(path, raw)
     except BaseException:
         # The cached tree may have been changed for this write: reread it.
         if tree.get("path") is not None:
@@ -306,11 +299,12 @@ def _backup(tree: dict, reason: str) -> None:
     path = tree.get("path")
     if path is None or not Path(path).exists():
         return
-    backup_dir().mkdir(parents=True, exist_ok=True)
+    config.make_own_folder(backup_dir())
     now = time.time_ns()
     seconds, micro = divmod(now // 1000, 1_000_000)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(seconds)) + f"-{micro:06d}"
-    shutil.copy2(path, config.own(backup_dir() / f"{Path(path).stem}-{stamp}-{reason}.json"))
+    atomic.write_bytes(config.own(backup_dir() / f"{Path(path).stem}-{stamp}-{reason}.json"),
+                       Path(path).read_bytes())
 
 
 def list_backups() -> list[dict]:
@@ -440,10 +434,7 @@ def erase_library(root) -> list[str]:
             nested = {r: m for r, m in backup["libraries"].items() if r != backup["root"]}
             if nested:
                 raw[NESTED_KEY] = nested
-            tmp_path = config.own(path.with_suffix(".json.tmp"))
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(raw, f, indent=2, sort_keys=True)
-            tmp_path.replace(config.own(path))
+            atomic.write_json(config.own(path), raw)
         return erased
 
 

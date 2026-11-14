@@ -19,11 +19,10 @@ never over a file that isn't the same kind of chapter file already.
 
 from __future__ import annotations
 
-import os
 import xml.etree.ElementTree as ET
 from pathlib import Path, PurePath
 
-from . import config, utils
+from . import atomic, config, utils
 
 MKVMERGE = "mkvmerge"
 FFMETADATA = "ffmetadata"
@@ -260,17 +259,8 @@ def export(video, fmt: str, path, library_roots=(), video_id: str = "") -> Path:
         raise ExportError(f"Chapters can't be saved there: {why}.")
     target = Path(path).expanduser().resolve()
     text = render(video, fmt, video_id)
-    # Written beside it and then put in its place, so a failure part way
-    # leaves whatever was there before.
-    partial = target.with_name(f".{target.name}.part")
-    try:
-        with open(partial, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-        os.replace(partial, target)
-    except OSError:
-        try:
-            os.unlink(partial)
-        except OSError:
-            pass
-        raise
+    # Written whole beside it and then put in its place (atomic), so a failure
+    # part way leaves whatever was there before; the permissions any new file of
+    # yours has.
+    atomic.write_text(target, text, mode=atomic.AS_A_NEW_FILE)
     return target

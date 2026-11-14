@@ -26,7 +26,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import library, network, playlists, protection, safejson, store
+from . import atomic, library, network, playlists, protection, safejson, store
 
 # How many of a catalog's videos are looked for, and what share of them
 # must be found, for a folder to be its folder (see library.located).
@@ -134,10 +134,8 @@ def export(data: dict, path, library_roots=()) -> None:
             str(settings[library.NETWORK_URI_SETTING])
         )
     out = dict(data, settings=settings, **{FORMAT_KEY: FORMAT})
-    tmp = Path(path).with_suffix(Path(path).suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2, sort_keys=True)
-    tmp.replace(path)
+    # A file for another device: the permissions any new file of yours has.
+    atomic.write_json(path, out, mode=atomic.AS_A_NEW_FILE)
 
 
 def read(path) -> dict:

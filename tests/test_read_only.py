@@ -47,6 +47,9 @@ MODULE_WRITES = (
                                "truncate", "link", "symlink")}
     | {("shutil", name) for name in ("move", "copy", "copy2", "copyfile", "copytree",
                                      "rmtree", "copymode", "copystat")}
+    # A file swapped in whole (core/atomic.py), written where its caller says.
+    | {("atomic", name) for name in ("write_bytes", "write_text", "write_json", "replace",
+                                     "temp_beside")}
 )
 # Calls that share a name with a file operation but aren't one: the shelf of
 # libraries, a playlist, the chapter editor's sheet.
@@ -55,17 +58,18 @@ NOT_FILES = {"shown", "playlists", "sheet", "painter"}
 # Each module's writes, and where they go. Change a number only after
 # checking that the new write can't reach a library.
 REVIEWED = {
-    "core/artwork.py": 8,       # the cover cache, config.ARTWORK_DIR
+    "core/artwork.py": 12,      # the cover cache, config.ARTWORK_DIR, by way of a temp file there
+    "core/atomic.py": 6,        # a temp file beside the file its caller names, swapped in
     "core/audio_export.py": 8,  # songs, into a folder refused inside any library; a temp file
     "core/audio_levels.py": 2,  # its own temporary folder
     "core/bdmenu.py": 2,        # a temporary file for ffmpeg
-    "core/catalog.py": 2,       # an export, refused inside any library
-    "core/chapter_export.py": 4,  # an export, refused inside any library
-    "core/config.py": 3,        # the data folders, and the data folder kept to its owner (0700)
+    "core/catalog.py": 1,       # an export, refused inside any library
+    "core/chapter_export.py": 1,  # an export, refused inside any library
+    "core/config.py": 2,        # the data folders, made and kept to their owner (0700)
     "core/dvd.py": 1,           # a DVD's sectors into ffmpeg's input, a pipe
     "core/library.py": 1,       # cached covers renamed within ARTWORK_DIR
     "core/player.py": 2,        # mpv's socket, in the session's runtime folder
-    "core/store.py": 17,        # settings, library files and backups - all through config.own
+    "core/store.py": 13,        # settings, library files and backups - all through config.own
     "gui/main_window.py": 1,    # the screenshot folder, in Pictures
 }
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import base64
 import json
-import os
+import secrets
 import struct
 import subprocess
 import tempfile
@@ -27,7 +27,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import chapter_export, frames, safejson, utils
+from . import atomic, chapter_export, frames, safejson, utils
 
 FLAC = "flac"
 OPUS = "opus"
@@ -268,7 +268,10 @@ def command(src: Source, song: Song, fmt: str, meta_file: str, partial: Path, *,
 
 
 def _partial(path: Path) -> Path:
-    return path.with_name(f".{path.name}.part")
+    """Where ffmpeg writes a song before it is put in its place: a name of its own
+    beside it, so that two exports of one song never write into one file, and one
+    left by a crash is never taken for the song. A name ffmpeg's -n finds free."""
+    return path.with_name(f".{path.name}.{secrets.token_hex(6)}{atomic.PART}")
 
 
 def export_song(video, song: Song, fmt: str, tags: Tags, *, cover: Path | None = None,
@@ -278,8 +281,8 @@ def export_song(video, song: Song, fmt: str, tags: Tags, *, cover: Path | None =
     Raises Cancelled, or ExportError saying what went wrong."""
     song.path.parent.mkdir(parents=True, exist_ok=True)
     partial = _partial(song.path)
-    if partial.exists():
-        partial.unlink()  # left by an export that was stopped
+    # Left by an export before this one, stopped, of a version that named it so.
+    song.path.with_name(f".{song.path.name}.part").unlink(missing_ok=True)
     cover_bytes = None
     if cover is not None:
         try:
@@ -296,7 +299,9 @@ def export_song(video, song: Song, fmt: str, tags: Tags, *, cover: Path | None =
                        cover_file=str(cover) if cover and fmt == FLAC else None,
                        bitrate=bitrate)
         _run(args, src, song.duration, cancel, progress_cb)
-        os.replace(partial, song.path)
+        # Flushed to the disk and put in its place whole, the folder flushed after;
+        # with the permissions any new file of yours has.
+        atomic.replace(partial, song.path, mode=atomic.AS_A_NEW_FILE)
     except BaseException:
         if partial.exists():
             partial.unlink()

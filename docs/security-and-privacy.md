@@ -317,9 +317,14 @@ NEAR AI, 0G, Tinfoil's router — beside its mark: *✓ TEE, verified · run by 
 | Screenshots you take (`S`) | `Pictures/DA Media Browser` |
 | Exports you make (catalogs, chapters, songs as audio) | where you choose — never inside a library folder |
 
-The data folder is readable only by you (`0700`): it names every video in every library.
-Every file the app writes, renames or deletes is checked first to be inside it, so even
-a bug can't reach a video.
+The data folder and every folder in it are readable only by you (`0700`, made so also
+when they are there already), and the app's own files in them only by you (`0600`): they
+name every video in every library. Every file the app writes, renames or deletes is
+checked first to be inside it, so even a bug can't reach a video. Each is written whole or
+not at all: to a file of its own beside it, flushed to the disk, then put in its place, so
+a crash or a power cut never leaves settings, a library's record or a cover half written;
+the chapters, catalogs and songs you export are written the same way, with the
+permissions any new file of yours has.
 
 Kept in memory only, and gone when the app quits: What Was Sent, the frames taken from
 a video, the audio levels and stage lighting measured, what each enclave proved, and

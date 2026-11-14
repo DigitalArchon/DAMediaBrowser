@@ -115,8 +115,16 @@ def own(path) -> Path:
 
 
 def ensure_data_dir() -> None:
-    LIBRARIES_DIR.mkdir(parents=True, exist_ok=True)
-    keep_to_self(DATA_DIR)
+    make_own_folder(DATA_DIR)
+    make_own_folder(LIBRARIES_DIR)
+
+
+def make_own_folder(folder) -> None:
+    """`folder` made, as one its owner alone can enter (0700) - or made so, if it
+    is there already (keep_to_self). Every folder of the app's own data is: the
+    libraries' records, their backups, the covers."""
+    Path(folder).mkdir(mode=0o700, parents=True, exist_ok=True)
+    keep_to_self(folder)
 
 
 def keep_to_self(folder) -> None:
@@ -133,4 +141,4 @@ def keep_to_self(folder) -> None:
 
 
 def ensure_artwork_dir() -> None:
-    ARTWORK_DIR.mkdir(parents=True, exist_ok=True)
+    make_own_folder(ARTWORK_DIR)
