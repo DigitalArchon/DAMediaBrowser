@@ -1021,7 +1021,7 @@ not bundled: they are the system's own.
 ## Development
 
 ```
-.venv/bin/python -m pytest      # 1,349 tests; Qt runs offscreen, no display needed
+.venv/bin/python -m pytest      # 1,399 tests; Qt runs offscreen, no display needed
 .venv/bin/ruff check .
 ```
 
