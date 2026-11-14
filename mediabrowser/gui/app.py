@@ -28,6 +28,34 @@ LINK_COLOUR = "#7aa2f7"
 # Preference order; the first family actually installed wins. Nothing is
 # vendored, so this falls back to whatever the system provides.
 FONT_CANDIDATES = ("Noto Sans", "DejaVu Sans", "Liberation Sans", "Cantarell")
+# prctl(2)'s option for whether the process may be dumped (linux/prctl.h).
+PR_SET_DUMPABLE = 4
+
+
+def no_core_dumps() -> None:
+    """A native crash must not write the app's memory to disk: What Was Sent - the words
+    and frames sent to the AI - and what each enclave proved are kept in memory alone,
+    and a key read from the keyring is there too. RLIMIT_CORE 0 stops a core file; not
+    dumpable stops the system's collector (systemd-coredump reads the flag, not the
+    limit) and, as a side effect, a debugger or another program of yours attaching to
+    the app or reading its memory through /proc. mpv and ffmpeg, started from here,
+    inherit the limit. Whatever fails is left as it was: nothing else depends on it.
+    SealedLore's gui/app.py _no_core_dumps (Nov 2026), on Linux alone."""
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ImportError, ValueError, OSError):
+        pass
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
 
 
 def load_stylesheet() -> str:
@@ -91,6 +119,8 @@ def build_app(argv: Sequence[str]) -> QApplication:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Before anything is read or asked: the app's whole life is kept from a core dump.
+    no_core_dumps()
     arguments = list(sys.argv if argv is None else argv)
     parser = argparse.ArgumentParser(prog="mediabrowser")
     parser.add_argument("--library", default=None, help="open this library folder on start")

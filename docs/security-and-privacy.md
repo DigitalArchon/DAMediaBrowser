@@ -311,8 +311,10 @@ a bug can't reach a video.
 
 Kept in memory only, and gone when the app quits: What Was Sent, the frames taken from
 a video, the audio levels and stage lighting measured, what each enclave proved, and
-the RedPill session records read (64 at most). mpv's control socket is kept in your
-session's own runtime folder, which no other user can enter, where there is one.
+the RedPill session records read (64 at most). A crash writes none of it to disk: the
+app turns core dumps off as it starts, and makes itself one the system's crash collector
+won't dump. mpv's control socket is kept in your session's own runtime folder, which no
+other user can enter, where there is one.
 
 ## Other protections
 
@@ -350,7 +352,9 @@ session's own runtime folder, which no other user can enter, where there is one.
 - **Plain http on your own network is not encrypted** (see
   [The network rules](#the-network-rules)).
 - **Anything running as you on this computer** can read your libraries' records, the
-  settings, the keyring once it is unlocked, and the app's memory.
+  settings and the keyring once it is unlocked, and can change the app or how it is
+  started. The running app's memory it can't read through a debugger or `/proc`: being
+  undumpable keeps them out, short of root's powers.
 - **Answers are written by language models**, and setlists and tracklists come from
   public databases: any of them can be wrong.
 

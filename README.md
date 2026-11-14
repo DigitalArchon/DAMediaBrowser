@@ -914,7 +914,8 @@ is made: to whom, what it carried, how it travelled (in the clear over
 https, to a TEE model attested first, or sealed end to end), whether it went, and
 which window or run it was for — and for the AI, the words it was sent,
 the frames left out. Above the list it says where things can go from now
-on. The list is kept in memory only, and is gone when the app closes.
+on. The list is kept in memory only, and is gone when the app closes; the
+app turns core dumps off as it starts, so a crash doesn't write it to disk.
 
 ## Another device
 
