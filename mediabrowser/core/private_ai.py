@@ -1073,7 +1073,7 @@ class TeeClient:
             # netguard's refusals among them: an environment's proxy that cannot be used.
             raise PrivacyError(f"{self.model}'s attestation could not be fetched: "
                                f"{unsealed_words(e, 300)}") from e
-        except Exception as e:  # noqa: BLE001 - whatever reading the evidence raised
+        except Exception as e:      # whatever reading the evidence raised: refused
             raise PrivacyError(f"{self.model}'s attestation could not be read: what its "
                                f"provider sent is not in the shape it should be "
                                f"({type(e).__name__})") from e
