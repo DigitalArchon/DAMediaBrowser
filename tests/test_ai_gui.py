@@ -312,6 +312,8 @@ class TestSettings:
             return state["answer"]
 
         monkeypatch.setattr(QMessageBox, "question", question)
+        from mediabrowser.gui import plain
+        monkeypatch.setattr(plain, "question", question)      # the key's questions
         monkeypatch.delenv(ai.API_KEY_ENV, raising=False)
         return state
 
@@ -408,6 +410,7 @@ class TestSettings:
         dialog.privacy_checks[privacy.AI].setChecked(True)
         dialog.base_url.setText("http://192.168.1.5:8080/v1")
         dialog.key.setText("sk-lan")
+        jobs = list(dialog._jobs)       # the dialog's own, as it opened (sealed.available)
         dialog.test()
         (question,) = asked["questions"]
         assert question["title"] == "Send the key unencrypted?"
@@ -416,7 +419,7 @@ class TestSettings:
         assert question["text"].endswith("No sends nothing.")
         assert question["default"] == QMessageBox.No
         assert "sk-lan" not in question["text"]
-        assert dialog._jobs == [] and dialog.status.text() == "Nothing was sent."
+        assert dialog._jobs == jobs and dialog.status.text() == "Nothing was sent."
         dialog.accept()
         assert len(asked["questions"]) == 2
         assert dialog.status.text().startswith("Not saved: the key would have gone "

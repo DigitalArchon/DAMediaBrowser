@@ -47,7 +47,7 @@ from mediabrowser.core import (
     setlistfm,
     store,
 )
-from mediabrowser.gui import links, network_status
+from mediabrowser.gui import links, network_status, plain
 from mediabrowser.gui.plain import tooltip
 from mediabrowser.gui.worker import run_job
 
@@ -659,7 +659,7 @@ class SettingsDialog(QDialog):
         """The question about the saved key and the server `there`, No the default; the
         answer kept for the dialog. True on Yes."""
         shown, entered = ai.shown_origin(there), ai.shown_origin(self._key_origin or "")
-        answer = QMessageBox.question(
+        answer = plain.question(
             self, "Use the saved key?",
             f"Use the saved key with {shown}?\n\n"
             f"The Nano-GPT API key kept in the keyring was entered for "
@@ -735,7 +735,7 @@ class SettingsDialog(QDialog):
         if not new:
             return True
         shown = ai.shown_origin(new[0][1])
-        answer = QMessageBox.question(
+        answer = plain.question(
             self, "Send the key unencrypted?",
             f"The Nano-GPT API key goes over plain http, which isn't encrypted, to "
             f"another machine on your network: {shown}.\n\nAnyone on that network can "

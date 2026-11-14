@@ -41,3 +41,17 @@ def critical(parent, title: str, text: str) -> None:
 
 def information(parent, title: str, text: str) -> None:
     message(parent, QMessageBox.Information, title, text)
+
+
+def question(parent, title: str, text: str, buttons, default):
+    """QMessageBox.question's answer, the text shown as it is: an address typed into
+    Settings may hold what Qt would otherwise take for markup."""
+    return question_box(parent, title, text, buttons, default).exec()
+
+
+def question_box(parent, title: str, text: str, buttons, default) -> QMessageBox:
+    """The box question() asks with: plain text, `default` the default button."""
+    box = QMessageBox(QMessageBox.Question, title, text, buttons, parent)
+    box.setTextFormat(Qt.PlainText)
+    box.setDefaultButton(default)
+    return box

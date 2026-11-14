@@ -186,3 +186,16 @@ def no_desktop_program_starts(monkeypatch):
         raise AssertionError(f"a test would have started {argv[0]}")
 
     monkeypatch.setattr(hostenv, "_start", refused)
+
+
+@pytest.fixture(autouse=True)
+def _unanswered_questions_fail(monkeypatch):
+    """gui/plain.question opens a modal box, which nothing answers offscreen: a test that
+    asks one without answering it fails at once, naming it, rather than hang the run.
+    A test that answers it patches plain.question itself (test_ai_gui's `asked`)."""
+    from mediabrowser.gui import plain
+
+    def unanswered(_parent, title, text, *_args, **_kwargs):
+        raise AssertionError(f"a question nobody answers: {title}: {text[:120]}")
+
+    monkeypatch.setattr(plain, "question", unanswered)

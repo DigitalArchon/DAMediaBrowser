@@ -47,6 +47,20 @@ def test_a_message_shows_its_text_as_it_is(app, monkeypatch):
     assert NAME in shown[0].text()
 
 
+def test_the_keys_questions_show_the_address_typed_as_it_is(app):
+    """Settings' questions about the key name an address the user typed: QMessageBox's
+    own question would take one with a tag in it for markup (gui/plain.question)."""
+    box = plain.question_box(None, "Use the saved key?",
+                             "Use the saved key with https://<b>x</b>?",
+                             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+    assert box.textFormat() == Qt.PlainText
+    assert box.defaultButton() is box.button(QMessageBox.No)
+    assert "<b>x</b>" in box.text()
+    root = Path(__file__).resolve().parent.parent / "mediabrowser" / "gui" / "dialogs"
+    assert "QMessageBox.question(" not in (root / "settings_dialog.py").read_text(
+        encoding="utf-8")
+
+
 def test_what_was_sent_shows_its_entries_tooltips_as_text(app):
     from mediabrowser.gui.dialogs.sent_dialog import SentDialog
 
