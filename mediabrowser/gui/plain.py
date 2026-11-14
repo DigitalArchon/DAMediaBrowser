@@ -4,15 +4,40 @@
 
 Qt takes a tooltip or a message for HTML whenever it looks like it, so a
 file called <b>Live</b>.mkv came out bold and one with a stray tag lost
-part of its name. Labels say setTextFormat(Qt.PlainText); tooltips can't,
-so theirs is marked up as text on purpose.
+part of its name - or had Qt load an image from a local file. Labels say
+setTextFormat(Qt.PlainText); tooltips can't, so theirs is marked up as text
+on purpose; and a message box is shown by warning(), critical() and
+information() here, never QMessageBox's own, which take their text as HTML
+too and offer no way to say otherwise.
 """
 
 from __future__ import annotations
 
 import html
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMessageBox
+
 
 def tooltip(text: str) -> str:
     """`text` as a tooltip that shows it as it is, line breaks and all."""
     return "<p style='white-space:pre-wrap'>" + html.escape(text) + "</p>"
+
+
+def message(parent, icon, title: str, text: str) -> None:
+    """A message box with an OK button that shows `text` as it is."""
+    box = QMessageBox(icon, title, text, QMessageBox.Ok, parent)
+    box.setTextFormat(Qt.PlainText)
+    box.exec()
+
+
+def warning(parent, title: str, text: str) -> None:
+    message(parent, QMessageBox.Warning, title, text)
+
+
+def critical(parent, title: str, text: str) -> None:
+    message(parent, QMessageBox.Critical, title, text)
+
+
+def information(parent, title: str, text: str) -> None:
+    message(parent, QMessageBox.Information, title, text)

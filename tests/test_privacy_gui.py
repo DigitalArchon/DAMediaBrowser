@@ -8,6 +8,7 @@ import threading
 import pytest
 
 from mediabrowser.core import ai, outbound, privacy, sealed, store
+from mediabrowser.gui import plain
 from tests.test_chapters_dialog import dialog_for, file_video
 from tests.test_private_ai import tee_stream  # noqa: F401 - a fixture
 
@@ -280,7 +281,7 @@ class TestTheWindow:
         for row, entry in enumerate(entries):
             item = dialog.tree.topLevelItem(row)
             assert (item.text(1), item.text(2), item.toolTip(3)) == (
-                entry.service, entry.what, entry.how), row
+                entry.service, entry.what, plain.tooltip(entry.how)), row
         request = dialog.tree.topLevelItem(1)
         assert "received by the attested TEE" in request.toolTip(3)
         dialog.tree.setCurrentItem(request)
@@ -291,7 +292,7 @@ class TestTheWindow:
         window.show_what_was_sent()
         assert [dialog.tree.topLevelItem(row).toolTip(3)
                 for row in range(dialog.tree.topLevelItemCount())] == [
-            entry.how for entry in entries]
+            plain.tooltip(entry.how) for entry in entries]
 
 
 class TestAskAi:
@@ -351,13 +352,14 @@ class TestLinks:
         opened, warned = [], []
         monkeypatch.setattr(links.QDesktopServices, "openUrl",
                             lambda url: opened.append(url.toString()) or True)
-        monkeypatch.setattr(links.QMessageBox, "warning", lambda *a: warned.append(a))
+        monkeypatch.setattr(links.plain, "warning", lambda *a: warned.append(a))
         label = QLabel('<a href="https://www.setlist.fm/x">setlist.fm</a>')
         label.setToolTip("resting")
         links.guard(label)
         assert not label.openExternalLinks()
         label.linkHovered.emit("https://www.setlist.fm/x")
-        assert label.toolTip() == "Opens https://www.setlist.fm/x in your web browser"
+        assert label.toolTip() == links.plain.tooltip(
+            "Opens https://www.setlist.fm/x in your web browser")
         label.linkHovered.emit("")
         assert label.toolTip() == "resting"
         label.linkActivated.emit("https://www.setlist.fm/x")

@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from mediabrowser.core import artwork, audio_export, store, utils
-from mediabrowser.gui import exports
+from mediabrowser.gui import exports, plain
 from mediabrowser.gui.worker import run_job
 
 # What was chosen last time: the folder, the format, Opus's bitrate and
@@ -188,7 +188,7 @@ class AudioExportDialog(QDialog):
             return
         why = audio_export.refused_folder(folder, exports.library_roots())
         if why:
-            QMessageBox.warning(
+            plain.warning(
                 self, "Export Audio",
                 f"The songs can't be saved there: {why}, which the app never writes to. "
                 "Choose a folder outside your libraries.",

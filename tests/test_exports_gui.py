@@ -91,7 +91,7 @@ def test_export_chapters_refuses_a_library_folder(shelf, monkeypatch):
     warned = []
     monkeypatch.setattr(exports.QFileDialog, "getSaveFileName",
                         lambda *a, **k: (f"{root}/c.xml", exports._filter("mkvmerge")))
-    monkeypatch.setattr(exports.QMessageBox, "warning", lambda *a: warned.append(a[2]))
+    monkeypatch.setattr(exports.plain, "warning", lambda *a: warned.append(a[2]))
     shelf.export_chapters("a")
     assert warned and "never writes to" in warned[0]
 

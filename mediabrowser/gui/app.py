@@ -16,9 +16,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from mediabrowser.core import depcheck, store
+from mediabrowser.gui import plain
 
 APP_ID = "mediabrowser"
 STYLESHEET = Path(__file__).with_name("style.qss")
@@ -135,7 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app = build_app([arguments[0], *qt_arguments])
 
     if missing_required:
-        QMessageBox.critical(
+        plain.critical(
             None,
             "Missing required software",
             "This app needs the following installed to work:\n\n"
@@ -155,7 +156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     window.show()
 
     if bluray_missing:
-        QMessageBox.warning(
+        plain.warning(
             window,
             "Blu-ray support unavailable",
             "libbluray isn't installed, so Blu-ray disc folders won't be found "

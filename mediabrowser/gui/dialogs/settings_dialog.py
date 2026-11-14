@@ -50,6 +50,7 @@ from mediabrowser.core import (
     store,
 )
 from mediabrowser.gui import links, network_status
+from mediabrowser.gui.plain import tooltip
 from mediabrowser.gui.worker import run_job
 
 OTHER_ENDPOINTS = (
@@ -815,7 +816,7 @@ class SettingsDialog(QDialog):
                 private_ai.what_was_attested(session.attestation, clear=False),
                 private_ai.receipt_tip(session.last_receipt())) if part)
         self.status.setText(text)
-        self.status.setToolTip(tip)
+        self.status.setToolTip(tooltip(tip) if tip else "")
 
     def check_attestation(self) -> None:
         self._ask_about_the_key()

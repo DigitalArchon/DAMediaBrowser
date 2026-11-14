@@ -4,6 +4,7 @@
 the settings. The model is a stand-in; nothing leaves the machine."""
 
 import hashlib
+import html
 
 import pytest
 
@@ -506,7 +507,10 @@ class TestTheMarksSayWhatTheyMean:
         assert pump(app, lambda: "answered" in dialog.status.text())
         said = dialog.status.text()
         assert "TEE gateway attested (" in said and "the reply TEE, verified" in said
+        # Shown as text (plain.tooltip): it carries RedPill's and nano-gpt's words.
         tip = dialog.status.toolTip()
+        assert tip.startswith("<p style='white-space:pre-wrap'>") and "<b>" not in tip
+        tip = html.unescape(tip.removeprefix("<p style='white-space:pre-wrap'>"))
         assert tip.startswith("Attested: RedPill's TEE gateway, which passes this model's "
                               "requests on")
         assert "TEE verified: signed by the attested key" in tip

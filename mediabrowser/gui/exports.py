@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog
 
 from mediabrowser.core import chapter_export, store
+from mediabrowser.gui import plain
 
 # Where exports went last, so the next starts there. An app setting.
 EXPORT_FOLDER_SETTING = "export_folder"
@@ -65,10 +66,10 @@ def export_chapters(parent, video_id: str, video: dict) -> str | None:
     try:
         saved = chapter_export.export(video, fmt, path, library_roots(), video_id)
     except chapter_export.ExportError as exc:
-        QMessageBox.warning(parent, "Export Chapters", str(exc))
+        plain.warning(parent, "Export Chapters", str(exc))
         return None
     except OSError as exc:
-        QMessageBox.critical(parent, "Export failed", f"Couldn't write the chapters: {exc}")
+        plain.critical(parent, "Export failed", f"Couldn't write the chapters: {exc}")
         return None
     settings = store.load_app_settings()
     settings[CHAPTER_FORMAT_SETTING] = fmt

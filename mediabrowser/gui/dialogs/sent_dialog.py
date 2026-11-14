@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from mediabrowser.core import outbound, reach
 from mediabrowser.gui import network_status
+from mediabrowser.gui.plain import tooltip
 
 INTRO = (
     "Everything this app has sent since it started: to whom, what it carried, and how "
@@ -225,10 +226,11 @@ class SentDialog(QDialog):
             RESULT.get(entry.outcome, entry.outcome),
         ])
         item.setData(0, Qt.UserRole, len(self._entries) - 1)
-        item.setToolTip(2, entry.what)
-        item.setToolTip(3, entry.how)
+        # What was sent names videos and files, and a detail can quote a server's words.
+        item.setToolTip(2, tooltip(entry.what))
+        item.setToolTip(3, tooltip(entry.how))
         if entry.detail:
-            item.setToolTip(4, entry.detail)
+            item.setToolTip(4, tooltip(entry.detail))
         if entry.protection == outbound.SEALED:
             item.setForeground(3, QBrush(OK))
         elif entry.protection == outbound.TEE:

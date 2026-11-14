@@ -19,9 +19,10 @@ from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QLabel, QMessageBox, QWidget
+from PySide6.QtWidgets import QLabel, QWidget
 
 from mediabrowser.core import netguard
+from mediabrowser.gui import plain
 
 
 def tip(url: str) -> str:
@@ -34,7 +35,9 @@ def guard(label: QLabel) -> None:
     label.setOpenExternalLinks(False)
     label.setTextInteractionFlags(label.textInteractionFlags() | Qt.LinksAccessibleByMouse)
     resting = label.toolTip()
-    label.linkHovered.connect(lambda url: label.setToolTip(tip(url) if url else resting))
+    # The address may be another service's (setlist.fm's credit): shown as text.
+    label.linkHovered.connect(
+        lambda url: label.setToolTip(plain.tooltip(tip(url)) if url else resting))
     label.linkActivated.connect(lambda url: open_link(label, url))
 
 
@@ -52,7 +55,6 @@ def open_link(parent: QWidget | None, url: str) -> bool:
     """Open `url` in the browser, unless it isn't secure: then say so."""
     why = problem(url)
     if why:
-        QMessageBox.warning(parent, "Link Not Opened",
-                            f"{why}\n\nThe link wasn't opened: {url}")
+        plain.warning(parent, "Link Not Opened", f"{why}\n\nThe link wasn't opened: {url}")
         return False
     return QDesktopServices.openUrl(QUrl(url))

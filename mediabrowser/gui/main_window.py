@@ -61,6 +61,7 @@ from mediabrowser.core import (
 )
 from mediabrowser.core.player import Player
 from mediabrowser.core.shelf import Shelf
+from mediabrowser.gui import plain
 from mediabrowser.gui.chapter_editor import ChapterEditor
 from mediabrowser.gui.detail_view import DetailView
 from mediabrowser.gui.grid_view import GridView
@@ -1257,7 +1258,7 @@ class MainWindow(QMainWindow):
         explicit = root is not None
         roots = [root] if explicit else self.shown.roots()
         if not roots:
-            QMessageBox.information(
+            plain.information(
                 self, "No folder chosen", "Choose a library folder to scan first."
             )
             return
@@ -1525,7 +1526,7 @@ class MainWindow(QMainWindow):
         try:
             segment = self.session.switch(self.video_page.window_id() if in_app else None)
         except OSError as exc:
-            QMessageBox.critical(self, "Playback failed", f"Could not start mpv: {exc}")
+            plain.critical(self, "Playback failed", f"Could not start mpv: {exc}")
             return
         if segment is None:
             self.stop_playback()
@@ -1631,7 +1632,7 @@ class MainWindow(QMainWindow):
         try:
             segment = self.session.play(window_id)
         except OSError as exc:
-            QMessageBox.critical(self, "Playback failed", f"Could not start mpv: {exc}")
+            plain.critical(self, "Playback failed", f"Could not start mpv: {exc}")
             return
         if segment is None:
             self.stop_playback()
@@ -2024,7 +2025,7 @@ class MainWindow(QMainWindow):
         try:
             segment = self.session.move_to(None if here else self.video_page.window_id())
         except OSError as exc:
-            QMessageBox.critical(self, "Playback failed", f"Could not start mpv: {exc}")
+            plain.critical(self, "Playback failed", f"Could not start mpv: {exc}")
             return
         if segment is None:
             self.stop_playback()
@@ -2940,7 +2941,7 @@ class MainWindow(QMainWindow):
                 current[1], self._lib(current[0])["settings"]["min_bluray_title_seconds"]
             )
         except Exception as exc:
-            QMessageBox.critical(self, "Reset failed", f"Couldn't read the chapters: {exc}")
+            plain.critical(self, "Reset failed", f"Couldn't read the chapters: {exc}")
             return
         self._restructure(chapters, lambda old: old, None)
 
@@ -3205,10 +3206,10 @@ class MainWindow(QMainWindow):
         try:
             catalog.export(data, path, [known["root"] for known in store.list_libraries()])
         except catalog.CatalogError as exc:
-            QMessageBox.warning(self, "Export Catalog", str(exc))
+            plain.warning(self, "Export Catalog", str(exc))
             return
         except OSError as exc:
-            QMessageBox.critical(self, "Export failed", f"Couldn't write the catalog: {exc}")
+            plain.critical(self, "Export failed", f"Couldn't write the catalog: {exc}")
             return
         self._set_status(f"Catalog of {len(data['videos'])} videos saved to {path}.")
 
@@ -3224,7 +3225,7 @@ class MainWindow(QMainWindow):
         try:
             incoming = catalog.read(path)
         except catalog.CatalogError as exc:
-            QMessageBox.warning(self, "Import Catalog", str(exc))
+            plain.warning(self, "Import Catalog", str(exc))
             return
         made_at = incoming["settings"]["library_root"]
         folder = QFileDialog.getExistingDirectory(
@@ -3235,7 +3236,7 @@ class MainWindow(QMainWindow):
         try:
             data, changed = catalog.import_into(incoming, folder)
         except catalog.CatalogError as exc:
-            QMessageBox.warning(self, "Import Catalog", str(exc))
+            plain.warning(self, "Import Catalog", str(exc))
             return
         self.load_root(data["settings"]["library_root"])
         self._set_status(

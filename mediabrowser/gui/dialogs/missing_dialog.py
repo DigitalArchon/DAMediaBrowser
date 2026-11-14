@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from mediabrowser.gui.plain import tooltip
+
 FOLDER_GONE = "folder not found"
 INTRO = (
     "These videos' files aren't where the library last saw them, listed under the "
@@ -96,7 +98,7 @@ class MissingDialog(QDialog):
         header.resizeSection(1, 260)
         for group in groups:
             folder = QTreeWidgetItem([folder_label(group)])
-            folder.setToolTip(0, group["folder"])
+            folder.setToolTip(0, tooltip(group["folder"]))
             font = folder.font(0)
             font.setBold(True)
             folder.setFont(0, font)
@@ -104,8 +106,8 @@ class MissingDialog(QDialog):
             for video_id, name, path in group["videos"]:
                 row = QTreeWidgetItem([name, os.path.basename(path)])
                 row.setData(0, Qt.UserRole, video_id)
-                row.setToolTip(0, path)
-                row.setToolTip(1, path)
+                row.setToolTip(0, tooltip(path))
+                row.setToolTip(1, tooltip(path))
                 folder.addChild(row)
             self.tree.addTopLevelItem(folder)
             folder.setFirstColumnSpanned(True)

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from mediabrowser.core import sharing, store
+from mediabrowser.gui import plain
 
 NONE_YET = (
     "There are no backups yet. One is kept whenever a library is forgotten, folded "
@@ -102,7 +103,7 @@ class RestoreDialog(QDialog):
         try:
             self.restored = store.restore_backup(backup["path"])
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Couldn't restore", str(exc))
+            plain.warning(self, "Couldn't restore", str(exc))
             return
         self.accept()
 

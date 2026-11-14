@@ -206,7 +206,7 @@ def test_the_dialog_refuses_a_library_folder(app, tmp_path, monkeypatch):
     library.mkdir()
     monkeypatch.setattr(audio_export_dialog.exports, "library_roots", lambda: [str(library)])
     warned = []
-    monkeypatch.setattr(audio_export_dialog.QMessageBox, "warning",
+    monkeypatch.setattr(audio_export_dialog.plain, "warning",
                         lambda *args: warned.append(args[2]))
     dialog = AudioExportDialog(None, "vid", video(), [0])
     dialog.folder.setText(str(library))

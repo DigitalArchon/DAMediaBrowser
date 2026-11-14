@@ -83,6 +83,7 @@ from mediabrowser.core import (
     utils,
 )
 from mediabrowser.gui import audio_analysis, links
+from mediabrowser.gui.plain import tooltip
 from mediabrowser.gui.worker import run_job
 
 TAB_MENU, TAB_TRACKLIST = range(2)
@@ -708,6 +709,7 @@ class ChaptersDialog(QDialog):
         self.media_list.hide()
 
         self.mb_status = QLabel(LOOK_UP_HINT)
+        self.mb_status.setTextFormat(Qt.PlainText)     # a failure may quote the server
         self.mb_status.setObjectName("hintLabel")
         self.mb_status.setWordWrap(True)
         self._update_mb_controls()
@@ -1701,7 +1703,7 @@ class ChaptersDialog(QDialog):
             ])
             item.setTextAlignment(0, Qt.AlignRight | Qt.AlignVCenter)
             item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
-            item.setToolTip(3, " · ".join(notes))
+            item.setToolTip(3, tooltip(" · ".join(notes)))
             if row.moved:
                 item.setToolTip(1, "Not where the estimate had it - worth a check")
             if row.confidence in CONFIDENCE_COLOURS:
@@ -2025,7 +2027,7 @@ class ChaptersDialog(QDialog):
             item.setTextAlignment(0, Qt.AlignRight | Qt.AlignVCenter)
             item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
             if note:
-                item.setToolTip(3, note)
+                item.setToolTip(3, tooltip(note))
             if row.flag in FLAG_COLOURS:
                 from PySide6.QtGui import QColor
 
