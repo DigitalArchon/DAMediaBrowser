@@ -57,6 +57,12 @@ select = ["E", "F", "I", "UP", "B"]
 # copies in DA Assistant and the other apps that share them, so a fix in one
 # can be carried to the others as a diff; their style is those apps'.
 "mediabrowser/core/{dcap,nras,ethsig,private_ai,sealed}.py" = ["B904", "B905", "UP017"]
+# dcap.py, nras.py and sdk_guard.py are DA Toolkit's and SealedLore's copies line for
+# line (tests/test_shared_code.py), formatted as theirs are: to 120 columns, as
+# SealedLore exempts them too.
+"mediabrowser/core/{dcap,nras,sdk_guard}.py" = ["E501"]
+# It lists other files' lines word for word, as the differences it allows.
+"tests/test_shared_code.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

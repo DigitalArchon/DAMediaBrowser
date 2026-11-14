@@ -104,6 +104,12 @@ class TestSettings:
         assert "That machine is not attested by this app" in said
         assert said.index("Attested: RedPill's") < said.index("the gateway's quote binds")
         assert dialog.attest_status.property("tone") == "warning"
+        # What each shortfall costs, in its tooltip, as every DA app says it.
+        import html
+        tip = html.unescape(dialog.attest_status.toolTip())      # gui/plain.tooltip's
+        assert "RedPill's gateway, not the model's host: what is attested is RedPill's TEE " \
+            "gateway" in tip
+        assert "GPUs not tied to the quote: NVIDIA vouches for these GPUs" in tip
 
     def test_naming_a_tee_replys_provider_is_a_choice_that_says_where_it_goes(self,
                                                                               window):

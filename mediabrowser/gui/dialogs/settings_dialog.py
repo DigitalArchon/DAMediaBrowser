@@ -811,9 +811,11 @@ class SettingsDialog(QDialog):
             proved = private_ai.attestation_label(session.attestation)[0]
             reply = private_ai.receipt_label(session.last_receipt())[0]
             text += f" — {proved}; the reply {reply.lstrip('✓⚠ ')}"
-            # What was attested, and what the reply's mark means (receipt_tip).
-            tip = " ".join(part for part in (
+            # What was attested, what each shortfall costs, and what the reply's mark
+            # means (receipt_tip).
+            tip = "\n\n".join(part for part in (
                 private_ai.what_was_attested(session.attestation, clear=False),
+                *private_ai.shortfall_tips(session.attestation),
                 private_ai.receipt_tip(session.last_receipt())) if part)
         self.status.setText(text)
         self.status.setToolTip(tooltip(tip) if tip else "")
@@ -840,10 +842,14 @@ class SettingsDialog(QDialog):
         self._tone(self.attest_status,
                    " ".join(part for part in (f"{text}.", what, session.attestation.detail)
                             if part), tone)
+        # What each shortfall costs, the same words in every DA app (shortfall_tips).
+        tips = private_ai.shortfall_tips(session.attestation)
+        self.attest_status.setToolTip(tooltip("\n\n".join(tips)) if tips else "")
 
     def _attestation_failed(self, message: str) -> None:
         self._update_privacy()
         self._tone(self.attest_status, f"Refused: {message}", "error")
+        self.attest_status.setToolTip("")
 
     def fetch_private_models(self) -> None:
         settings = self.settings()

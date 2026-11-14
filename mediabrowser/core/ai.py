@@ -833,10 +833,12 @@ def _attestation_listener(session: private_ai.PrivacySession):
             text, tone = private_ai.attestation_label(detail)
             # What was attested first, and what it leaves to someone's word.
             what = private_ai.what_was_attested(detail)
+            # And what each shortfall costs, as every DA app says it (shortfall_tips).
             outbound.record(
                 "Nano-GPT", session.api_url, f"an attestation of {session.model}'s enclave",
                 outbound.CHECK, _checked_with(session), outbound.SENT,
-                " ".join(part for part in (f"{text}.", what, detail.detail) if part))
+                " ".join(part for part in (f"{text}.", what, detail.detail,
+                                           *private_ai.shortfall_tips(detail)) if part))
         elif event == "refused":
             outbound.record(
                 "Nano-GPT", session.api_url, f"an attestation of {session.model}'s enclave",

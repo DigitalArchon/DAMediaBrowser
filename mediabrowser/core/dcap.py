@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Intel TDX quote verification (DCAP), for the TEE/ models' attestation.
 
-From DA Assistant's dcap.py (Nov 2026), unchanged but for the transport:
-netguard's Session rather than requests.
+The same checks in each of the author's apps that attest TEE models (DA Assistant, DA Vibe
+Manager, DA Private Coder, DA Toolkit, SealedLore), kept alike since Nov 2026; first written
+for the AI-Assistant app (assistant/dcap.py), by way of DA Assistant's copy, with netguard's Session for HTTP here.
 
 A TEE/ model's attestation carries an Intel TDX quote: a report of the trust domain the
-model runs in, signed by Intel's quoting enclave (QE) on that machine. private_ai.py checks
-that the report binds the enclave's signing key to our nonce. This module checks that
+model runs in, signed by Intel's quoting enclave (QE) on that machine. private_ai.py
+checks that the report binds the enclave's signing key to our nonce. This module checks that
 the quote itself is genuine and current, the way Intel's own Quote Verification Library
 does, from the quote's bytes and Intel's published collateral:
 
@@ -31,19 +32,15 @@ does, from the quote's bytes and Intel's published collateral:
      root itself - not by just any certificate that chains there.
   6. The TD is not a debug TD, whose memory the host can read.
 
-A failure of 1-4 or 6, or a TCB that is Revoked (the platform's, the module's or the
-QE's, whatever status sits beside it) or older than any Intel lists, is a quote that must
-not be trusted: DcapError, and nothing is sent. Collateral that cannot be fetched (5, and
-the CRLs: Intel's service unreachable or answering with an error) is reported as that,
-not as a pass: the caller shows the attestation as partial. So is any TCB status but
-UpToDate, named as Intel names it. Collateral that did arrive but cannot be read (a CRL
-or signed document that does not parse, a missing issuer chain) is not an outage: it
-refuses like a bad signature would, since an answer shaped to fail parsing must not buy
-a pass as "unchecked".
-
-The same checks are in each of the author's apps that attest TEE models (DA Vibe
-Manager, DA Private Coder, DA Toolkit, SealedLore), kept alike since Nov 2026; DA
-Assistant's is the copy they were first ported from, with requests where they have httpx.
+A failure of 1-4 or 6, or a TCB that is Revoked (the platform's, the module's or the QE's,
+whatever status sits beside it) or older than any Intel lists, is a quote
+that must not be trusted: DcapError, and nothing is sent. Collateral that cannot be
+fetched (5, and the CRLs: Intel's service unreachable or answering with an error) is
+reported as that, not as a pass: the caller shows the attestation as partial. So is any
+TCB status but UpToDate, named as Intel names it. Collateral that did arrive but cannot
+be read (a CRL or signed document that doesn't parse, a missing issuer chain) is not an
+outage: it refuses like a bad signature would, since an answer shaped to fail parsing
+must not buy a pass as "unchecked".
 
 Checked live against TEE/glm-5.3-flash's quote (Sept 2026): version 4, ECDSA-256
 attestation key, TDX; PCK Platform CA; FMSPC 20a06f000000; TDX module TDX_03; every
@@ -59,13 +56,13 @@ import json
 import struct
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import unquote
 
 from . import netguard
-
-UTC = timezone.utc          # datetime.UTC is Python 3.11's; this app runs on 3.10 too
 
 # Intel SGX Root CA, as Intel publishes it at
 # https://certificates.trustedservices.intel.com/Intel_SGX_Provisioning_Certification_RootCA.cer
@@ -102,17 +99,23 @@ INTEL_QE_VENDOR_ID = bytes.fromhex("939a7233f79c4ca9940a0db3957f0607")
 TDX_TEE_TYPE = 0x81
 ECDSA_P256 = 2
 HEADER_LEN = 48
-TD_REPORT_LEN = 584          # TDX 1.0 and 1.5 TD report body in a version 4 quote
+TD_REPORT_LEN = 584  # TDX 1.0 and 1.5 TD report body in a version 4 quote
 QE_REPORT_LEN = 384
-PCK_CHAIN = 5                # certification data: the PCK chain, PEM
-QE_REPORT_DATA = 6           # certification data: QE report, then the PCK chain
+PCK_CHAIN = 5  # certification data: the PCK chain, PEM
+QE_REPORT_DATA = 6  # certification data: QE report, then the PCK chain
 
 SGX_EXTENSION = "1.2.840.113741.1.13.1"
 
 # Intel's TCB statuses, best first; a combination of statuses takes the worst.
-STATUSES = ["UpToDate", "SWHardeningNeeded", "ConfigurationNeeded",
-            "ConfigurationAndSWHardeningNeeded", "OutOfDate",
-            "OutOfDateConfigurationNeeded", "Revoked"]
+STATUSES = [
+    "UpToDate",
+    "SWHardeningNeeded",
+    "ConfigurationNeeded",
+    "ConfigurationAndSWHardeningNeeded",
+    "OutOfDate",
+    "OutOfDateConfigurationNeeded",
+    "Revoked",
+]
 
 
 class DcapError(Exception):
@@ -120,45 +123,46 @@ class DcapError(Exception):
 
 
 class CollateralUnavailable(Exception):
-    """Intel's collateral could not be fetched: the service out of reach, or an error
-    status. What arrives and cannot be read is a DcapError instead."""
+    """Intel's collateral could not be fetched: the service out of reach, or an
+    error status. What arrives and can't be read is a DcapError instead."""
 
 
 # ---- the quote ----------------------------------------------------------------------
 
+
 @dataclass
 class Quote:
-    signed: bytes                # header + TD report: what the attestation key signed
-    body: bytes                  # the TD report
-    signature: bytes             # r || s
-    attestation_key: bytes       # x || y
+    signed: bytes  # header + TD report: what the attestation key signed
+    body: bytes  # the TD report
+    signature: bytes  # r || s
+    attestation_key: bytes  # x || y
     qe_report: bytes
     qe_report_signature: bytes
     qe_auth_data: bytes
     pck_chain_pem: bytes
 
     @property
-    def tee_tcb_svn(self):
+    def tee_tcb_svn(self) -> bytes:
         return self.body[0:16]
 
     @property
-    def mr_signer_seam(self):
+    def mr_signer_seam(self) -> bytes:
         return self.body[64:112]
 
     @property
-    def seam_attributes(self):
+    def seam_attributes(self) -> bytes:
         return self.body[112:120]
 
     @property
-    def td_attributes(self):
+    def td_attributes(self) -> bytes:
         return self.body[120:128]
 
     @property
-    def report_data(self):
+    def report_data(self) -> bytes:
         return self.body[520:584]
 
 
-def parse_quote(raw):
+def parse_quote(raw: bytes) -> Quote:
     """Split a version 4 TDX quote into its parts. Raises DcapError if it is not one."""
     try:
         version, key_type, tee_type = struct.unpack_from("<HHI", raw, 0)
@@ -172,53 +176,60 @@ def parse_quote(raw):
             raise DcapError("the quoting enclave is not Intel's")
         end = HEADER_LEN + TD_REPORT_LEN
         (length,) = struct.unpack_from("<I", raw, end)
-        data = raw[end + 4:end + 4 + length]
+        data = raw[end + 4 : end + 4 + length]
         if len(data) != length:
             raise DcapError("the quote is truncated")
         signature, attestation_key = data[0:64], data[64:128]
         cert_type, cert_size = struct.unpack_from("<HI", data, 128)
-        cert = data[134:134 + cert_size]
+        cert = data[134 : 134 + cert_size]
         if cert_type != QE_REPORT_DATA:
             raise DcapError(f"certification data type {cert_type}, not a QE report")
-        qe_report, qe_signature = cert[0:QE_REPORT_LEN], cert[QE_REPORT_LEN:QE_REPORT_LEN + 64]
+        qe_report, qe_signature = cert[0:QE_REPORT_LEN], cert[QE_REPORT_LEN : QE_REPORT_LEN + 64]
         at = QE_REPORT_LEN + 64
         (auth_len,) = struct.unpack_from("<H", cert, at)
-        auth = cert[at + 2:at + 2 + auth_len]
+        auth = cert[at + 2 : at + 2 + auth_len]
         at += 2 + auth_len
         inner_type, inner_size = struct.unpack_from("<HI", cert, at)
         if inner_type != PCK_CHAIN:
             raise DcapError(f"inner certification data type {inner_type}, not a PCK chain")
-        chain = cert[at + 6:at + 6 + inner_size].rstrip(b"\0")
+        chain = cert[at + 6 : at + 6 + inner_size].rstrip(b"\0")
     except struct.error as e:
-        raise DcapError(f"the quote is malformed ({e})")
-    return Quote(signed=raw[0:end], body=raw[HEADER_LEN:end], signature=signature,
-                 attestation_key=attestation_key, qe_report=qe_report,
-                 qe_report_signature=qe_signature, qe_auth_data=auth,
-                 pck_chain_pem=chain)
+        raise DcapError(f"the quote is malformed ({e})") from e
+    return Quote(
+        signed=raw[0:end],
+        body=raw[HEADER_LEN:end],
+        signature=signature,
+        attestation_key=attestation_key,
+        qe_report=qe_report,
+        qe_report_signature=qe_signature,
+        qe_auth_data=auth,
+        pck_chain_pem=chain,
+    )
 
 
 # ---- DER, just enough for Intel's SGX certificate extension ---------------------------
 
-def _der(data, at=0):
+
+def _der(data: bytes, at: int = 0) -> tuple[int, bytes, int]:
     """(tag, value, next offset) of the DER element at `at`."""
     tag = data[at]
     length = data[at + 1]
     at += 2
     if length & 0x80:
         count = length & 0x7F
-        length = int.from_bytes(data[at:at + count], "big")
+        length = int.from_bytes(data[at : at + count], "big")
         at += count
-    return tag, data[at:at + length], at + length
+    return tag, data[at : at + length], at + length
 
 
-def _children(value):
+def _children(value: bytes) -> Iterator[tuple[int, bytes]]:
     at = 0
     while at < len(value):
         tag, inner, at = _der(value, at)
         yield tag, inner
 
 
-def _oid(value):
+def _oid(value: bytes) -> str:
     first = value[0]
     parts = [str(min(first // 40, 2)), str(first - 40 * min(first // 40, 2))]
     number = 0
@@ -230,7 +241,7 @@ def _oid(value):
     return ".".join(parts)
 
 
-def sgx_extension(value):
+def sgx_extension(value: bytes) -> dict[str, Any]:
     """{fmspc, pcesvn, cpusvn: [16 ints]} from the PCK certificate's SGX extension."""
     out = {}
     _tag, seq, _next = _der(value)
@@ -254,22 +265,23 @@ def sgx_extension(value):
 
 # ---- signatures ---------------------------------------------------------------------
 
-def _crypto():
+
+def _crypto() -> tuple[Any, Any, Any, Any, Any]:
     """cryptography's pieces. Raises ImportError when it is not installed."""
     from cryptography import x509
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
     return x509, InvalidSignature, hashes, ec, encode_dss_signature
 
 
-def _raw_verify(public_key, signature, data):
+def _raw_verify(public_key: Any, signature: bytes, data: bytes) -> bool:
     """An ECDSA P-256/SHA-256 signature given as r || s."""
     _x509, InvalidSignature, hashes, ec, encode = _crypto()
     half = len(signature) // 2
-    der = encode(int.from_bytes(signature[:half], "big"),
-                 int.from_bytes(signature[half:], "big"))
+    der = encode(int.from_bytes(signature[:half], "big"), int.from_bytes(signature[half:], "big"))
     try:
         public_key.verify(der, data, ec.ECDSA(hashes.SHA256()))
     except InvalidSignature:
@@ -277,37 +289,38 @@ def _raw_verify(public_key, signature, data):
     return True
 
 
-def _key_from_xy(xy):
+def _key_from_xy(xy: bytes) -> Any:
     _x509, _invalid, _hashes, ec, _encode = _crypto()
-    return ec.EllipticCurvePublicNumbers(int.from_bytes(xy[:32], "big"),
-                                         int.from_bytes(xy[32:], "big"),
-                                         ec.SECP256R1()).public_key()
+    return ec.EllipticCurvePublicNumbers(
+        int.from_bytes(xy[:32], "big"), int.from_bytes(xy[32:], "big"), ec.SECP256R1()
+    ).public_key()
 
 
-def _utc(cert, name):
+def _utc(cert: Any, name: str) -> datetime:
     value = getattr(cert, f"{name}_utc", None)
-    if value is None:                       # cryptography < 42
+    if value is None:  # cryptography < 42
         value = getattr(cert, name).replace(tzinfo=UTC)
     return value
 
 
-def intel_root():
+def intel_root() -> Any:
     x509 = _crypto()[0]
     root = x509.load_pem_x509_certificate(INTEL_ROOT_PEM)
     from cryptography.hazmat.primitives.serialization import Encoding
+
     if hashlib.sha256(root.public_bytes(Encoding.DER)).hexdigest() != INTEL_ROOT_SHA256:
         raise DcapError("the pinned Intel root certificate is damaged")
     return root
 
 
-def _may_issue(issuer, below):
-    """Raise DcapError unless `issuer` may sign certificates with `below` CA
-    certificates between it and the leaf: its basicConstraints say it is a CA, within
-    its path length, and its keyUsage, where it has one, includes certificate signing.
+def _may_issue(issuer: Any, below: int) -> None:
+    """Raise DcapError unless `issuer` may sign certificates with `below` CA certificates
+    between it and the leaf: its basicConstraints say it is a CA, within its path length,
+    and its keyUsage, where it has one, includes certificate signing.
 
-    Without this, any certificate Intel's root vouches for - the TCB signing one, or a
-    PCK certificate whose key a compromised platform gave up - could sign certificates
-    of its own and have them pass as Intel's."""
+    Without this, any certificate Intel's root vouches for - the TCB signing one, or a PCK
+    certificate whose key a compromised platform gave up - could sign certificates of its
+    own and have them pass as Intel's. (From DA Assistant's copy of this module, Nov 2026.)"""
     x509 = _crypto()[0]
     name = issuer.subject.rfc4514_string()
     try:
@@ -317,8 +330,10 @@ def _may_issue(issuer, below):
     if constraints is None or not constraints.ca:
         raise DcapError(f"{name} signed a certificate, and is not a certificate authority")
     if constraints.path_length is not None and below > constraints.path_length:
-        raise DcapError(f"{name} may have {constraints.path_length} certificate "
-                        f"authorities below it, and the chain puts {below} there")
+        raise DcapError(
+            f"{name} may have {constraints.path_length} certificate authorities below it, "
+            f"and the chain puts {below} there"
+        )
     try:
         usage = issuer.extensions.get_extension_for_class(x509.KeyUsage).value
     except x509.ExtensionNotFound:
@@ -327,7 +342,7 @@ def _may_issue(issuer, below):
         raise DcapError(f"{name} signed a certificate with a key not meant for that")
 
 
-def verify_chain(certs, root, now):
+def verify_chain(certs: list[Any], root: Any, now: datetime) -> None:
     """Each certificate signed by the next, the last by `root`, all of them current, and
     every one that signed another a certificate authority allowed to (_may_issue)."""
     _x509, InvalidSignature, _hashes, ec, _encode = _crypto()
@@ -337,36 +352,35 @@ def verify_chain(certs, root, now):
         if cert.issuer != issuer.subject:
             raise DcapError(f"{subject} was not issued by {issuer.subject.rfc4514_string()}")
         try:
-            issuer.public_key().verify(cert.signature, cert.tbs_certificate_bytes,
-                                       ec.ECDSA(cert.signature_hash_algorithm))
+            issuer.public_key().verify(
+                cert.signature, cert.tbs_certificate_bytes, ec.ECDSA(cert.signature_hash_algorithm)
+            )
         except InvalidSignature:
-            raise DcapError(f"{subject}'s signature does not verify")
+            raise DcapError(f"{subject}'s signature does not verify") from None
         _may_issue(issuer, below)
     for cert in chain:
         if not _utc(cert, "not_valid_before") <= now <= _utc(cert, "not_valid_after"):
-            raise DcapError(f"{cert.subject.rfc4514_string()} is outside its validity "
-                            f"period")
+            raise DcapError(f"{cert.subject.rfc4514_string()} is outside its validity period")
 
 
-def _common_name(cert):
+def _common_name(cert: Any) -> str:
     x509 = _crypto()[0]
     names = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
     return names[0].value if names else ""
 
 
-# ---- collateral ---------------------------------------------------------------------
-
 _BOOTTIME = getattr(time, "CLOCK_BOOTTIME", None)
 
 
-def since_boot():
-    """Seconds on a clock that keeps counting while the machine is suspended, for
-    telling when something fetched or proved has grown old: Intel's collateral here,
-    NVIDIA's keys (nras.py), an attestation (private_ai.py, sealed.py).
+def since_boot() -> float:
+    """Seconds on a clock that keeps counting while the machine is suspended, for telling
+    when something fetched or proved has grown old: Intel's collateral here, NVIDIA's keys
+    (nras.py), an attestation (the TEE checks, Private Mode's enclave).
 
-    time.monotonic stops while the machine sleeps, so a laptop that slept for hours
-    would take an attestation made before it for a few minutes old. Linux's
-    CLOCK_BOOTTIME does not stop; where there is none, monotonic is what there is."""
+    time.monotonic stops while the machine sleeps, so a laptop that slept for hours would
+    take an attestation made before it for a few minutes old. Linux's CLOCK_BOOTTIME does
+    not stop; where there is none, monotonic is what there is. (From DA Assistant's copy of
+    this module, Nov 2026.)"""
     if _BOOTTIME is not None:
         try:
             return time.clock_gettime(_BOOTTIME)
@@ -375,18 +389,24 @@ def since_boot():
     return time.monotonic()
 
 
-_cache = {}
+# ---- collateral ---------------------------------------------------------------------
+
+_cache: dict[tuple, tuple[float, bytes, dict[str, str]]] = {}
 _cache_lock = threading.Lock()
 
 
-def _fetch(session, url, params=None, unread=None):
+def _fetch(
+    session: netguard.Session,
+    url: str,
+    params: dict[str, str] | None = None,
+    unread: dict[tuple, tuple[bytes, dict[str, str]]] | None = None,
+) -> tuple[bytes, dict[str, str]]:
     """(body bytes, headers) of Intel's collateral, cached for COLLATERAL_TTL.
 
-    With `unread` (a quote's verification: _verify), what is fetched is put there and not
-    in the cache: _keep caches it once all of it has been read and its signatures
-    checked. Cached as it arrived, an answer that could not be read (a proxy's or a
-    portal's page with a 200) refused every quote for the hour, long after Intel's
-    service answered again."""
+    With `unread` (a quote's verification: `_verify`), what is fetched is put there and not in
+    the cache: `_keep` caches it once all of it has been read and its signatures checked. Cached
+    as it arrived, an answer that couldn't be read (a proxy's or a portal's page with a 200)
+    refused every quote for the hour, long after Intel's service answered again."""
     key = (url, tuple(sorted((params or {}).items())))
     if unread is not None and key in unread:
         return unread[key]
@@ -397,7 +417,7 @@ def _fetch(session, url, params=None, unread=None):
     try:
         response = session.get(url, params=params, timeout=TIMEOUT_SECONDS)
     except netguard.RequestError as e:
-        raise CollateralUnavailable(f"{url}: {e}")
+        raise CollateralUnavailable(f"{url}: {e}") from e
     if response.status_code != 200:
         raise CollateralUnavailable(f"{url}: HTTP {response.status_code}")
     content = response.content
@@ -409,21 +429,21 @@ def _fetch(session, url, params=None, unread=None):
     return content, headers
 
 
-def _keep(read):
-    """Cache collateral that was fetched (_fetch), now that it has been read."""
+def _keep(read: dict[tuple, tuple[bytes, dict[str, str]]]) -> None:
+    """Cache collateral that was fetched (`_fetch`), now that it has been read."""
     with _cache_lock:
         for key, (content, headers) in read.items():
             _cache[key] = (since_boot(), content, headers)
 
 
-def _header(headers, name):
+def _header(headers: dict[str, str], name: str) -> str:
     for key, value in headers.items():
         if key.lower() == name.lower():
             return unquote(value)
     raise DcapError(f"Intel's response had no {name}")
 
 
-def _load_crl(data):
+def _load_crl(data: bytes) -> Any:
     x509 = _crypto()[0]
     try:
         return x509.load_der_x509_crl(data)
@@ -431,28 +451,25 @@ def _load_crl(data):
         try:
             return x509.load_pem_x509_crl(data)
         except ValueError:
-            raise DcapError("a CRL from Intel could not be read")
+            raise DcapError("a CRL from Intel could not be read") from None
 
 
-def _check_crl(crl, issuer, now, *certs):
+def _check_crl(crl: Any, issuer: Any, now: datetime, *certs: Any) -> bool:
     if not crl.is_signature_valid(issuer.public_key()):
         raise DcapError(f"{_common_name(issuer)}'s CRL is not signed by it")
     update = getattr(crl, "next_update_utc", None) or (
-        crl.next_update.replace(tzinfo=UTC) if crl.next_update else None)
+        crl.next_update.replace(tzinfo=UTC) if crl.next_update else None
+    )
     for cert in certs:
         if crl.get_revoked_certificate_by_serial_number(cert.serial_number) is not None:
             raise DcapError(f"{cert.subject.rfc4514_string()} has been revoked by Intel")
     return update is not None and update < now
 
 
-def _signed_json(content, key, chain_pem, root, now):
-    """The object under `key`, once Intel's signature over its exact bytes verifies.
-
-    The signer must be Intel's TCB signing certificate, issued by the root itself, the
-    only certificate between them: not merely one that chains to Intel's root. A PCK
-    certificate chains there too, and one whose key a compromised platform gave up could
-    otherwise sign that platform's own TCB as UpToDate; and a certificate named as the
-    TCB signing one, under any CA of Intel's but the root, would pass by its name."""
+def _signed_json(
+    content: bytes, key: str, chain_pem: str, root: Any, now: datetime
+) -> tuple[dict[str, Any], Any]:
+    """The object under `key`, once Intel's signature over its exact bytes verifies."""
     x509 = _crypto()[0]
     text = content.decode("utf-8")
     start = text.find(f'"{key}"')
@@ -477,20 +494,23 @@ def _signed_json(content, key, chain_pem, root, now):
             depth -= 1
             if depth == 0:
                 break
-    raw = text[start:end + 1]
+    raw = text[start : end + 1]
     document = json.loads(text)
     signer = x509.load_pem_x509_certificates(chain_pem.encode())
     leaf = signer[:-1] if len(signer) > 1 else signer
+    # Intel's TCB signing certificate, issued by the root itself: not just any certificate under the root
+    # (a platform's PCK certificate, whose key an out-of-date platform can give up, would rate its own TCB)
     if len(leaf) != 1 or _common_name(leaf[0]) != "Intel SGX TCB Signing":
         raise DcapError(f"Intel's {key} isn't signed by Intel's TCB signing certificate")
     verify_chain(leaf, root, now)
-    if not _raw_verify(signer[0].public_key(), bytes.fromhex(document["signature"]),
-                       raw.encode("utf-8")):
+    if not _raw_verify(
+        signer[0].public_key(), bytes.fromhex(document["signature"]), raw.encode("utf-8")
+    ):
         raise DcapError(f"Intel's signature on its {key} does not verify")
     return json.loads(raw), signer[0]
 
 
-def _stale(document, now):
+def _stale(document: dict[str, Any], now: datetime) -> bool:
     try:
         update = datetime.strptime(document["nextUpdate"], "%Y-%m-%dT%H:%M:%SZ")
     except (KeyError, ValueError):
@@ -500,12 +520,15 @@ def _stale(document, now):
 
 # ---- the TCB ------------------------------------------------------------------------
 
-def _worst(*statuses):
+
+def _worst(*statuses: str) -> str:
     known = [s for s in statuses if s]
     return max(known, key=lambda s: STATUSES.index(s) if s in STATUSES else len(STATUSES))
 
 
-def platform_level(tcb_info, sgx, tee_tcb_svn):
+def platform_level(
+    tcb_info: dict[str, Any], sgx: dict[str, Any], tee_tcb_svn: bytes
+) -> dict[str, Any] | None:
     """The first (highest) TCB level this platform meets, or None.
 
     As Intel's QVL: the PCK certificate's CPU SVN components and PCE SVN against the
@@ -528,11 +551,11 @@ def platform_level(tcb_info, sgx, tee_tcb_svn):
     return None
 
 
-def _masked(value, mask):
+def _masked(value: bytes, mask: bytes) -> bytes:
     return bytes(a & b for a, b in zip(value, mask, strict=False))
 
 
-def module_status(tcb_info, quote):
+def module_status(tcb_info: dict[str, Any], quote: Quote) -> str | None:
     """The TDX module's status, or None for a module 1.0 (judged by its platform level).
     Raises DcapError when the module is not Intel's or older than any Intel lists."""
     tee = quote.tee_tcb_svn
@@ -543,16 +566,16 @@ def module_status(tcb_info, quote):
         name = "TDX module 1.0"
     else:
         name = f"TDX_{major:02d}"
-        identity = next((m for m in tcb_info.get("tdxModuleIdentities", [])
-                         if m.get("id") == name), None)
+        identity = next(
+            (m for m in tcb_info.get("tdxModuleIdentities", []) if m.get("id") == name), None
+        )
         if identity is None:
             raise DcapError(f"the TDX module {name} is not one Intel lists")
         levels = identity.get("tcbLevels", [])
     if quote.mr_signer_seam != bytes.fromhex(identity.get("mrsigner", "")):
         raise DcapError(f"the {name} module was not signed by Intel")
     mask = bytes.fromhex(identity.get("attributesMask", "00" * 8))
-    if _masked(quote.seam_attributes, mask) != bytes.fromhex(identity.get("attributes",
-                                                                           "00" * 8)):
+    if _masked(quote.seam_attributes, mask) != bytes.fromhex(identity.get("attributes", "00" * 8)):
         raise DcapError(f"the {name} module's attributes are not Intel's")
     if levels is None:
         return None
@@ -562,31 +585,26 @@ def module_status(tcb_info, quote):
     raise DcapError(f"the {name} module (SVN {minor}) is older than any Intel lists")
 
 
-# Intel's TDX quoting enclave, as Intel's own signed identity of it says
-# (QE_IDENTITY_URL; the same, field for field, in the collateral captured in Sept 2026).
-# Checked on every quote, whether or not Intel's collateral can be fetched now: it is
-# what makes the attestation key the QE's, not that of any enclave the platform
-# certified. Without it, collateral out of reach - or made so - let such an enclave sign
-# a quote of its own making, and it passed as a partial attestation. From DA Vibe
-# Manager's copy of this module (Nov 2026).
-INTEL_TD_QE = {"id": "TD_QE",
-               "mrsigner": "DC9E2A7C6F948F17474E34A7FC43ED030F7C1563F1BABDDF6340C82E0E54A8C5",
+# Intel's TDX quoting enclave, as Intel's own identity of it says (tdx/certification/v4/qe/identity):
+# checked on every quote, whether or not that can be fetched now. It's what makes the attestation key the
+# QE's, not any enclave's a platform certified; without it, Intel's collateral being out of reach (or
+# made so) would let such an enclave sign a quote of its own making.
+INTEL_TD_QE = {"id": "TD_QE", "mrsigner": "DC9E2A7C6F948F17474E34A7FC43ED030F7C1563F1BABDDF6340C82E0E54A8C5",
                "isvprodid": 2, "miscselect": "00000000", "miscselectMask": "FFFFFFFF",
-               "attributes": "11000000000000000000000000000000",
-               "attributesMask": "FBFFFFFFFFFFFFFF0000000000000000"}
+               "attributes": "11000000000000000000000000000000", "attributesMask": "FBFFFFFFFFFFFFFF0000000000000000"}
 
 
-def qe_is_intels(identity, qe_report):
-    """Raise DcapError unless the quoting enclave is Intel's TDX QE as `identity`
-    describes it."""
+def qe_is_intels(identity: dict[str, Any], qe_report: bytes) -> None:
+    """Raises DcapError when the quoting enclave isn't Intel's QE as `identity` describes it."""
     if identity.get("id") != "TD_QE":
         raise DcapError(f"Intel's QE identity is for {identity.get('id')}, not TD_QE")
     (miscselect,) = struct.unpack_from("<I", qe_report, 16)
     if miscselect & int(identity["miscselectMask"], 16) != int(identity["miscselect"], 16):
         raise DcapError("the quoting enclave's MISCSELECT is not Intel's")
     attributes = qe_report[48:64]
-    if _masked(attributes, bytes.fromhex(identity["attributesMask"])) \
-            != bytes.fromhex(identity["attributes"]):
+    if _masked(attributes, bytes.fromhex(identity["attributesMask"])) != bytes.fromhex(
+        identity["attributes"]
+    ):
         raise DcapError("the quoting enclave's attributes are not Intel's")
     if qe_report[128:160] != bytes.fromhex(identity["mrsigner"]):
         raise DcapError("the quoting enclave was not signed by Intel")
@@ -595,7 +613,7 @@ def qe_is_intels(identity, qe_report):
         raise DcapError("the quoting enclave is not Intel's TDX QE")
 
 
-def qe_status(identity, qe_report):
+def qe_status(identity: dict[str, Any], qe_report: bytes) -> str:
     """The quoting enclave's status. Raises DcapError when it is not Intel's QE."""
     qe_is_intels(identity, qe_report)
     (svn,) = struct.unpack_from("<H", qe_report, 258)
@@ -607,45 +625,44 @@ def qe_status(identity, qe_report):
 
 # ---- the whole check ----------------------------------------------------------------
 
+
 @dataclass
 class Result:
-    status: str = ""             # the combined TCB status; "" without collateral
+    status: str = ""  # the combined TCB status; "" without collateral
     platform: str = ""
     module: str = ""
     qe: str = ""
-    advisories: list = field(default_factory=list)
+    advisories: list[str] = field(default_factory=list)
     fmspc: str = ""
-    collateral: bool = True      # False: the TCB and revocation were not checked
-    notes: list = field(default_factory=list)
+    collateral: bool = True  # False: the TCB and revocation were not checked
+    notes: list[str] = field(default_factory=list)
 
 
-def verify(raw, session=None, now=None):
+def verify(raw: bytes, session: netguard.Session | None = None, now: datetime | None = None) -> Result:
     """Verify a TDX quote (bytes). Returns a Result, or raises DcapError.
 
     Raises ImportError when the `cryptography` package is not available: nothing can
     be verified then, and the caller must say so rather than pass it.
     """
-    _crypto()                   # ImportError here, before anything is claimed
+    _crypto()  # ImportError here, before anything is claimed
     own = session is None
-    session = session or netguard.Session(follow=True)     # public: carries no key
+    session = session or netguard.Session(follow=True)
     now = now or datetime.now(UTC)
     try:
         return _verify(raw, session, now)
     except (DcapError, netguard.RequestError, ImportError):
         raise
     except Exception as e:  # noqa: BLE001
-        # A quote, a certificate in it or collateral shaped so that reading it raises
-        # something else (a key of another kind, an extension cut short, JSON nested past
-        # reading) is not verified, and is refused as what it is: until Nov 2026 the
-        # error itself went up.
-        raise DcapError(f"the quote or Intel's collateral could not be read "
-                        f"({type(e).__name__})") from e
+        # A quote, a certificate in it or collateral shaped so that reading it raises something
+        # else (a key of another kind, an extension cut short, JSON nested past reading) is not
+        # verified, and is refused as what it is: until Nov 2026 the error itself went up.
+        raise DcapError(f"the quote or Intel's collateral could not be read ({type(e).__name__})") from e
     finally:
         if own:
             session.close()
 
 
-def _verify(raw, session, now):
+def _verify(raw: bytes, session: netguard.Session, now: datetime) -> Result:
     x509 = _crypto()[0]
     quote = parse_quote(raw)
 
@@ -655,8 +672,8 @@ def _verify(raw, session, now):
     root = intel_root()
     try:
         certs = x509.load_pem_x509_certificates(quote.pck_chain_pem)
-    except ValueError:
-        raise DcapError("the quote's PCK chain could not be read")
+    except ValueError as e:
+        raise DcapError("the quote's PCK chain could not be read") from e
     if len(certs) < 2:
         raise DcapError("the quote's PCK chain is incomplete")
     pck, ca = certs[0], certs[1]
@@ -670,43 +687,51 @@ def _verify(raw, session, now):
         raise DcapError("the quote's signature does not verify")
     qe_is_intels(INTEL_TD_QE, quote.qe_report)      # with Intel's collateral or without it
 
-    sgx = sgx_extension(pck.extensions.get_extension_for_oid(
-        x509.ObjectIdentifier(SGX_EXTENSION)).value.value)
-    result = Result(fmspc=sgx["fmspc"],
-                    notes=["Intel's certificate chain, the quoting enclave and the "
-                           "quote's signature verify"])
-    # What is fetched for this quote, cached once all of it has been read and checked (_keep).
-    unread = {}
+    sgx = sgx_extension(
+        pck.extensions.get_extension_for_oid(x509.ObjectIdentifier(SGX_EXTENSION)).value.value
+    )
+    result = Result(
+        fmspc=sgx["fmspc"],
+        notes=["Intel's certificate chain, the quoting enclave and the quote's signature verify"],
+    )
+    # What is fetched for this quote, cached once all of it has been read and checked (`_keep`).
+    unread: dict[tuple, tuple[bytes, dict[str, str]]] = {}
     try:
         stale = False
         content, _headers = _fetch(session, ROOT_CRL_URL, unread=unread)
         stale |= _check_crl(_load_crl(content), root, now, ca)
         kind = "processor" if "Processor" in _common_name(ca) else "platform"
-        content, _headers = _fetch(session, PCK_CRL_URL, {"ca": kind, "encoding": "der"},
-                                   unread)
+        content, _headers = _fetch(session, PCK_CRL_URL, {"ca": kind, "encoding": "der"}, unread)
         stale |= _check_crl(_load_crl(content), ca, now, pck)
 
         content, headers = _fetch(session, TCB_INFO_URL, {"fmspc": sgx["fmspc"]}, unread)
-        tcb_info, signer = _signed_json(content, "tcbInfo",
-                                        _header(headers, "TCB-Info-Issuer-Chain"), root, now)
+        tcb_info, signer = _signed_json(
+            content, "tcbInfo", _header(headers, "TCB-Info-Issuer-Chain"), root, now
+        )
         content, _root_headers = _fetch(session, ROOT_CRL_URL, unread=unread)
         _check_crl(_load_crl(content), root, now, signer)
         if tcb_info.get("id") != "TDX" or tcb_info.get("fmspc", "").lower() != sgx["fmspc"]:
             raise DcapError("Intel's TCB info is not for this platform")
         content, headers = _fetch(session, QE_IDENTITY_URL, unread=unread)
         identity, _signer = _signed_json(
-            content, "enclaveIdentity",
-            _header(headers, "SGX-Enclave-Identity-Issuer-Chain"), root, now)
+            content,
+            "enclaveIdentity",
+            _header(headers, "SGX-Enclave-Identity-Issuer-Chain"),
+            root,
+            now,
+        )
         stale |= _stale(tcb_info, now) or _stale(identity, now)
         _keep(unread)
     except CollateralUnavailable as e:
         result.collateral = False
-        result.notes.append(f"Intel's revocation lists and TCB information could not be "
-                            f"fetched ({e}), so revocation and the TCB were not checked")
+        result.notes.append(
+            f"Intel's revocation lists and TCB information could not be "
+            f"fetched ({e}), so revocation and the TCB were not checked"
+        )
         return result
     except (ValueError, KeyError, TypeError) as e:
         # Fetched, but not what Intel publishes: refused, never "unchecked".
-        raise DcapError(f"Intel's collateral could not be read ({e})")
+        raise DcapError(f"Intel's collateral could not be read ({e})") from e
 
     level = platform_level(tcb_info, sgx, quote.tee_tcb_svn)
     if level is None:
@@ -716,17 +741,24 @@ def _verify(raw, session, now):
     result.module = module_status(tcb_info, quote) or ""
     result.qe = qe_status(identity, quote.qe_report)
     result.status = _worst(result.platform, result.module, result.qe)
-    # Asked of each, not of the worst: a status this app does not list ranks above
-    # Revoked there, so a revoked platform beside one Intel added later passed as partial.
+    # Asked of each, not of the worst: a status this app does not list ranks above Revoked
+    # there, so a revoked platform beside one Intel added later (TDX's TDRelaunchAdvised, say)
+    # passed as partial. (From DA Assistant's copy of this module, Nov 2026.)
     if "Revoked" in (result.platform, result.module, result.qe):
         raise DcapError("Intel has revoked this platform's TCB")
     parts = [f"platform {result.platform}"]
     if result.module:
         parts.append(f"TDX module {result.module}")
     parts.append(f"quoting enclave {result.qe}")
-    result.notes.append("not revoked; Intel TCB " + ", ".join(parts)
-                        + (f" (advisories {', '.join(result.advisories)})"
-                           if result.advisories and result.status != "UpToDate" else ""))
+    result.notes.append(
+        "not revoked; Intel TCB "
+        + ", ".join(parts)
+        + (
+            f" (advisories {', '.join(result.advisories)})"
+            if result.advisories and result.status != "UpToDate"
+            else ""
+        )
+    )
     if stale:
         result.collateral = False
         result.notes.append("some of Intel's collateral was past its next update")

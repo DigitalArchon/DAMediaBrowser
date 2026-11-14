@@ -817,7 +817,8 @@ reach, RedPill's gateway, GPUs not tied to the quote — rather than using it
 in amber: as nano-gpt's models are in Nov 2026, that leaves the `private/`
 ones and the `TEE/` ones Chutes alone serves. After a `TEE/` reply its
 attested keys were to sign that reads less than verified, it attests the
-model again before anything more is sent to it. **Check Attestation**
+model again before anything more is sent to it, as every run does after a
+reply whose check failed. **Check Attestation**
 attests the enclave on the spot, sending nothing for it to read, for free,
 and says what was attested; **Test** on the AI tab asks the private model
 one word, through the same checks. The private model's list is nano-gpt's,

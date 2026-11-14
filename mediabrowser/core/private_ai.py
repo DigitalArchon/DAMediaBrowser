@@ -80,7 +80,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from urllib.parse import quote, urljoin, urlparse
 
-from . import dcap, netguard, nras
+from . import dcap, netguard, nras, safejson
 from .ethsig import keccak256, recover_personal
 
 NRAS_URL = "https://nras.attestation.nvidia.com/v3/attest/gpu"
@@ -89,6 +89,14 @@ TIMEOUT_SECONDS = 30
 # 6-25 s for 12-43 instances that day), so an attestation is waited for longer than the
 # other requests.
 ATTESTATION_TIMEOUT_SECONDS = 90
+# One attestation, all of it, is given this long: a request of it waits for what is left,
+# and none is begun once it has passed (TeeClient._left). The reports may live under three
+# paths, each asked in turn, for the gateway's report and then the model's own: with 90
+# seconds each to answer, an address that never did kept a model "attesting..." for nine
+# minutes. Three minutes is a gateway's report, a model's own that timed out upstream (a
+# 504, about a minute) asked for once more, and Intel's and NVIDIA's checks, with room to
+# spare. From DA Toolkit's llm/tee.py (Nov 2026).
+ATTEMPT_SECONDS = 180
 PRIVATE_MODE_HOSTS = frozenset({"nano-gpt.com"})
 # How old a TEE/ model's attestation may grow, on the boot clock, before the next send
 # to it attests it again: an enclave restarted, moved or replaced since is found within
@@ -150,10 +158,10 @@ _UPSTREAM_LABELS = {
 # waits up to about 20 seconds): a reply that names one is looked up again meanwhile.
 RECEIPT_WAIT_SECONDS = 20
 RECEIPT_RETRY_SECONDS = 2
-# A receipt is this request's only if the gateway served it between the request being sent
-# and now: the response hash alone ties a receipt to a stream, and a relay could hand back
-# an earlier signed stream with its receipt. This much leeway either way, for this
-# computer's clock and the gateway's not quite agreeing. From SealedLore (1a61096).
+# A receipt is this request's only if the gateway served it between the request being
+# sent and now: the response's hash alone ties a receipt to a stream, and a relay could
+# hand back an earlier signed stream with its receipt. This much leeway either way, for
+# this computer's clock and the gateway's not quite agreeing. From SealedLore (1a61096).
 RECEIPT_CLOCK_SKEW_SECONDS = 5 * 60
 # Models whose streams nano-gpt rebuilds from the upstream's, so that their bytes never
 # match the record's hash (nano-gpt, Nov 2026).
@@ -446,6 +454,72 @@ def what_was_attested(attestation, clear=True):
     return ""
 
 
+# What each way an attestation can fall short costs, in a sentence or two (shortfall_tips):
+# the tooltip of an attestation that proved less than it could, wherever it is shown. Every
+# DA app gives each shortfall the same meaning and says what it costs (the DA apps' security
+# standard, Nov 2026); the words are SealedLore's SHORTFALL_TIPS, by this app's names.
+SHORTFALL_TIPS = {
+    GATEWAY_SHORTFALL: (
+        "RedPill's gateway, not the model's host: what is attested is RedPill's TEE gateway, "
+        "which passes each request on to the machine that runs the model. That machine is "
+        "not attested by this app: that it is a verified TEE is the gateway's word, in each "
+        "reply's signed receipt. For an enclave attested itself, end to end, use a private/ "
+        "model."),
+    GATEWAY_UNCHECKED: (
+        "RedPill's gateway unchecked: nano-gpt gave no report of the gateway just now (a "
+        "rate limit, an outage, or an answer in no shape this app reads, not that the "
+        "gateway does not serve this model), and the gateway answers some of this "
+        "provider's models now and then: a reply it answers cannot be checked. Attesting "
+        "again may find it."),
+    RECEIPT_KEYS_LOOSE: (
+        "Receipt keys not in the quote: nano-gpt had no gateway report for this model, so "
+        "the hardware's quote binds the key that signs each reply's record, not the key of "
+        "the gateway's receipts, and a receipt's word that the model was verified rests on "
+        "nano-gpt's relay."),
+    "receipt keys expired": (
+        "Receipt keys expired: the gateway's keyset names no time its keys hold until that "
+        "this app can read, so its receipts are not read. (Keys past their time are "
+        "refused.)"),
+    "no GPU evidence": (
+        "No GPU evidence: none was offered, so no GPU was checked. For a model attested "
+        "through RedPill's gateway, each reply's receipt carries the gateway's word that "
+        "the model was verified."),
+    GPUS_LOOSE: (
+        "GPUs not tied to the quote: NVIDIA vouches for these GPUs, for this check, but the "
+        "attested machine's quote does not commit to their evidence, so they may be "
+        "another machine's (the one running the model, say), passed on."),
+    "GPUs unverified": "GPUs unverified: NVIDIA's attestation service could not be reached.",
+    "NVIDIA signature unchecked": (
+        "NVIDIA signature unchecked: NVIDIA's keys could not be fetched to check its "
+        "verdict, so only what the verdict says of itself was held to (its nonce, its "
+        "time, each GPU's result)."),
+    "Intel TCB unchecked": (
+        "Intel TCB unchecked: Intel's revocation lists and ratings could not be fetched, "
+        "so whether the machine is revoked or out of date was not checked."),
+    "its release not checked against the latest": (
+        "Release not checked: the latest release of the enclave's software could not be "
+        "looked up, so an enclave on a release long superseded would read the same."),
+    "not everything could be checked": (
+        "Not everything could be checked: the attestation did not say what it lacked."),
+}
+
+
+def shortfall_tips(attestation):
+    """A sentence for each way `attestation` proved less than it could (fell_short),
+    saying what it costs: for a tooltip, as plain text. [] when it proved everything."""
+    tips = []
+    for what in getattr(attestation, "fell_short", None) or []:
+        tip = SHORTFALL_TIPS.get(what)
+        if tip is None and what.startswith("Intel TCB "):
+            tip = (f"{what}: Intel rates the machine below up to date, so a fix Intel has "
+                   f"published may be missing from it.")
+        elif tip is None and what.startswith("an older release than "):
+            tip = (f"An older release: the enclave runs a release older than the latest "
+                   f"({what[len('an older release than '):]}), whose fixes it may lack.")
+        tips.append(tip or what)
+    return tips
+
+
 @dataclass
 class Receipt:
     """What was checked about one reply."""
@@ -454,8 +528,8 @@ class Receipt:
     kind: str
     state: str
     detail: str = ""
-    # Strict doubted it: its model is attested again before anything more is sent to it
-    # (PrivacySession.check_reply).
+    # Doubted - its check failed, or Strict found it less than verified: its model is
+    # attested again before anything more is sent to it (PrivacySession.check_reply).
     doubted: bool = False
     # Who ran its model, where Settings asked (TeeUpstream, TeeClient.served_by), else None.
     upstream: object = None
@@ -464,7 +538,7 @@ class Receipt:
 def _json(value):
     if isinstance(value, str):
         try:
-            return json.loads(value)
+            return safejson.loads(value)
         except ValueError:
             return None
     return value
@@ -536,7 +610,7 @@ def _jwt_claims(value):
     if isinstance(value, str) and value.count(".") == 2:
         part = value.split(".")[1]
         try:
-            claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+            claims = safejson.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
         except (ValueError, binascii.Error):
             return found
         if isinstance(claims, dict):
@@ -793,7 +867,7 @@ def _session_record(session, session_id):
     finally:
         response.close()
     try:
-        record = json.loads(bytes(body))
+        record = safejson.loads(bytes(body))
         named = (isinstance(record, dict)
                  and hashlib.sha256(_canonical(record)).hexdigest() == session_id)
     except (ValueError, TypeError, RecursionError):
@@ -824,6 +898,12 @@ class TeeClient:
 
     def __init__(self, api_url, api_key, model, session=None, intel=None, nvidia=None,
                  wall=time.time):
+        # https, or this machine's own network: the key goes there; and a key no header
+        # can carry is sent nowhere. Refused as the client is made, as DA Toolkit's is.
+        refused = netguard.problem(api_url) or netguard.key_problem(
+            api_key, urlparse(str(api_url or "")).hostname or "the provider")
+        if refused:
+            raise PrivacyError(refused)
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
@@ -849,9 +929,26 @@ class TeeClient:
         # The two verifiers, replaceable so tests can stand in for Intel and NVIDIA.
         self._intel = intel or dcap.verify
         self._nvidia = nvidia or nras.verify
-        # The time of day, which receipts are dated in (served_at, Unix seconds);
+        # The time of day, which receipts are dated in (`served_at`, Unix seconds):
         # replaceable for tests.
         self._wall = wall
+        # When the attestation under way must be over (time.monotonic; ATTEMPT_SECONDS),
+        # else None.
+        self._deadline = None
+
+    def _left(self, wanted=TIMEOUT_SECONDS):
+        """How long a request of the attestation under way may wait: `wanted`, or what is
+        left of ATTEMPT_SECONDS when that is less. Refuses once it has passed: asked
+        before each request, and before Intel's and NVIDIA's checks. Outside an
+        attestation (a reply's check), `wanted`. From DA Toolkit."""
+        if self._deadline is None:
+            return wanted
+        left = self._deadline - time.monotonic()
+        if left <= 0:
+            raise PrivacyError(f"{self.model}'s attestation was not done within "
+                               f"{ATTEMPT_SECONDS / 60:g} minutes, and was given up; this "
+                               f"may pass if tried again")
+        return min(wanted, left)
 
     def _get(self, path, params, route=None, timeout=TIMEOUT_SECONDS):
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -861,11 +958,13 @@ class TeeClient:
             headers["X-TEE-Verification-Route"] = route
         last, last_status = "", None
         for base in [self._base] if self._base else _bases(self.api_url):
+            # Of an attestation: each address waits only for what is left of its time.
+            wait = self._left(timeout)
             try:
                 # No redirect is followed with the key: it would re-send the request
                 # wherever it pointed (netguard.redirected).
                 response = self.session.get(f"{base}{path}", params=params,
-                                            headers=headers, timeout=timeout,
+                                            headers=headers, timeout=wait,
                                             allow_redirects=False)
             except netguard.RequestError as e:
                 last, last_status = str(e), None
@@ -957,7 +1056,32 @@ class TeeClient:
         Stricter than StoryLoom, which reads these verdicts without checking their
         signatures: a nonce or a verdict that merely comes back in JSON proves nothing,
         since anything can echo a string.
+
+        The whole of it is given ATTEMPT_SECONDS (_left). And evidence that is not in the
+        shape it should be - a list where an object belongs, a key that is not hex, JSON
+        nested past reading - refuses like any other that does not hold, as a
+        PrivacyError saying it could not be read, the error it raised its cause: as DA
+        Toolkit's TeeClient.attest (Nov 2026), where the conversation's session turned
+        it into a refusal but nothing else that attests did.
         """
+        self._deadline = time.monotonic() + ATTEMPT_SECONDS
+        try:
+            return self._attest()
+        except PrivacyError:
+            raise
+        except netguard.RequestError as e:
+            # netguard's refusals among them: an environment's proxy that cannot be used.
+            raise PrivacyError(f"{self.model}'s attestation could not be fetched: "
+                               f"{unsealed_words(e, 300)}") from e
+        except Exception as e:  # noqa: BLE001 - whatever reading the evidence raised
+            raise PrivacyError(f"{self.model}'s attestation could not be read: what its "
+                               f"provider sent is not in the shape it should be "
+                               f"({type(e).__name__})") from e
+        finally:
+            self._deadline = None
+
+    def _attest(self):
+        """attest()'s checks, in their order."""
         # What only the gateway alone stands for, set again if it does this time.
         self.receipt_required = False
         gateway, unheard = self._attest_gateway()
@@ -1090,10 +1214,13 @@ class TeeClient:
 
     def _refuse_expired(self, keyset):
         """Keys RedPill attests only until a time now past are refused: what was
-        attested is keys no longer in force. A keyset that names no such time is not
-        used for the receipts, and falls short (_take_keyset)."""
+        attested is keys no longer in force. That time is a whole number of seconds; a
+        keyset that names none - or names it as anything else, a bool (which Python
+        counts as an integer), a fraction, text - is not used for the receipts, and falls
+        short as "receipt keys expired" (_take_keyset): the DA apps' rule (SealedLore
+        3.1.0b6, Nov 2026)."""
         expires = keyset.get("not_after") if isinstance(keyset, dict) else None
-        if isinstance(expires, (int, float)) and not isinstance(expires, bool) \
+        if isinstance(expires, int) and not isinstance(expires, bool) \
                 and expires < time.time():
             raise PrivacyError(f"{self.model}'s attested keys expired on "
                                f"{time.strftime('%Y-%m-%d', time.gmtime(expires))}")
@@ -1249,7 +1376,8 @@ class TeeClient:
         if keyset is None:
             return
         not_after = keyset.get("not_after")
-        if not isinstance(not_after, int) or not_after <= time.time():
+        if not isinstance(not_after, int) or isinstance(not_after, bool) \
+                or not_after <= time.time():
             check.note("its receipt keys have expired, so receipts are not checked")
             check.fall_short("receipt keys expired")
             return
@@ -1340,7 +1468,7 @@ class TeeClient:
         return attestation
 
     def _check_instance(self, item, nonce, verify_signature):
-        name = str(item.get("instance_id") or "an instance")[:8]
+        name = unsealed_words(item.get("instance_id"), 8) or "an instance"
         try:
             raw = base64.b64decode(item["quote"])
             quote = dcap.parse_quote(raw)
@@ -1358,7 +1486,7 @@ class TeeClient:
             raise PrivacyError(f"{self.model}'s instance {name} signed with a key its TDX "
                                f"quote does not bind")
         try:
-            attested = json.loads(signed)
+            attested = safejson.loads(signed)
             evidence = attested["evidence"]
             if not isinstance(evidence, dict):
                 raise TypeError(type(evidence).__name__)
@@ -1387,6 +1515,7 @@ class TeeClient:
     def _check_quote(self, raw, check):
         """Intel's verification of one quote, into `check`. Refuses a bad quote, and
         one that cannot be checked at all."""
+        self._left()
         try:
             intel = self._intel(raw, self.session)
         except ImportError:
@@ -1395,7 +1524,11 @@ class TeeClient:
             # whatever key they named.
             raise PrivacyError(_unchecked_without_cryptography(self.model))
         except dcap.DcapError as e:
-            raise PrivacyError(f"{self.model}'s Intel TDX quote failed verification: {e}")
+            # On one line, without what cannot be seen (unsealed_words): a refusal can
+            # name a certificate of the quote's own chain, which anyone could have made.
+            # As DA Toolkit's (Nov 2026).
+            raise PrivacyError(f"{self.model}'s Intel TDX quote failed verification: "
+                               f"{unsealed_words(e, 300)}")
         else:
             check.note(*intel.notes)
             check.tcb(intel.status)
@@ -1434,14 +1567,16 @@ class TeeClient:
                 raise PrivacyError(f"NVIDIA rejected {self.model}'s GPU evidence")
             try:
                 for token in claims:
-                    nras.check_claims(token, nonce, time.time())
+                    nras._claims_hold(token, nonce, time.time())
             except nras.NrasError as refused:
-                raise PrivacyError(f"{self.model}'s GPU attestation failed: {refused}")
+                raise PrivacyError(f"{self.model}'s GPU attestation failed: "
+                                   f"{unsealed_words(refused, 300)}")
             check.summary_gpu.add("NVIDIA's verdict unchecked")
             check.fall_short("NVIDIA signature unchecked")
             check.note(f"{e}, so NVIDIA's verdict is unchecked")
         except nras.NrasError as e:
-            raise PrivacyError(f"{self.model}'s GPU attestation failed: {e}")
+            raise PrivacyError(f"{self.model}'s GPU attestation failed: "
+                               f"{unsealed_words(e, 300)}")
         else:
             check.gpus += gpus
             check.note(f"NVIDIA's signed verdict vouches for {gpus} GPU"
@@ -1451,7 +1586,7 @@ class TeeClient:
         """NRAS's answer to the GPU evidence, or None if the service could not be
         reached. An answer of HTTP 4xx is NVIDIA refusing the evidence."""
         try:
-            response = self.session.post(NRAS_URL, json=payload, timeout=TIMEOUT_SECONDS)
+            response = self.session.post(NRAS_URL, json=payload, timeout=self._left())
         except netguard.RequestError:
             return None
         if response.status_code >= 500:
@@ -1472,7 +1607,7 @@ class TeeClient:
         return found.state, found.detail
 
     def check(self, response_id, receipt_id=None, body_hash=None, route=None,
-              sent_at=None, name_upstream=False):
+              name_upstream=False, sent_at=None):
         """Whether this reply was the attested enclave's, as it arrived: a ReplyCheck,
         VERIFIED, SIGNED, FAILED or UNCHECKED, with a sentence saying why.
 
@@ -1486,11 +1621,13 @@ class TeeClient:
             did not arrive whole (no `body_hash`), whose bytes are not compared;
           - RedPill's receipt, signed (Ed25519) by a key of the keyset kept at
             attestation (_take_keyset), for the same two hashes, saying its upstream was
-            verified, as nano-gpt requires, and served after `sent_at` (when the request
-            went, time.time()) and not after now, RECEIPT_CLOCK_SKEW_SECONDS either way:
-            this request's, not an earlier exchange's handed back (_receipt_holds). One
-            served outside that fails; with no `sent_at` a receipt cannot be dated, and
-            the reply is unchecked. From SealedLore (1a61096, Nov 12 2026).
+            verified, as nano-gpt requires (_receipt_holds);
+          - and served for this request: after `sent_at` (time.time() as the request
+            went) and before now, RECEIPT_CLOCK_SKEW_SECONDS either way (_served_for).
+            The hashes alone tie a receipt to a stream, so an earlier exchange handed
+            back whole, its bytes and receipt as they were, read "verified"; now one the
+            gateway served at another time fails, and with no `sent_at` a receipt cannot
+            be dated and the reply is unchecked. From SealedLore (1a61096, Nov 12 2026).
 
         "The key the attestation bound" is any of `signers`: the attested signing key,
         or the keys of the keyset the gateway's quote binds (Nov 10 2026), of which a
@@ -1501,7 +1638,8 @@ class TeeClient:
 
         VERIFIED: signed by the attested key, for these exact bytes, its receipt holding
         where it was read. SIGNED: signed by it, the bytes not compared. FAILED: signed
-        by another key, or for other bytes, or a receipt that does not hold. UNCHECKED:
+        by another key, or for other bytes, or a receipt that does not hold or was served
+        at another time than this request. UNCHECKED:
         no record could be read, the gateway's keys changed since it was attested, or -
         for a model attested through the gateway alone (receipt_required) - no receipt
         held under the attested keys, the only word that the model's own enclave
@@ -1554,11 +1692,17 @@ class TeeClient:
         read = isinstance(receipt, dict) and self.keyset is not None
         if read:
             try:
-                holds = self._receipt_holds(receipt, request_hash, response_hash, sent_at)
+                holds = self._receipt_holds(receipt, request_hash, response_hash)
             except PrivacyError as e:
                 return ReplyCheck(UNCHECKED, str(e))
             if not holds:
                 return ReplyCheck(FAILED, "RedPill's receipt for it does not hold")
+            try:
+                elsewhen = self._served_for(receipt, sent_at)
+            except PrivacyError as e:
+                return ReplyCheck(UNCHECKED, str(e))
+            if elsewhen:
+                return ReplyCheck(FAILED, elsewhen)
         if self.receipt_required and not read:
             # Attested through the gateway alone, the gateway's signature says only that
             # the reply passed through it: its receipt is its word that the model's own
@@ -1645,13 +1789,11 @@ class TeeClient:
                     raise
             time.sleep(RECEIPT_RETRY_SECONDS)
 
-    def _receipt_holds(self, receipt, request_hash, response_hash, sent_at):
+    def _receipt_holds(self, receipt, request_hash, response_hash):
         """Whether the receipt was signed by a key of the attested keyset, under that
-        keyset, for this exchange - the hashes the attested key signed - says its
-        upstream was verified, as nano-gpt requires, and was served for this request,
-        after it was sent (RECEIPT_CLOCK_SKEW_SECONDS either way). PrivacyError when
-        the gateway's keys have changed since, or when the request was sent is not
-        known: not a reply that failed, one that cannot be judged."""
+        keyset, for this exchange - the hashes the attested key signed - and says its
+        upstream was verified, as nano-gpt requires. PrivacyError when the gateway's
+        keys have changed since: not a reply that failed, one that cannot be judged."""
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -1683,19 +1825,25 @@ class TeeClient:
         if hashes != (f"sha256:{request_hash.lower()}", f"sha256:{response_hash.lower()}"):
             return False
         upstream = events.get("upstream.verified", {})
-        if upstream.get("result") != "verified" or upstream.get("required") is not True:
-            return False
-        if sent_at is None:
-            # Nothing dates the record's text, and the receipt cannot be held to a
-            # request whose time is not known.
-            raise PrivacyError("when this reply's request was sent is not known, so its "
-                               "receipt could not be dated")
-        # An exchange the attested gateway says it served before this request went (or
-        # long after now) is not this request's: a relay handing back an earlier signed
-        # stream, its bytes and hashes all as they were.
-        return (sent_at - RECEIPT_CLOCK_SKEW_SECONDS <= served
-                <= self._wall() + RECEIPT_CLOCK_SKEW_SECONDS)
+        return upstream.get("result") == "verified" and upstream.get("required") is True
 
+    def _served_for(self, receipt, sent_at):
+        """Why a receipt that holds (_receipt_holds) is not this request's, or None when
+        it is: the attested gateway signed that it served the exchange after the request
+        was sent (`sent_at`, time.time()) and before now, RECEIPT_CLOCK_SKEW_SECONDS
+        either way. Its hashes and signature are an earlier exchange's as much as this
+        one's: a relay could hand back an old signed stream with its receipt. PrivacyError
+        when the request's time is not known, so that the receipt cannot be dated."""
+        if sent_at is None:
+            raise PrivacyError("when its request was sent is not known, so its receipt "
+                               "could not be held to it")
+        served = receipt.get("served_at")
+        if sent_at - RECEIPT_CLOCK_SKEW_SECONDS <= served \
+                <= self._wall() + RECEIPT_CLOCK_SKEW_SECONDS:
+            return None
+        return ("RedPill's receipt for it says the gateway served it at another time than "
+                "this request was sent: an earlier exchange handed back, its record and "
+                "receipt with it")
 
 
 # ---- one operation ------------------------------------------------------------------
@@ -1739,7 +1887,8 @@ class PrivacySession:
 
     `strict`: refuse an attestation that proved less than it could
     (Attestation.fell_short), and attest a TEE model again after a reply that
-    proved less than a verified one. Fixed for the operation, like its model.
+    proved less than a verified one, as every operation does after one whose
+    check failed (check_reply). Fixed for the operation, like its model.
     """
 
     def __init__(self, api_url, api_key, model, request_timeout=240,
@@ -1841,8 +1990,8 @@ class PrivacySession:
 
     def _due(self):
         """Whether a TEE model must be attested again before anything more is
-        sent to it: its attestation is too old, or strict attestation doubted a
-        reply."""
+        sent to it: its attestation is too old, or a reply of it was doubted
+        (check_reply)."""
         if self._doubted or self._attested_at is None:
             return True
         age = self._clock() - self._attested_at
@@ -1939,11 +2088,13 @@ class PrivacySession:
         and who ran a TEE reply's model, by RedPill's record of its session
         (TeeClient.check), on the receipt; it changes nothing else.
 
-        With strict attestation, a TEE reply that proved less than a verified
-        one - a check that failed, or, one the attested keys were to sign
-        (_signs), a record that could not be read or whose text could not be
-        compared - has its model attested again before anything more is sent to
-        it."""
+        A TEE reply whose check failed - signed by another key, for other bytes,
+        or with a receipt that does not hold or was served at another time - has
+        its model attested again before anything more is sent to it, whatever the
+        mode: until Nov 2026 only strict attestation did so, where every other DA
+        app does in every mode. With strict attestation, so does one that proved
+        less than a verified one where the attested keys were to sign it (_signs):
+        a record that could not be read, or whose text could not be compared."""
         if self.kind == E2EE:
             receipt = Receipt(self.model, E2EE, SEALED,
                               "decrypted here; only the attested enclave could have "
@@ -1966,8 +2117,8 @@ class PrivacySession:
         with self._lock:
             self._receipts.append(receipt)
             signs = _signs(self.attestation, receipt_id)
-            if self.strict and (receipt.state == FAILED
-                                or (receipt.state in (UNCHECKED, SIGNED) and signs)):
+            if receipt.state == FAILED or (self.strict and signs
+                                           and receipt.state in (UNCHECKED, SIGNED)):
                 self._doubted = True
                 receipt.doubted = True
         self._emit("receipt", receipt)
@@ -2113,13 +2264,13 @@ _GATEWAYS_WORD = (" For a model RedPill serves, the attested key is RedPill's ga
 def receipt_tip(receipt):
     """What one reply's mark means, for where it is shown: what the check showed, what
     it leaves to the gateway's word, and that a TEE/ reply's text passed nano-gpt in the
-    clear, as SealedLore's marks say it (TEE_MARK_TIPS, 9af15c1); and, where Strict
-    doubted the reply (Receipt.doubted), that its model is attested again. "" for none.
+    clear, as SealedLore's marks say it (TEE_MARK_TIPS, 9af15c1); and, where the reply
+    was doubted (Receipt.doubted), that its model is attested again. "" for none.
     From DA Assistant's receipt_badge (1a99042), in this app's words."""
     if receipt is None:
         return ""
-    again = (" Strict is on, so its model is attested again before anything more is "
-             "sent to it." if getattr(receipt, "doubted", False) else "")
+    again = (" Its model is attested again before anything more is sent to it."
+             if getattr(receipt, "doubted", False) else "")
     if receipt.state == SEALED:
         return f"End-to-end encrypted: {receipt.detail}. nano-gpt relayed ciphertext."
     # Who ran the model, where Settings asked and the lookup was made (upstream_words).

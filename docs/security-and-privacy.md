@@ -96,13 +96,15 @@ not. The status bar's right-hand corner says where things can go now (see
   a password, and nothing is sent there; if the AI endpoint has moved, its new address
   goes in Settings → AI. Fetches that carry none of that — the Cover Art Archive's
   pictures, which it sends on to the Internet Archive, Intel's certificates and
-  revocation lists, NVIDIA's signing keys, RedPill's session records, Tinfoil's client's
-  own fetches, and Sigstore's trust root, which Tinfoil's client checks the router's
-  release with — follow one only to an address that could have been used in the first
-  place: never from https to plain http, and never from a server on the internet onto
-  this computer or its network. Sigstore's trust root follows five at most, and if the
-  versions of its client that the app expects are not the ones installed, so that its
-  fetches cannot be held to this, the enclave is not attested and nothing is sent.
+  revocation lists, NVIDIA's signing keys, RedPill's session records — follow one only to
+  an address that could have been used in the first place: never from https to plain
+  http, and never from a server on the internet onto this computer or its network.
+  Tinfoil's client's own fetches, and Sigstore's trust root, which Tinfoil's client checks
+  the router's release with, follow one only to https, and never from the internet onto
+  this computer or its network (the module every DA app that uses the client shares).
+  Sigstore's trust root follows five at most, and if the versions of its client that the
+  app expects are not the ones installed, so that its fetches cannot be held to this, the
+  enclave is not attested and nothing is sent.
 - **The environment's proxy** (`https_proxy`, `http_proxy`, `ALL_PROXY`) carries every
   request the app makes — the AI's, the lookups, the covers, the attestation services,
   RedPill's session records, Tinfoil's client — except to this computer and its own
@@ -196,7 +198,8 @@ service with the app's own nonce, and NVIDIA's signed verdict is checked in turn
 RedPill's gateway's own report is asked for beside the model's, with a nonce of its own.
 Anything forged, revoked, for another nonce, from a debug machine, or Intel's
 information arriving unreadable, is refused, and nothing is sent. What could not be
-checked, or is not current, is shown in amber.
+checked, or is not current, is shown in amber, and its tooltip (on Check Attestation's
+result, on an answer's note) and What Was Sent say what each such shortfall costs.
 
 **What is attested** depends on who serves the model, and Check Attestation, What Was
 Sent and the line after an answer say which, first of all, with what that leaves to
@@ -221,8 +224,12 @@ nano-gpt passed it on); the model's own machine, where RedPill's gateway answers
 that the GPUs are the attested machine's.
 
 **Again every 15 minutes**: a model is attested again before the next request once its
-attestation is 15 minutes old, time asleep included. While a model is being attested, a
-request to it waits; while it is refused, nothing is sent to it.
+attestation is 15 minutes old, time asleep included. **And after a reply whose check
+failed** (below), whatever the settings: its model is attested again before it is sent
+anything more, and the mark's tooltip says so. An attestation is given three minutes in
+all; one not done by then is refused. While a model is being attested, a request to it
+waits; while it is refused, nothing is sent to it. Evidence in a shape the app can't read
+is refused, never taken for a pass.
 
 **Each reply is checked**, where its provider signs one. The request is streamed, every
 byte of the reply is hashed as it arrives, and the reply is checked against the record
@@ -255,9 +262,9 @@ be served elsewhere when its provider is busy.
 **Strict** (Settings → Privacy, off by default) refuses any enclave that proved less
 than it could — anything that would be shown in amber — and sends nothing to it. As
 nano-gpt's models are in Nov 2026, that leaves `private/` models and the `TEE/` models
-Chutes alone serves. After a reply whose check failed, or one the attested keys were to
-sign that fell short of verified, Strict attests its model again before sending it
-anything more, and the mark's tooltip says so.
+Chutes alone serves. Strict also attests a model again before sending it anything more
+after a reply the attested keys were to sign that fell short of verified, as every run
+does after one whose check failed; the mark's tooltip says so.
 
 ### Naming the provider behind a TEE reply
 

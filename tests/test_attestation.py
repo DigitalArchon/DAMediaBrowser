@@ -364,10 +364,12 @@ class FakeNanoGpt:
     def post(self, url, json=None, headers=None, data=None, stream=False, timeout=None):
         self.posts.append({"url": url, "data": data, "json": json, "headers": headers})
         if url.startswith(privacy.NRAS_URL):
-            # As NVIDIA's tokens are: for the nonce it was sent, and current.
+            # As NVIDIA's tokens are: issued by its service, for the nonce it was sent,
+            # and current.
             now = int(time.time())
             return FakeResponse(self.nras_status,
                                 [["JWT", jwt({"x-nvidia-overall-att-result": self.gpu,
+                                              "iss": nras.ISSUER,
                                               "eat_nonce": (json or {}).get("nonce"),
                                               "nbf": now - 60, "exp": now + 3600})],
                                  {}])
@@ -1101,7 +1103,8 @@ class EvidenceThatCannotBeRead(unittest.TestCase):
     def test_claims_held_without_nvidias_keys_are_held_to_times_too(self):
         # private_ai holds the time and nonce itself when NVIDIA's keys are out of reach.
         with self.assertRaisesRegex(nras.NrasError, "not given as times"):
-            nras.check_claims({"nbf": [], "exp": 9e12, "eat_nonce": "00"}, "00", 1.0)
+            nras._claims_hold({"iss": nras.ISSUER, "nbf": [], "exp": 9e12, "eat_nonce": "00"},
+                              "00", 1.0)
 
     def test_an_answer_of_nvidias_that_cannot_be_read_is_no_verdict(self):
         """Past the checks that name what is wrong: a GPU's token that is no text raised
@@ -1509,6 +1512,53 @@ class AttestationShapesAndOutages(unittest.TestCase):
         with self.assertRaisesRegex(PrivacyError, "does not recognise .*holds novel"):
             self.attest(200, {"novel": 1})
 
+    def test_evidence_in_no_shape_to_read_is_a_refusal_not_an_error(self):
+        """A number where an instance's object belongs: an AttributeError went up from
+        attest() (DA Toolkit's TeeClient.attest refuses it, Nov 2026)."""
+        with self.assertRaisesRegex(PrivacyError, r"TEE/x's attestation could not be "
+                                                  r"read: what its provider sent is not in "
+                                                  r"the shape it should be "
+                                                  r"\(AttributeError\)") as refused:
+            self.attest(200, {"evidence": [7]})
+        self.assertIsInstance(refused.exception.__cause__, AttributeError)
+
+    def test_whatever_else_raised_while_attesting_is_a_refusal_naming_its_kind(self):
+        client = FakeNanoGpt().tee_client(API_URL, "k", TEXT)
+        with mock.patch.object(client, "_attest_signing_key",
+                               side_effect=KeyError("evidence_list")), \
+                self.assertRaisesRegex(PrivacyError, r"\(KeyError\)"):
+            client.attest()
+        with mock.patch.object(client, "_attest_signing_key",
+                               side_effect=netguard.RequestError("no proxy")), \
+                self.assertRaisesRegex(PrivacyError, "could not be fetched: no proxy"):
+            client.attest()
+
+    def test_an_attestation_is_given_three_minutes_in_all(self):
+        """Each report may be asked under three paths, each given 90 seconds: now the
+        whole of it has ATTEMPT_SECONDS (DA Toolkit's _left)."""
+        clock = [1000.0]
+
+        class Slow(FakeNanoGpt):
+            def get(this, url, *args, **kwargs):
+                answer = super().get(url, *args, **kwargs)
+                clock[0] += 100
+                return answer
+
+        server = Slow(aci="400")
+        client = server.tee_client(API_URL, "k", TEXT)
+        with mock.patch.object(privacy.time, "monotonic", lambda: clock[0]), \
+                self.assertRaisesRegex(PrivacyError, "was not done within 3 minutes"):
+            client.attest()
+        self.assertEqual([report["timeout"] for report in server.reports], [90, 80])
+        self.assertIsNone(client._deadline)
+        self.assertEqual(client._left(), privacy.TIMEOUT_SECONDS)
+
+    def test_an_address_or_key_no_request_may_carry_is_refused_as_the_client_is_made(self):
+        for url, key, said in (("http://nano-gpt.example/api/v1", "k", "is not https"),
+                               (API_URL, "sk-1\n2", "line break")):
+            with self.subTest(url=url), self.assertRaisesRegex(PrivacyError, said):
+                TeeClient(url, key, TEXT, session=FakeNanoGpt())
+
 
 
 # ---- RedPill's gateway, as nano-gpt relays it -----------------------------------------
@@ -1660,6 +1710,17 @@ class GatewaysOwnReport(unittest.TestCase):
         server = FakeNanoGpt(aci="bound", not_after=1_700_000_000)
         with self.assertRaisesRegex(PrivacyError, "attested keys expired on 2023-11-14"):
             server.tee_client(API_URL, "k", TEXT).attest()
+
+    def test_a_time_that_is_no_whole_number_of_seconds_leaves_the_keys_unused(self):
+        """Only a whole number of seconds in the past refuses (the DA apps' rule): a
+        bool, a fraction or text leaves the receipt keys unused, short of "receipt keys
+        expired". A fraction in the past was refused here, unlike the other apps."""
+        for not_after in (True, 1_700_000_000.5, "1700000000", None):
+            with self.subTest(not_after=not_after):
+                client = FakeNanoGpt(aci="bound", not_after=not_after).tee_client(
+                    API_URL, "k", TEXT)
+                self.assertIn("receipt keys expired", client.attest().shortfalls)
+                self.assertIsNone(client.keyset)
 
     def test_without_the_gateways_report_the_receipt_keys_are_named_short(self):
         # A 400 (Chutes or Tinfoil alone), nano-gpt's rate limit, and the plain report
@@ -2252,13 +2313,14 @@ class Receipts(unittest.TestCase):
                 found, detail = self.check(client, server, receipt_id="rcpt-1")
                 self.assertEqual(found, state, detail)
                 if state == privacy.FAILED:
-                    self.assertEqual(detail, "RedPill's receipt for it does not hold")
+                    self.assertIn("says the gateway served it at another time than this "
+                                  "request was sent", detail)
 
     def test_a_receipt_whose_request_has_no_time_is_unchecked(self):
         client, server = self.client()
         state, detail = self.check(client, server, receipt_id="rcpt-1", sent_at=None)
         self.assertEqual(state, privacy.UNCHECKED)
-        self.assertIn("could not be dated", detail)
+        self.assertIn("its receipt could not be held to it", detail)
 
     def test_a_keyset_the_quote_binds_itself_is_taken_and_one_tied_neither_way_is_not(self):
         bound, _server = self.client(tied="statement")
@@ -2370,8 +2432,8 @@ class ReplyMarks(unittest.TestCase):
                       "when its provider is busy.", unchecked)
         self.assertIn("in the clear", unchecked)
         self.assertNotIn("Strict", unchecked)
-        self.assertIn("Strict is on, so its model is attested again before anything more "
-                      "is sent to it", tip(privacy.UNCHECKED, doubted=True))
+        self.assertIn("Its model is attested again before anything more is sent to it",
+                      tip(privacy.UNCHECKED, doubted=True))
         self.assertIn("This reply does not match its record", tip(privacy.FAILED))
         sealed_one = privacy.receipt_tip(privacy.Receipt(
             "private/x", privacy.E2EE, privacy.SEALED, "decrypted here"))
@@ -2379,7 +2441,7 @@ class ReplyMarks(unittest.TestCase):
                                      "relayed ciphertext.")
         self.assertEqual(privacy.receipt_tip(None), "")
 
-    def test_a_reply_strict_doubted_says_so_and_no_other_does(self):
+    def test_a_reply_doubted_says_so_and_no_other_does(self):
         server = GpusTied(tied="statement", signer=1)
         strict = PrivacySession(API_URL, "k", TEXT, tee_factory=server.tee_client,
                                 strict=True)
@@ -2387,10 +2449,30 @@ class ReplyMarks(unittest.TestCase):
         failed = strict.check_reply("chatcmpl-1", body_hash=stream_hash(server.stream()))
         self.assertEqual(failed.state, privacy.FAILED)
         self.assertTrue(failed.doubted)
-        self.assertIn("Strict is on", privacy.receipt_tip(failed))
+        self.assertIn("attested again before anything more", privacy.receipt_tip(failed))
+        # Signed but not compared: only Strict doubts that.
+        server.signer = KEY
         relaxed = PrivacySession(API_URL, "k", TEXT, tee_factory=server.tee_client)
         relaxed.ensure()
-        self.assertFalse(relaxed.check_reply("chatcmpl-1").doubted)
+        signed = relaxed.check_reply("chatcmpl-1")
+        self.assertEqual(signed.state, privacy.SIGNED)
+        self.assertFalse(signed.doubted)
+
+    def test_a_failed_reply_has_its_model_attested_again_in_every_mode(self):
+        """Every DA app attests a model again after a reply whose check failed, whatever
+        the mode (the DA apps' security standard, Nov 2026): here only Strict did."""
+        server = FakeNanoGpt(signer=1)
+        asked = []
+        relaxed = PrivacySession(API_URL, "k", TEXT,
+                                 tee_factory=lambda *a: asked.append(1) or server.tee_client(*a))
+        relaxed.ensure()
+        failed = relaxed.check_reply("chatcmpl-1")
+        self.assertEqual(failed.state, privacy.FAILED)
+        self.assertTrue(failed.doubted)
+        self.assertTrue(relaxed._due())
+        reports = len(server.reports)
+        relaxed.ensure()
+        self.assertGreater(len(server.reports), reports, "attested again")
 
     def test_an_attestation_names_what_it_lacked_once(self):
         """The headline names each shortfall; the label adds only what it does not say
@@ -2437,3 +2519,39 @@ class ReplyMarks(unittest.TestCase):
                           "received it", tip)
         self.assertEqual(privacy.sent_label(None)[0], privacy.UNPROVEN)
         self.assertNotIn("igned", sent(privacy.SIGNED)[0], "signed is the reply's word")
+
+
+class ShortfallsSayWhatTheyCost(unittest.TestCase):
+    """Every shortfall has a tooltip saying what it costs, with the meaning every DA app
+    gives it (the DA apps' security standard, Nov 2026; SealedLore's SHORTFALL_TIPS)."""
+
+    def test_every_shortfall_the_checks_name_has_its_words(self):
+        import inspect
+        import re
+
+        source = inspect.getsource(privacy)
+        named = set(re.findall(r'fall_short\("([^"{]+)"\)', source))
+        named |= {privacy.GATEWAY_SHORTFALL, privacy.GATEWAY_UNCHECKED,
+                  privacy.RECEIPT_KEYS_LOOSE, privacy.GPUS_LOOSE}
+        self.assertGreaterEqual(len(named), 9)
+        for what in named:
+            with self.subTest(what=what):
+                self.assertIn(what, privacy.SHORTFALL_TIPS)
+
+    def test_what_an_attestation_lacked_is_said_in_order(self):
+        attestation = privacy.Attestation(
+            model=TEXT, kind=privacy.TEE, level="partial",
+            shortfalls=[privacy.GPUS_LOOSE, "Intel TCB OutOfDate"])
+        tips = privacy.shortfall_tips(attestation)
+        self.assertTrue(tips[0].startswith("GPUs not tied to the quote: "))
+        self.assertTrue(tips[1].startswith("Intel TCB OutOfDate: Intel rates the machine "))
+
+    def test_what_was_sent_lists_them_with_the_attestation(self):
+        from mediabrowser.core import ai, outbound
+        session = PrivacySession(API_URL, "k", TEXT,
+                                 tee_factory=FakeNanoGpt(aci="bound").tee_client)
+        with mock.patch.object(outbound, "record") as record:
+            session.listener = ai._attestation_listener(session)
+            session.ensure()
+        said = record.call_args.args[-1]
+        self.assertIn("GPUs not tied to the quote: NVIDIA vouches", said)

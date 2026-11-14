@@ -2,8 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """NVIDIA's verdict on a TEE/ model's GPUs, with NVIDIA's signature checked.
 
-A TEE/ model's attestation carries NVIDIA GPU evidence, made with our nonce. private_ai.py
-sends it to NVIDIA's Remote Attestation Service (NRAS), which answers with signed
+The same checks in each of the author's apps that attest TEE models (DA Assistant, DA Vibe
+Manager, DA Private Coder, DA Toolkit, SealedLore), kept alike since Nov 2026; first written
+for the AI-Assistant app (assistant/nras.py), by way of DA Assistant's copy, with netguard's Session for HTTP here. NVIDIA's keys are
+cached on dcap.since_boot, a clock that runs on while the machine sleeps.
+
+A TEE/ model's attestation carries NVIDIA GPU evidence, made with our nonce.
+private_ai.py sends it to NVIDIA's Remote Attestation Service (NRAS), which answers with signed
 Entity Attestation Tokens (JWTs, ES384):
 
   [["JWT", <overall token>], {"GPU-0": <token>, "GPU-1": <token>, ...}]
@@ -23,16 +28,6 @@ SHA-256 digest of each GPU's token. This module checks, before anything is belie
 Measured live (TEE/glm-5.3-flash, Sept 2026): eight H100 tokens, every digest matching,
 keys named nv-eat-kid-prod-<date>-<uuid> and rotated daily. A key missing from the
 cached key set is looked for once more before the token is refused.
-
-When fresh keys cannot be fetched, the ones fetched before are used, however old: a
-signature checked against NVIDIA's keys of yesterday beats one not checked. With none
-at all (KeysUnavailable) the signatures go unchecked, but the answer still came over
-TLS from NVIDIA's own service, so everything else above is checked all the same - the
-nonce, the time, the digests, each GPU's verdict - and only then is the verdict shown
-as unchecked. Evidence replayed with an old nonce, or a GPU failing, is refused either
-way. From DA Vibe Manager's copy of this module (Nov 2026), by way of DA
-Assistant's, with netguard's Session for requests; private_ai.py holds the time
-and the nonce once more itself (check_claims).
 """
 
 import base64
@@ -40,6 +35,7 @@ import hashlib
 import json
 import threading
 import time
+from typing import Any
 
 from . import netguard
 from .dcap import since_boot
@@ -59,15 +55,15 @@ class KeysUnavailable(Exception):
     """NVIDIA's signing keys could not be fetched: the verdict is unchecked."""
 
 
-def _b64(part):
+def _b64(part: str) -> bytes:
     return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
 
 
-_keys = {"at": 0.0, "keys": {}}
+_keys: dict[str, Any] = {"at": 0.0, "keys": {}}
 _keys_lock = threading.Lock()
 
 
-def _jwks(session, refresh=False):
+def _jwks(session: netguard.Session, refresh: bool = False) -> dict[str, dict[str, Any]]:
     with _keys_lock:
         if not refresh and _keys["keys"] and since_boot() - _keys["at"] < KEYS_TTL:
             return _keys["keys"]
@@ -81,7 +77,7 @@ def _jwks(session, refresh=False):
     if not isinstance(body, dict) or not isinstance(body.get("keys"), list):
         with _keys_lock:
             if _keys["keys"] and not refresh:
-                return _keys["keys"]    # older than KEYS_TTL, but NVIDIA's: better than none
+                return _keys["keys"]            # older than an hour, but NVIDIA's: better than none
         raise KeysUnavailable(error)
     keys = {k["kid"]: k for k in body["keys"] if isinstance(k, dict) and k.get("kid")}
     with _keys_lock:
@@ -89,34 +85,19 @@ def _jwks(session, refresh=False):
     return keys
 
 
-def _public_key(jwk):
+def _public_key(jwk: dict[str, Any]) -> Any:
     from cryptography.hazmat.primitives.asymmetric import ec
+
     if jwk.get("kty") != "EC" or jwk.get("crv") != "P-384":
         raise NrasError(f"NVIDIA's key {jwk.get('kid')} is not a P-384 key")
-    return ec.EllipticCurvePublicNumbers(int.from_bytes(_b64(jwk["x"]), "big"),
-                                         int.from_bytes(_b64(jwk["y"]), "big"),
-                                         ec.SECP384R1()).public_key()
+    return ec.EllipticCurvePublicNumbers(
+        int.from_bytes(_b64(jwk["x"]), "big"), int.from_bytes(_b64(jwk["y"]), "big"), ec.SECP384R1()
+    ).public_key()
 
 
-def check_claims(claims, nonce, now):
-    """Raise NrasError unless a token's claims put it within its nbf/exp window, give or
-    take LEEWAY_SECONDS, and say it was made for `nonce`. Its signature is not looked
-    at: private_ai.py holds an answer to this much even when NVIDIA's keys are out of
-    reach."""
-    try:
-        current = (claims.get("nbf", 0) - LEEWAY_SECONDS <= now
-                   <= claims.get("exp", 0) + LEEWAY_SECONDS)
-    except TypeError:
-        raise NrasError("a token's validity window is not given as times")
-    if not current:
-        raise NrasError("a token is outside its validity window")
-    if claims.get("eat_nonce") != nonce:
-        raise NrasError("NVIDIA's verdict was not made for this request's nonce")
-
-
-def verify_token(token, session, nonce, now, signed=True):
-    """The claims of one NRAS token, once its signature, issuer, time and nonce hold
-    (`signed` False, when NVIDIA's keys cannot be had: all but its signature)."""
+def verify_token(token: str, session: netguard.Session, nonce: str, now: float, signed: bool = True) -> dict[str, Any]:
+    """The claims of one NRAS token, once its signature, issuer, time and nonce hold (`signed`: False,
+    when NVIDIA's keys can't be had, all but its signature)."""
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -128,7 +109,7 @@ def verify_token(token, session, nonce, now, signed=True):
         claims = json.loads(_b64(claims_part))
         signature = _b64(signature_part)
     except (ValueError, AttributeError):
-        raise NrasError("NVIDIA's answer held a malformed token")
+        raise NrasError("NVIDIA's answer held a malformed token") from None
     if not isinstance(header, dict) or not isinstance(claims, dict):
         raise NrasError("NVIDIA's answer held a malformed token")
     if header.get("alg") != "ES384" or len(signature) != 96:
@@ -141,53 +122,68 @@ def verify_token(token, session, nonce, now, signed=True):
     jwk = keys.get(header.get("kid"))
     if jwk is None:
         raise NrasError(f"a token names a key NVIDIA does not publish ({header.get('kid')})")
-    der = encode_dss_signature(int.from_bytes(signature[:48], "big"),
-                               int.from_bytes(signature[48:], "big"))
+    der = encode_dss_signature(
+        int.from_bytes(signature[:48], "big"), int.from_bytes(signature[48:], "big")
+    )
     try:
-        _public_key(jwk).verify(der, f"{header_part}.{claims_part}".encode("ascii"),
-                                ec.ECDSA(hashes.SHA384()))
+        _public_key(jwk).verify(
+            der, f"{header_part}.{claims_part}".encode("ascii"), ec.ECDSA(hashes.SHA384())
+        )
     except InvalidSignature:
-        raise NrasError("a token's signature does not verify against NVIDIA's key")
+        raise NrasError("a token's signature does not verify against NVIDIA's key") from None
     return _claims_hold(claims, nonce, now)
 
 
-def _claims_hold(claims, nonce, now):
+def _claims_hold(claims: dict[str, Any], nonce: str, now: float) -> dict[str, Any]:
     if claims.get("iss") != ISSUER:
         raise NrasError(f"a token was issued by {claims.get('iss')}, not NVIDIA's service")
-    check_claims(claims, nonce, now)
+    try:
+        current = claims.get("nbf", 0) - LEEWAY_SECONDS <= now <= claims.get("exp", 0) + LEEWAY_SECONDS
+    except TypeError:
+        raise NrasError("a token's validity window is not given as times") from None
+    if not current:
+        raise NrasError("a token is outside its validity window")
+    if claims.get("eat_nonce") != nonce:
+        raise NrasError("NVIDIA's verdict was not made for this request's nonce")
     return claims
 
 
-def verify(answer, nonce, session=None, now=None):
+def verify(
+    answer: Any, nonce: str, session: netguard.Session | None = None, now: float | None = None
+) -> int:
     """Check NRAS's answer. Returns the number of GPUs vouched for, or raises NrasError
-    (refuse), KeysUnavailable (unchecked), or ImportError (no cryptography).
-
-    KeysUnavailable only once everything but the signatures has held: see the module's
-    docstring."""
+    (refuse), KeysUnavailable (unchecked), or ImportError (no cryptography)."""
     import cryptography  # noqa: F401  - ImportError here, before anything is claimed
-    session = session or netguard.Session(follow=True)     # public: carries no key
+
+    own = session is None
+    session = session or netguard.Session(follow=True)
     now = now if now is not None else time.time()
     try:
         try:
             return _verify(answer, nonce, session, now)
         except KeysUnavailable:
-            _verify(answer, nonce, session, now, signed=False)     # NrasError, if it fails
+            # what holds without NVIDIA's keys must hold all the same (evidence made for another nonce,
+            # a GPU failing, is refused), and only the signature is left unchecked
+            _verify(answer, nonce, session, now, signed=False)
             raise
     except (NrasError, KeysUnavailable, netguard.RequestError, ImportError):
         raise
     except Exception as e:  # noqa: BLE001
-        # An answer, a token or a key shaped so that reading it raises something else (a
-        # token that is no text, a key without its coordinates) is no verdict, and is
-        # refused as that: until Nov 2026 the error itself went up.
+        # An answer, a token or a key shaped so that reading it raises something else (a token that
+        # is no text, a key without its coordinates) is no verdict, and is refused as that: until
+        # Nov 2026 the error itself went up.
         raise NrasError(f"NVIDIA's answer could not be read ({type(e).__name__})") from e
+    finally:
+        if own:
+            session.close()
 
 
-def _verify(answer, nonce, session, now, signed=True):
+def _verify(answer: Any, nonce: str, session: netguard.Session, now: float, signed: bool = True) -> int:
     try:
         label, overall = answer[0]
         tokens = answer[1] if len(answer) > 1 else {}
     except (TypeError, ValueError, IndexError, KeyError):
-        raise NrasError("NVIDIA's answer was not in the expected shape")
+        raise NrasError("NVIDIA's answer was not in the expected shape") from None
     if label != "JWT" or not isinstance(tokens, dict):
         raise NrasError("NVIDIA's answer was not in the expected shape")
 
@@ -201,17 +197,23 @@ def _verify(answer, nonce, session, now, signed=True):
         try:
             digest = listed[gpu][1][1]
         except (TypeError, IndexError, KeyError):
-            raise NrasError(f"NVIDIA's verdict gives no digest for {gpu}")
+            raise NrasError(f"NVIDIA's verdict gives no digest for {gpu}") from None
         if hashlib.sha256(token.encode("ascii")).hexdigest() != digest:
             raise NrasError(f"{gpu}'s token is not the one NVIDIA's verdict lists")
         gpu_claims = verify_token(token, session, nonce, now, signed)
-        failed = [name for name, ok in (
-            ("measurements", gpu_claims.get("measres") == "success"),
-            ("secure boot", gpu_claims.get("secboot") is True),
-            ("debug disabled", gpu_claims.get("dbgstat") == "disabled"),
-            ("report nonce",
-             gpu_claims.get("x-nvidia-gpu-attestation-report-nonce-match") is True),
-        ) if not ok]
+        failed = [
+            name
+            for name, ok in (
+                ("measurements", gpu_claims.get("measres") == "success"),
+                ("secure boot", gpu_claims.get("secboot") is True),
+                ("debug disabled", gpu_claims.get("dbgstat") == "disabled"),
+                (
+                    "report nonce",
+                    gpu_claims.get("x-nvidia-gpu-attestation-report-nonce-match") is True,
+                ),
+            )
+            if not ok
+        ]
         if failed:
             raise NrasError(f"NVIDIA found {gpu} failing: {', '.join(failed)}")
     return len(tokens)
