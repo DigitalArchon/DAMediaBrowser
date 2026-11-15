@@ -19,7 +19,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 from mediabrowser.core import depcheck, hostenv, store
-from mediabrowser.gui import plain
+from mediabrowser.gui import file_dialogs, plain
 
 APP_ID = "mediabrowser"
 STYLESHEET = Path(__file__).with_name("style.qss")
@@ -133,6 +133,8 @@ def build_app(argv: Sequence[str]) -> QApplication:
     # one of those is parented to a child window - which Qt warns about
     # ("... must be a top level window"), and Wayland handles badly.
     QApplication.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings)
+    # Qt's settings (the folders a file dialog visits) in a folder of the run's own.
+    file_dialogs.settings_aside()
 
     app = QApplication(list(argv))
     app.setStyleSheet(load_stylesheet())
