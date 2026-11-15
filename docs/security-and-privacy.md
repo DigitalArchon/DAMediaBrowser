@@ -2,7 +2,7 @@
 
 How DA Media Browser handles your security and privacy: what leaves your computer,
 where it goes and when, what is kept on it, and what the app cannot protect you from.
-It describes the app as of 0.23.0. The [README](../README.md) says how to use each
+It describes the app as of 0.24.0. The [README](../README.md) says how to use each
 part; this document explains what each part does with your data, and points to the
 README for the details.
 
