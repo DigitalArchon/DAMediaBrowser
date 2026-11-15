@@ -355,9 +355,13 @@ permissions any new file of yours has.
 Choosing a folder or a file in the app's file dialogs leaves your desktop's list of recent
 files as it was: on GNOME, Cinnamon and the other desktops where the dialog is GTK's, GTK
 adds everything chosen in it to `~/.local/share/recently-used.xbel`, which every program
-can read, and the app puts the list back, byte for byte, a moment later. Nor do the
-dialogs write the folders they visit into `~/.config/QtProject.conf`, the settings every Qt
-program shares: they remember folders only until the app closes.
+can read, and the app puts the list back, byte for byte, a moment later - also where GTK
+writes it before your choice reaches the app, as a name typed into a Save dialog can. A
+change another program makes to the list in the quarter of a second around your choice is
+lost, as GTK's own write would lose it. Nor do the dialogs write the folders they visit
+into `~/.config/QtProject.conf`, the settings every Qt program shares: they remember folders
+only until the app closes, in a folder of the app's own in your session's runtime folder,
+which the next start removes if a crash left it.
 
 Kept in memory only, and gone when the app quits: What Was Sent, the frames taken from
 a video, the audio levels and stage lighting measured, what each enclave proved, and
@@ -416,12 +420,6 @@ other user can enter, where there is one.
   computer's internet address (or the proxy's), as any website does.
 - **Plain http on your own network is not encrypted** (see
   [The network rules](#the-network-rules)).
-- **The recent files list, in one narrow case.** Where the dialog is GTK's, a file saved
-  under a name you type (or a place typed into the location bar) reaches the app a quarter
-  of a second after GTK has taken it in. If GTK writes its list within that quarter
-  second, because another program changed the list just before or you answered another
-  of the app's dialogs half a second earlier, the file chosen is in the list before the
-  app is told of it, and it stays there.
 - **Anything running as you on this computer** can read your libraries' records, the
   settings and the keyring once it is unlocked, and can change the app or how it is
   started. The running app's memory it can't read through a debugger or `/proc`: being
