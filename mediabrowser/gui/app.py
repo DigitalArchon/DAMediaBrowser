@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, Qt
@@ -123,7 +123,27 @@ def prefer_x11(environ=os.environ) -> None:
             environ["QT_QPA_PLATFORM"] = "xcb"
 
 
-def build_app(argv: Sequence[str]) -> QApplication:
+def in_firejail(env: Mapping[str, str]) -> bool:
+    """Whether the app runs inside firejail, which says so in `container`.
+
+    There the desktop's own file dialog can't be used (Ubuntu 26.04 under firejail
+    0.9.72, Nov 2026): the file-chooser portal refuses a sandboxed process ("Unable to open
+    /proc/.../root"), Qt falls back to GTK's dialog, GTK loads its icons through glycin, which
+    starts `bwrap`, and firejail forbids that: GTK aborts, and the whole app with it, at the
+    first file dialog (Add Folder, every Export, Import Catalog). Qt's own dialogs need
+    neither. As SealedLore's gui/app.py."""
+    return env.get("container", "") == "firejail"
+
+
+def own_dialogs_in_firejail(env: Mapping[str, str]) -> bool:
+    """Qt's own file dialogs inside firejail (`in_firejail`); whether so."""
+    sandboxed = in_firejail(env)
+    if sandboxed:
+        QCoreApplication.setAttribute(Qt.AA_DontUseNativeDialogs, True)
+    return sandboxed
+
+
+def build_app(argv: Sequence[str], env: Mapping[str, str] | None = None) -> QApplication:
     QCoreApplication.setApplicationName("DA Media Browser")
     QCoreApplication.setOrganizationName("DA Media Browser")
     # Drives the Wayland app_id and the X11 WM_CLASS.
@@ -133,6 +153,7 @@ def build_app(argv: Sequence[str]) -> QApplication:
     # one of those is parented to a child window - which Qt warns about
     # ("... must be a top level window"), and Wayland handles badly.
     QApplication.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings)
+    own_dialogs_in_firejail(os.environ if env is None else env)
     # Qt's settings (the folders a file dialog visits) in a folder of the run's own.
     file_dialogs.settings_aside()
 

@@ -971,7 +971,8 @@ Choosing a folder or a file in the app's file dialogs leaves your desktop's
 list of recent files (`~/.local/share/recently-used.xbel`) as it was, where
 the dialog is GTK's (GNOME, Cinnamon) and would add to it, and the folders
 they visit stay out of `~/.config/QtProject.conf`, which every Qt program
-shares: they are remembered only until the app closes.
+shares: they are remembered only until the app closes. Run under firejail,
+the app uses Qt's own file dialogs: the desktop's would stop it at the first.
 
 Nothing is ever written into a library. Every file the app writes,
 renames or deletes — library records, backups, covers, settings — is

@@ -362,7 +362,9 @@ lost, as GTK's own write would lose it. Nor do the dialogs write the folders the
 into `~/.config/QtProject.conf`, the settings every Qt program shares: they remember folders
 only until the app closes, in a folder of the app's own in your session's runtime folder,
 which the next start removes if a crash left it (one left by a run in a sandbox of its own,
-such as firejail's, stays until you log out: no other run can tell that it is gone).
+such as firejail's, stays until you log out: no other run can tell that it is gone). Inside
+firejail the app uses Qt's own file dialogs, which add nothing to the list: the desktop's
+would stop the app at the first one, as GTK may not start its icon loader's sandbox there.
 
 Kept in memory only, and gone when the app quits: What Was Sent, the frames taken from
 a video, the audio levels and stage lighting measured, what each enclave proved, and
