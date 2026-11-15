@@ -967,6 +967,12 @@ at all — to a file of its own beside it, flushed to the disk, then put in
 its place — so a crash or a power cut never leaves one half written; so are
 the chapters, catalogs and songs you export.
 
+Choosing a folder or a file in the app's file dialogs leaves your desktop's
+list of recent files (`~/.local/share/recently-used.xbel`) as it was, where
+the dialog is GTK's (GNOME, Cinnamon) and would add to it, and the folders
+they visit stay out of `~/.config/QtProject.conf`, which every Qt program
+shares: they are remembered only until the app closes.
+
 Nothing is ever written into a library. Every file the app writes,
 renames or deletes — library records, backups, covers, settings — is
 checked first to be inside its own data folder, and anything else is
