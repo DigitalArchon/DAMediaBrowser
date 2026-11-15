@@ -71,6 +71,9 @@ REVIEWED = {
     "core/player.py": 2,        # mpv's socket, in the session's runtime folder
     "core/store.py": 13,        # settings, library files and backups - all through config.own
     "gui/app.py": 2,            # /proc/self/coredump_filter: no memory in a crash dump
+    # the folder Qt's settings were set aside in (tempfile.mkdtemp, in $XDG_RUNTIME_DIR or the
+    # temporary folder), removed as the app ends, never a library
+    "gui/file_dialogs.py": 1,
     "gui/main_window.py": 1,    # the screenshot folder, in Pictures
     # GTK's recent files list put back as it was: $XDG_DATA_HOME/recently-used.xbel only (a
     # temp file and a link beside it, or the regular file its link names there), never a library
