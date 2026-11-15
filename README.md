@@ -969,7 +969,8 @@ the chapters, catalogs and songs you export.
 
 Choosing a folder or a file in the app's file dialogs leaves your desktop's
 list of recent files (`~/.local/share/recently-used.xbel`) as it was, where
-the dialog is GTK's (GNOME, Cinnamon) and would add to it, and the folders
+the dialog is GTK's (GNOME, Cinnamon) and would add to it (but for one narrow
+case, in [docs/security-and-privacy.md](docs/security-and-privacy.md#limits)), and the folders
 they visit stay out of `~/.config/QtProject.conf`, which every Qt program
 shares: they are remembered only until the app closes.
 
