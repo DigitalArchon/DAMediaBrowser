@@ -63,6 +63,9 @@ select = ["E", "F", "I", "UP", "B"]
 "mediabrowser/core/{dcap,nras,sdk_guard}.py" = ["E501"]
 # It lists other files' lines word for word, as the differences it allows.
 "tests/test_shared_code.py" = ["E501"]
+# DA Assistant's copy (tests/test_recent_files.py holds it to that one), in its style: its
+# zip()s pair lists of one length.
+"mediabrowser/gui/recentguard.py" = ["B905"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
