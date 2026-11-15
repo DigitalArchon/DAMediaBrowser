@@ -361,7 +361,8 @@ change another program makes to the list in the quarter of a second around your 
 lost, as GTK's own write would lose it. Nor do the dialogs write the folders they visit
 into `~/.config/QtProject.conf`, the settings every Qt program shares: they remember folders
 only until the app closes, in a folder of the app's own in your session's runtime folder,
-which the next start removes if a crash left it.
+which the next start removes if a crash left it (one left by a run in a sandbox of its own,
+such as firejail's, stays until you log out: no other run can tell that it is gone).
 
 Kept in memory only, and gone when the app quits: What Was Sent, the frames taken from
 a video, the audio levels and stage lighting measured, what each enclave proved, and
