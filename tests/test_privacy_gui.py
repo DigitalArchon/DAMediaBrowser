@@ -244,7 +244,7 @@ class TestTheWindow:
         assert window._sent_dialog is dialog and dialog.tree.topLevelItemCount() == 1
 
     def test_a_tee_replys_marks_land_on_their_own_rows_with_the_window_open(
-            self, window, tee_stream, monkeypatch):
+            self, window, tee_stream, monkeypatch):  # noqa: F811 - the fixture
         """DA Assistant's lab run found its chat window marking what was sent before the
         answer had replaced its placeholder, so the answer took the question's place
         (8490f19); its tests' fakes had answered before the page was drawn. Here What

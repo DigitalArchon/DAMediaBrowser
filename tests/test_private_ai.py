@@ -1729,7 +1729,7 @@ class TestSigstoresTrustRoot:
     def test_only_a_few_are_followed(self):
         from tuf.api import exceptions
         hops = [TUF_URL] + [f"https://hop{n}.example/14.root.json" for n in range(10)]
-        self.wire.answers.update(zip(hops, hops[1:]))
+        self.wire.answers.update(zip(hops, hops[1:], strict=False))
         with pytest.raises(exceptions.DownloadError,
                            match=f"more than {sealed.TUF_MAX_REDIRECTS} times"):
             self.fetched(self.guarded_fetcher())
