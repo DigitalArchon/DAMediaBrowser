@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -36,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from mediabrowser.core import artwork, audio_export, store, utils
-from mediabrowser.gui import exports, plain
+from mediabrowser.gui import exports, file_dialogs, plain
 from mediabrowser.gui.worker import run_job
 
 # What was chosen last time: the folder, the format, Opus's bitrate and
@@ -171,7 +170,7 @@ class AudioExportDialog(QDialog):
         return audio_export.FLAC if self.flac_radio.isChecked() else audio_export.OPUS
 
     def _choose_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Save the Songs To", self.folder.text())
+        folder = file_dialogs.existing_directory(self, "Save the Songs To", self.folder.text())
         if folder:
             self.folder.setText(folder)
 

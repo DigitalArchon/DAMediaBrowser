@@ -349,7 +349,7 @@ class TestTheWindow:
 
         library.rescan(share / "BABYMETAL")
         asked, scanned = [], []
-        monkeypatch.setattr(main_window.QFileDialog, "getExistingDirectory",
+        monkeypatch.setattr(main_window.file_dialogs, "existing_directory",
                             lambda *a, **k: str(share))
         monkeypatch.setattr(window, "_confirm",
                             lambda title, text, detail, action: asked.append(detail)
@@ -366,7 +366,7 @@ class TestTheWindow:
         from mediabrowser.gui import main_window
 
         library.rescan(share)
-        monkeypatch.setattr(main_window.QFileDialog, "getExistingDirectory",
+        monkeypatch.setattr(main_window.file_dialogs, "existing_directory",
                             lambda *a, **k: str(share))
         monkeypatch.setattr(window, "_confirm", lambda *a: pytest.fail("asked"))
         scanned = []
@@ -405,7 +405,7 @@ class TestTheWindow:
         named(share, "Saitama")
         renamed = share.parent / "Music Videos"
         share.rename(renamed)
-        monkeypatch.setattr(main_window.QFileDialog, "getExistingDirectory",
+        monkeypatch.setattr(main_window.file_dialogs, "existing_directory",
                             lambda *a, **k: str(renamed))
         confirmed = []
         monkeypatch.setattr(window, "_confirm",

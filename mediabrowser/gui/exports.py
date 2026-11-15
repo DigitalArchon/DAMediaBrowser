@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QFileDialog
-
 from mediabrowser.core import chapter_export, store
-from mediabrowser.gui import plain
+from mediabrowser.gui import file_dialogs, plain
 
 # Where exports went last, so the next starts there. An app setting.
 EXPORT_FOLDER_SETTING = "export_folder"
@@ -53,7 +51,7 @@ def export_chapters(parent, video_id: str, video: dict) -> str | None:
         fmt = chapter_export.MKVMERGE
     filters = [_filter(f) for f in chapter_export.FORMATS]
     default = last_folder() / chapter_export.default_name(video, fmt)
-    path, chosen = QFileDialog.getSaveFileName(
+    path, chosen = file_dialogs.save_file_name(
         parent, "Export Chapters", str(default), ";;".join(filters), _filter(fmt)
     )
     if not path:

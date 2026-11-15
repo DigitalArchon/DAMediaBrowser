@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from mediabrowser.core import network
+from mediabrowser.gui import file_dialogs
 from mediabrowser.gui.plain import tooltip
 from mediabrowser.gui.worker import run_job
 
@@ -161,7 +161,7 @@ class NetworkFolderDialog(QDialog):
     def _connected(self, uri: str, path: str) -> None:
         self._update_buttons()
         self._set_status(f"Connected: {path}")
-        chosen = QFileDialog.getExistingDirectory(
+        chosen = file_dialogs.existing_directory(
             self, f"Choose the library folder on {network.display_name(uri)}", path
         )
         if not chosen:

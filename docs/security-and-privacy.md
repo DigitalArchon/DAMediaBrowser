@@ -351,6 +351,11 @@ a crash or a power cut never leaves settings, a library's record or a cover half
 the chapters, catalogs and songs you export are written the same way, with the
 permissions any new file of yours has.
 
+Choosing a folder or a file in the app's file dialogs leaves your desktop's list of recent
+files as it was: on GNOME, Cinnamon and the other desktops where the dialog is GTK's, GTK
+adds everything chosen in it to `~/.local/share/recently-used.xbel`, which every program
+can read, and the app puts the list back, byte for byte, a moment later.
+
 Kept in memory only, and gone when the app quits: What Was Sent, the frames taken from
 a video, the audio levels and stage lighting measured, what each enclave proved, and
 the RedPill session records read (64 at most). A crash writes none of it to disk: as it

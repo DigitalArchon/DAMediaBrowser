@@ -36,6 +36,32 @@ class MemoryKeyring(KeyringBackend):
         del self.store[(service, username)]
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _qts_settings_of_their_own(tmp_path_factory):
+    """A QFileDialog keeps its folders in Qt's own settings (QtProject.conf) as it is
+    deleted, the widgets' dialog and GTK's alike: the run's go to a folder of its own,
+    never into the settings of whoever runs it."""
+    from PySide6.QtCore import QSettings
+
+    folder = str(tmp_path_factory.mktemp("qt-settings"))
+    for kind in (QSettings.Format.NativeFormat, QSettings.Format.IniFormat):
+        QSettings.setPath(kind, QSettings.Scope.UserScope, folder)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _unanswered_file_dialogs_fail(monkeypatch):
+    """Every file dialog of the app is run by gui/file_dialogs.py; one no test answers
+    (by patching file_dialogs.save_file_name and the rest) fails at once, naming it,
+    rather than waiting forever offscreen."""
+    from PySide6.QtWidgets import QFileDialog
+
+    def exec_(dialog):
+        raise AssertionError(f"unanswered file dialog: {dialog.windowTitle()!r}")
+
+    monkeypatch.setattr(QFileDialog, "exec", exec_)
+
+
 @pytest.fixture(autouse=True)
 def memory_keyring():
     """No test may read or write the real keyring."""

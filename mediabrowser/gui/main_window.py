@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDockWidget,
-    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -61,7 +60,7 @@ from mediabrowser.core import (
 )
 from mediabrowser.core.player import Player
 from mediabrowser.core.shelf import Shelf
-from mediabrowser.gui import plain
+from mediabrowser.gui import file_dialogs, plain
 from mediabrowser.gui.chapter_editor import ChapterEditor
 from mediabrowser.gui.detail_view import DetailView
 from mediabrowser.gui.grid_view import GridView
@@ -1067,7 +1066,7 @@ class MainWindow(QMainWindow):
         return data
 
     def choose_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Choose media library folder")
+        path = file_dialogs.existing_directory(self, "Choose media library folder")
         if path and self._confirm_adding(path):
             self.rescan(path)
 
@@ -1110,7 +1109,7 @@ class MainWindow(QMainWindow):
                 return
             path, uri = dialog.result_folder()
         else:
-            path = QFileDialog.getExistingDirectory(
+            path = file_dialogs.existing_directory(
                 self, f"Where is {sharing.name(root)} now?"
             )
             if not path:
@@ -3196,7 +3195,7 @@ class MainWindow(QMainWindow):
             self._set_status("There's no library open to export.")
             return
         default = str(Path.home() / f"{Path(root).name or 'library'} catalog.json")
-        path, _filter = QFileDialog.getSaveFileName(
+        path, _filter = file_dialogs.save_file_name(
             self, "Export Catalog", default, "Catalogs (*.json)"
         )
         if not path:
@@ -3217,7 +3216,7 @@ class MainWindow(QMainWindow):
         if self._scanning or self.identifying():
             self._set_status("Wait for the scan or identification to finish first.", "warning")
             return
-        path, _filter = QFileDialog.getOpenFileName(
+        path, _filter = file_dialogs.open_file_name(
             self, "Import Catalog", str(Path.home()), "Catalogs (*.json);;All files (*)"
         )
         if not path:
@@ -3228,7 +3227,7 @@ class MainWindow(QMainWindow):
             plain.warning(self, "Import Catalog", str(exc))
             return
         made_at = incoming["settings"]["library_root"]
-        folder = QFileDialog.getExistingDirectory(
+        folder = file_dialogs.existing_directory(
             self, f"Where is “{Path(made_at).name}” on this device?", str(Path.home())
         )
         if not folder:

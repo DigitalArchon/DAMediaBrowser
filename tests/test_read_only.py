@@ -72,6 +72,9 @@ REVIEWED = {
     "core/store.py": 13,        # settings, library files and backups - all through config.own
     "gui/app.py": 2,            # /proc/self/coredump_filter: no memory in a crash dump
     "gui/main_window.py": 1,    # the screenshot folder, in Pictures
+    # GTK's recent files list put back as it was: $XDG_DATA_HOME/recently-used.xbel only (a
+    # temp file and a link beside it, or the regular file its link names there), never a library
+    "gui/recentguard.py": 7,
 }
 
 

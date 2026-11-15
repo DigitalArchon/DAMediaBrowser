@@ -96,8 +96,7 @@ class TestCancellingAScan:
 
 class TestAddingANetworkFolder:
     def test_a_chosen_share_folder_becomes_a_library(self, app, window, tmp_path, monkeypatch):
-        from PySide6.QtWidgets import QFileDialog
-
+        from mediabrowser.gui import file_dialogs
         from mediabrowser.gui.dialogs.network_dialog import NetworkFolderDialog
 
         share = tmp_path / "gvfs" / "smb-share:server=nas,share=media"
@@ -107,7 +106,7 @@ class TestAddingANetworkFolder:
         ])
         monkeypatch.setattr(network, "resolve", lambda uri: str(share))
         monkeypatch.setattr(
-            QFileDialog, "getExistingDirectory", lambda *a, **k: str(share / "Live Shows")
+            file_dialogs, "existing_directory", lambda *a, **k: str(share / "Live Shows")
         )
 
         dialog = NetworkFolderDialog(window)

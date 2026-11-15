@@ -65,7 +65,7 @@ def test_export_chapters_saves_where_the_dialog_says(shelf, tmp_path, monkeypatc
     target = tmp_path / "out" / "chapters"
     target.parent.mkdir()
     cue = exports._filter(chapter_export.CUE)
-    monkeypatch.setattr(exports.QFileDialog, "getSaveFileName",
+    monkeypatch.setattr(exports.file_dialogs, "save_file_name",
                         lambda *a, **k: (str(target), cue))
     shelf.export_chapters("a")
     written = target.with_suffix(".cue")
@@ -78,7 +78,7 @@ def test_export_chapters_saves_where_the_dialog_says(shelf, tmp_path, monkeypatc
         seen.update(default=default, chosen=chosen)
         return "", ""
 
-    monkeypatch.setattr(exports.QFileDialog, "getSaveFileName", ask)
+    monkeypatch.setattr(exports.file_dialogs, "save_file_name", ask)
     shelf.export_chapters("a")
     assert seen["default"].startswith(str(target.parent)) and seen["chosen"] == cue
 
@@ -89,7 +89,7 @@ def test_export_chapters_refuses_a_library_folder(shelf, monkeypatch):
     store.save_library(shelf.data)
     root = shelf.data["settings"]["library_root"]
     warned = []
-    monkeypatch.setattr(exports.QFileDialog, "getSaveFileName",
+    monkeypatch.setattr(exports.file_dialogs, "save_file_name",
                         lambda *a, **k: (f"{root}/c.xml", exports._filter("mkvmerge")))
     monkeypatch.setattr(exports.plain, "warning", lambda *a: warned.append(a[2]))
     shelf.export_chapters("a")
