@@ -1240,7 +1240,8 @@ class SettingsDialog(QDialog):
             tip = "\n\n".join(part for part in (
                 private_ai.what_was_attested(session.attestation, clear=False),
                 *private_ai.shortfall_tips(session.attestation),
-                private_ai.receipt_tip(session.last_receipt())) if part)
+                private_ai.receipt_tip(session.last_receipt(),
+                                       private_ai.relay_of(session))) if part)
         self.status.setText(text)
         self.status.setToolTip(tooltip(tip) if tip else "")
 

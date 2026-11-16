@@ -273,6 +273,11 @@ class TestChutesOrdinaryModels:
         (request,) = wire["calls"]
         assert request.full_url == CHUTES + "/chat/completions"
         assert request.get_header("Authorization") == "Bearer k-1"
+        # vLLM takes no effort: the template's own switch turns thinking off for "low".
+        assert json.loads(request.data)["chat_template_kwargs"] == {
+            "enable_thinking": False, "thinking": False}
+        ai.ping(settings)
+        assert json.loads(wire["calls"][-1].data)["max_tokens"] == 1024
 
 
 # ---- sealed: Tinfoil's every model, Chutes' -TEE ones -------------------------------
@@ -370,6 +375,8 @@ class TestSealed:
         assert "Tinfoil's attested router" in sent.how and "highest privacy" in sent.how
         check = next(e for e in outbound.entries() if e.protection == outbound.CHECK)
         assert check.service == "Tinfoil" and "atc.tinfoil.sh" in check.how
+        # The reply's mark names who relayed it: Tinfoil, not nano-gpt.
+        assert "Tinfoil relayed ciphertext" in sent.detail and "nano-gpt" not in sent.detail
 
     def test_a_chutes_tee_model_goes_sealed_with_partial_privacy(self, wire, sealed_clients):
         settings = form(**{ai.SETTING_BASE_URL: CHUTES, ai.SETTING_MODEL: TEE_MODEL})

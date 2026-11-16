@@ -2232,9 +2232,13 @@ class PrivacySession:
         less than a verified one where the attested keys were to sign it (_signs):
         a record that could not be read, or whose text could not be compared."""
         if self.kind == E2EE:
-            receipt = Receipt(self.model, E2EE, SEALED,
-                              "decrypted here; only the attested enclave could have "
-                              "sealed it")
+            receipt = Receipt(self.model, E2EE, SEALED, {
+                "chutes": "decrypted here, each piece in its counted place; only the "
+                          "attested Chutes instance could have sealed it",
+                "tinfoil": "decrypted here; only Tinfoil's attested router could have "
+                           "sealed it"}.get(getattr(self, "service", ""),
+                                            "decrypted here; only the attested enclave "
+                                            "could have sealed it"))
         elif self._tee is None:
             receipt = Receipt(self.model, TEE, UNCHECKED,
                               "the enclave had not been attested")
@@ -2397,7 +2401,14 @@ _GATEWAYS_WORD = (" For a model RedPill serves, the attested key is RedPill's ga
                   "this app (Check Attestation and What Was Sent say what was attested).")
 
 
-def receipt_tip(receipt):
+def relay_of(session):
+    """Who relayed a session's sealed requests, as a reply's tip names it: Tinfoil or
+    Chutes for theirs (their own API), nano-gpt for its Private Mode."""
+    return {"tinfoil": "Tinfoil", "chutes": "Chutes"}.get(
+        getattr(session, "service", ""), "nano-gpt")
+
+
+def receipt_tip(receipt, relay="nano-gpt"):
     """What one reply's mark means, for where it is shown: what the check showed, what
     it leaves to the gateway's word, and that a TEE/ reply's text passed nano-gpt in the
     clear, as SealedLore's marks say it (TEE_MARK_TIPS, 9af15c1); and, where the reply
@@ -2408,7 +2419,7 @@ def receipt_tip(receipt):
     again = (" Its model is attested again before anything more is sent to it."
              if getattr(receipt, "doubted", False) else "")
     if receipt.state == SEALED:
-        return f"End-to-end encrypted: {receipt.detail}. nano-gpt relayed ciphertext."
+        return f"End-to-end encrypted: {receipt.detail}. {relay} relayed ciphertext."
     # Who ran the model, where Settings asked and the lookup was made (upstream_words).
     upstream = getattr(receipt, "upstream", None)
     named = " " + upstream_words(upstream) if upstream is not None else ""

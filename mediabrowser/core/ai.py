@@ -1291,6 +1291,14 @@ def chat(messages, settings: dict, *, json_reply: bool = True, online: bool = Fa
         raise Refused(refused)
     if protocol_of(settings[SETTING_BASE_URL]) == "anthropic":
         return _anthropic_chat(body, messages, settings)
+    if provider_of(settings[SETTING_BASE_URL]) == CHUTES:
+        from . import chutes
+        # Chutes' models run on vLLM, which takes no reasoning effort: their chat
+        # template switches thinking off, as its end-to-end encrypted requests do
+        # (chutes.ChutesClient.body_for). Asked "low" without it, a model that thinks
+        # spent a short reply's room thinking (live, Nov 16 2026).
+        if str(reasoning or "").lower() in chutes.THINKING_OFF_EFFORTS:
+            body["chat_template_kwargs"] = dict(chutes.THINKING_OFF)
     url = f"{settings[SETTING_BASE_URL]}/chat/completions"
     where, protection = destination(settings, online)
     what = _what(text, pictures, body["model"])
@@ -1553,7 +1561,7 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession,
                     outbound.SENT,
                     f"{private_ai.attestation_label(attestation)[0]}; reply: "
                     f"{private_ai.receipt_label(receipt)[0]}. "
-                    f"{private_ai.receipt_tip(receipt)}", text)
+                    f"{private_ai.receipt_tip(receipt, private_ai.relay_of(session))}", text)
     return answer
 
 
@@ -1934,9 +1942,9 @@ def ping(settings: dict) -> str:
     """A tiny request to check the key and model work; returns the model's
     word back. A private model that always thinks is given room to, which it
     is billed for only as it uses - as is a model on Anthropic's API, where the newest
-    always think, or one sent sealed (Tinfoil's, Chutes' -TEE ones)."""
+    always think, or on Chutes or Tinfoil, many of whose models reason."""
     roomy = session_of(settings) is not None or in_privacy_mode(settings) \
-        or protocol_of(settings[SETTING_BASE_URL]) == "anthropic"
+        or provider_of(settings[SETTING_BASE_URL]) in (ANTHROPIC, CHUTES, TINFOIL)
     return chat(
         [{"role": "user", "content": "Reply with the single word OK."}],
         settings, json_reply=False, max_tokens=1024 if roomy else 5,

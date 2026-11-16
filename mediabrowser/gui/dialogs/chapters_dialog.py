@@ -1544,7 +1544,8 @@ class ChaptersDialog(QDialog):
             self.ai_hint.setToolTip(tooltip("\n\n".join(part for part in (
                 private_ai.what_was_attested(session.attestation, clear=False),
                 *private_ai.shortfall_tips(session.attestation),
-                private_ai.receipt_tip(session.last_receipt())) if part)))
+                private_ai.receipt_tip(session.last_receipt(),
+                                       private_ai.relay_of(session))) if part)))
 
     def _what_was_proved(self) -> str:
         """In Privacy Mode, after an answer: what the enclave proved, and the
