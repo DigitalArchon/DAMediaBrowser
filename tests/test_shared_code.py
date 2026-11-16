@@ -14,13 +14,26 @@ is made in the canonical copy first, then carried here.
   elsewhere or not at all - the relay's list of models, no proxy setting of its own, its
   file names and windows (SEALED_HOOKS, TEE_HOOKS, every difference listed).
 
-Each is skipped where the canonical copy's repository is not beside this one.
+- services.py, levels.py, chutes_e2ee.py, chutes.py, tinfoil_direct.py and anthropic.py
+  (the providers' shared core, Nov 16 2026) are DA Assistant's (assistant/), line for line
+  but their docstrings and imports, the transport (netguard's Session for DA Assistant's
+  requests session, its RequestError for requests' exceptions), and the hooks DA
+  Assistant names for a copier: its streams.read_lines is netguard.lines_of here, its
+  proxy.for_url netguard.env_proxy_for (this app has no proxy setting of its own, so
+  nothing to refuse around it), its privacy.py private_ai.py (CORE_HOOKS, every
+  difference listed). They import nothing of this app's but what DA Assistant has too.
+
+Each is skipped where the canonical copy's repository is not beside this one. DA
+Assistant's is its working tree, or the commit DA_ASSISTANT_REF names.
 """
 
 from __future__ import annotations
 
 import ast
 import difflib
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -98,9 +111,8 @@ SEALED_HOOKS = (
      '        raise PrivacyError(f"the proxy set in Settings cannot be used, and nothing goes "\n'
      '                           f"around it: {refused}")\n'
      "\n\n", ""),
-    ("    \"\"\"Attest Tinfoil's router through nano-gpt's relay (network; worker thread).\"\"\"\n"
-     "    _around_the_proxy()\n",
-     "    \"\"\"Attest Tinfoil's router through nano-gpt's relay (network; worker thread).\"\"\"\n"),
+    ("    own (SealedLore, Nov 15 2026).\"\"\"\n    _around_the_proxy()\n",
+     "    own (SealedLore, Nov 15 2026).\"\"\"\n"),
     ("    from tinfoil.github import fetch_latest_release\n    proxy.let_tuf_use_socks()\n",
      "    from tinfoil.github import fetch_latest_release\n"),
     ('    if "TUF" not in str(error) or not proxy.in_use():',
@@ -165,6 +177,37 @@ TEE_HOOKS = (
      "            # netguard's refusals among them: an environment's proxy that cannot be used."),
     ("hashed by llm.py as they were read", "hashed by ai.py as they were read"),
 )
+# The providers' shared core: DA Assistant's words for its transport, and this app's.
+CORE_TRANSPORT = ASSISTANT_TRANSPORT + (("netguard.session()", "netguard.Session()"),)
+SHARED_CORE = ("services.py", "levels.py", "chutes_e2ee.py", "chutes.py", "tinfoil_direct.py",
+               "anthropic.py")
+# What this app's copies have where DA Assistant's name a module of its own that this app
+# has under another name, or not at all.
+CORE_HOOKS = {
+    "tinfoil_direct.py": (
+        # The listing goes through netguard's Session, whose errors are its RequestError;
+        # requests is not in this app's own environment.
+        ("    import requests\n    return netguard.RequestError",
+         "    return netguard.RequestError"),
+        ("        route = proxy.for_url(self.endpoint)",
+         "        route = netguard.env_proxy_for(self.endpoint)"),
+        # No proxy set in Settings here to refuse around (sealed.py's _around_the_proxy
+        # is not this app's either: SEALED_HOOKS).
+        ("        _around_the_proxy()\n        model = str(model).strip()",
+         "        model = str(model).strip()"),
+    ),
+    "anthropic.py": (
+        ("        from . import chutes, privacy\n",
+         "        from . import chutes\n        from . import private_ai as privacy\n"),
+        ("        from .streams import read_lines\n",
+         "        from .netguard import lines_of as read_lines\n"),
+    ),
+}
+# This app's modules a shared one may import: DA Assistant has each (private_ai is its
+# privacy.py), or they are the shared modules themselves.
+CORE_OWN = {"netguard", "safejson", "private_ai", "dcap", "sealed", "services", "levels",
+            "chutes_e2ee", "chutes"}
+CORE_OUTSIDE = {"cryptography", "httpx", "ehbp", "tinfoil"}
 # private_ai.py's TEE part: the constants, and what attests and checks (DA Assistant's
 # privacy.py between the same markers). The rest - who may run, the session, the marks -
 # is the app's own.
@@ -228,6 +271,16 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def assistants(name: str) -> str:
+    """DA Assistant's copy of `name`: its working tree's, or - while that is being changed
+    and this app copies a commit of it - the commit DA_ASSISTANT_REF names."""
+    ref = os.environ.get("DA_ASSISTANT_REF", "").strip()
+    if not ref:
+        return assistants(name)
+    return subprocess.run(["git", "-C", str(ASSISTANT), "show", f"{ref}:assistant/{name}"],
+                          check=True, capture_output=True, text=True).stdout
+
+
 @pytest.mark.skipif(not TOOLKIT.is_dir(), reason="DA Toolkit's repository isn't beside this one")
 @pytest.mark.parametrize("name", ("dcap.py", "nras.py", "ethsig.py"))
 def test_the_verifiers_are_da_toolkits_copy(name):
@@ -244,15 +297,43 @@ def test_the_sdk_guard_is_sealedlores_copy():
 @pytest.mark.skipif(not ASSISTANT.is_dir(), reason="DA Assistant's repository isn't beside this one")
 def test_the_sealed_client_is_da_assistants_copy():
     same(comparable(read(HERE / "sealed.py")),
-         comparable(read(ASSISTANT / "sealed.py"), listed=SEALED_HOOKS),
+         comparable(assistants("sealed.py"), listed=SEALED_HOOKS),
          "sealed.py", "DA Assistant")
 
 
 @pytest.mark.skipif(not ASSISTANT.is_dir(), reason="DA Assistant's repository isn't beside this one")
 def test_the_tee_part_is_da_assistants_copy():
     same(tee_part(read(HERE / "private_ai.py")),
-         tee_part(read(ASSISTANT / "privacy.py"), ASSISTANT_TRANSPORT, TEE_HOOKS),
+         tee_part(assistants("privacy.py"), ASSISTANT_TRANSPORT, TEE_HOOKS),
          "private_ai.py's TEE part", "DA Assistant")
+
+
+@pytest.mark.skipif(not ASSISTANT.is_dir(), reason="DA Assistant's repository isn't beside this one")
+@pytest.mark.parametrize("name", SHARED_CORE)
+def test_the_providers_shared_core_is_da_assistants_copy(name):
+    same(comparable(read(HERE / name)),
+         comparable(assistants(name), CORE_TRANSPORT, CORE_HOOKS.get(name, ())),
+         name, "DA Assistant")
+
+
+@pytest.mark.parametrize("name", SHARED_CORE)
+def test_the_shared_core_imports_nothing_of_this_apps_but_what_da_assistant_has(name):
+    """Not the windows, the settings or the AI's wiring (ai.py): what is the app's own is
+    passed in, so the copy can stay line for line. Nor requests, which only Tinfoil's
+    SDK brings."""
+    own, outside = set(), set()
+    for node in ast.walk(ast.parse(read(HERE / name))):
+        if isinstance(node, ast.ImportFrom) and node.level:
+            own.update([node.module.split(".")[0]] if node.module
+                       else [alias.name for alias in node.names])
+        elif isinstance(node, ast.ImportFrom):
+            outside.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Import):
+            outside.update(alias.name.split(".")[0] for alias in node.names)
+    assert own <= CORE_OWN, f"{name} imports {own - CORE_OWN}"
+    stray = {package for package in outside
+             if package not in CORE_OUTSIDE and package not in sys.stdlib_module_names}
+    assert stray == set(), f"{name} imports {stray}"
 
 
 def test_the_comparison_forgives_only_what_it_lists():

@@ -66,6 +66,12 @@ select = ["E", "F", "I", "UP", "B"]
 # DA Assistant's copy (tests/test_recent_files.py holds it to that one), in its style: its
 # zip()s pair lists of one length.
 "mediabrowser/gui/recentguard.py" = ["B905"]
+# DA Assistant's copy (tests/test_shared_code.py holds it to that one): its zip() pairs
+# the instances checked with what each check found, lists of one length.
+"mediabrowser/core/chutes.py" = ["B905"]
+# DA Assistant's tests of the shared core, ported: each lambda in a loop is called in
+# that pass, and the zip()s pair lists of one length.
+"tests/test_{anthropic,chutes,tinfoil_direct}.py" = ["B023", "B905"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

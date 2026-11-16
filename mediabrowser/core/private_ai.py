@@ -77,6 +77,7 @@ import secrets
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from urllib.parse import quote, urljoin, urlparse
 
@@ -124,6 +125,24 @@ GPUS_LOOSE = "GPUs not tied to the quote"
 # gateway for it, for any reason but that RedPill does not serve it (a 400): whether the
 # gateway answers it instead now and then, unattested, is not known (_attest_instances).
 GATEWAY_UNCHECKED = "RedPill's gateway unchecked"
+# The GPUs NVIDIA did not vouch for (_check_gpus): no evidence offered, its attestation
+# service out of reach, or its signing keys. A TEE/ model's attestation is partial for
+# them; a Chutes instance with any is left out by Chutes' own end-to-end encryption
+# (chutes.py): the model runs on those GPUs, and a request is sealed to that instance
+# alone. From SealedLore (tee.py).
+NO_GPU_EVIDENCE = "no GPU evidence"
+GPUS_UNVERIFIED = "GPUs unverified"
+NVIDIA_UNCHECKED = "NVIDIA signature unchecked"
+GPU_SHORTFALLS = frozenset({NO_GPU_EVIDENCE, GPUS_UNVERIFIED, NVIDIA_UNCHECKED})
+# Chutes' own end-to-end encryption (chutes.py), always partial: the VM image is measured,
+# but the workload in it that makes, binds and uses the encryption key (Chutes' aegis
+# library, a closed binary) is admitted by Chutes' signature, not measured; and the
+# measurements it is held to are Chutes' published list, not rebuilt here. And what the
+# keyless check cannot show: that the hardware binds the key a request would be sealed
+# to (only Chutes' discovery, with the key, names each instance's key).
+WORKLOAD_UNMEASURED = "the workload holding the key unmeasured (Chutes signs it)"
+MEASUREMENTS_LISTED = "measurements from Chutes' own list"
+KEY_BINDING_UNCHECKED = "the key binding unchecked (it needs a Chutes key)"
 
 # RedPill's public records of its gateway's sessions with the machines that run the
 # models (Settings > Privacy, "Name the provider behind each TEE reply", off by default:
@@ -224,10 +243,11 @@ class ModelRetired(PrivacyError):
     model attested fine and its first message came back as a bare preflight refusal.
     `offered`: the private/ models the relay's list does have, to choose from instead."""
 
-    def __init__(self, model, offered=()):
-        super().__init__(f"{model} is no longer offered by nano-gpt's Private Mode, so "
-                         f"nothing was sent to it; choose another private model")
+    def __init__(self, model, offered=(), service="nano-gpt's Private Mode"):
+        super().__init__(f"{model} is no longer offered by {service}, so nothing was "
+                         f"sent to it; choose another private model")
         self.model = model
+        self.service = service
         self.offered = [m for m in offered if m != model]
 
 
@@ -376,6 +396,9 @@ class Attestation:
     # "instances", each instance the provider listed (Chutes); "enclave", the one whose
     # key signs the replies, not shown to be either. "" for an end-to-end encrypted one.
     attested: str = ""
+    # Who sealed or attested it (levels.py: "nanogpt-private", "tinfoil", "chutes"; ""
+    # for NanoGPT's own, as before).
+    service: str = ""
     # E2EE
     enclave: str = ""
     hardware: str = ""
@@ -389,6 +412,9 @@ class Attestation:
     @property
     def headline(self):
         if self.kind == E2EE:
+            # Chutes' is always partial, and says what it lacks.
+            if self.shortfalls:
+                return f"End-to-end encrypted ({', '.join(self.shortfalls)})"
             return "End-to-end encrypted"
         # What was attested, not only that something was: RedPill's gateway is not the
         # machine that runs the model (what_was_attested). From SealedLore (Nov 11 2026).
@@ -428,6 +454,32 @@ def what_was_attested(attestation, clear=True):
     nearby says so. "" for an end-to-end encrypted enclave - the one that opens the
     request - and for an attestation that names nothing (attested ""). From SealedLore
     (9af15c1)."""
+    if attestation is not None and attestation.kind == E2EE:
+        # Tinfoil's own API and Chutes' end-to-end encryption say what they attested,
+        # and what is someone's word (SealedLore's design, e2ee-providers.md 1.5, 2.5).
+        # nano-gpt's Private Mode, as before, nothing here: the banner says it.
+        if attestation.service == "tinfoil":
+            return (f"Attested: Tinfoil's router enclave at {attestation.enclave}, "
+                    f"running tinfoilsh/confidential-model-router {attestation.release} "
+                    f"(a Sigstore-attested build of its public source), measured by "
+                    f"{attestation.hardware or 'its hardware'}, over a connection pinned "
+                    f"to its attested TLS key. Your text is sealed on this computer to "
+                    f"that enclave's key. Tinfoil sees your account, the model, timing, "
+                    f"sizes and cost, never the text. That the router hands your request "
+                    f"only to attested model enclaves is the router's published code, "
+                    f"not checked by this app.")
+        if attestation.service == "chutes":
+            count = attestation.instances
+            listed = f"each of {count} Chutes instances" if count > 1 else \
+                "one Chutes instance"
+            return (f"Attested: {listed}, Intel TDX machines run by third-party miners, "
+                    f"each quote binding the key a request is sealed to, for our nonce, "
+                    f"and each VM image one Chutes publishes (reproducible from "
+                    f"chutesai/sek8s). Not attested: the workload that holds the key, "
+                    f"which Chutes signs, and whose encryption is a closed binary "
+                    f"(chutes-aegis.so). Chutes sees your account, the model, timing, "
+                    f"sizes and cost; the miner, ciphertext.")
+        return ""
     if attestation is None or attestation.kind != TEE:
         return ""
     tail = (" Your text passes nano-gpt's servers in the clear on the way; a private/ "
@@ -489,6 +541,21 @@ SHORTFALL_TIPS = {
         "attested machine's quote does not commit to their evidence, so they may be "
         "another machine's (the one running the model, say), passed on."),
     "GPUs unverified": "GPUs unverified: NVIDIA's attestation service could not be reached.",
+    WORKLOAD_UNMEASURED: (
+        "The workload holding the key unmeasured: the program inside each Chutes instance "
+        "that makes, binds and uses the encryption key (Chutes' aegis library, "
+        "chutes-aegis.so, a closed binary) is admitted to the machine by Chutes' "
+        "signature, not measured. So that only the model reads your text rests on "
+        "software Chutes signs: Chutes, as its signer, could run one that gives the key "
+        "away. This is why Chutes' end-to-end encryption is always partial."),
+    MEASUREMENTS_LISTED: (
+        "Measurements from Chutes' own list: each instance's VM image is held to the "
+        "measurements Chutes publishes, which can be rebuilt from its public source "
+        "(chutesai/sek8s) but were not rebuilt here."),
+    KEY_BINDING_UNCHECKED: (
+        "The key binding unchecked: without a Chutes key, Chutes does not say which key "
+        "each instance would be sent to, so that its quote binds it was not checked. "
+        "Nothing is ever sealed to what such a check found."),
     "NVIDIA signature unchecked": (
         "NVIDIA signature unchecked: NVIDIA's keys could not be fetched to check its "
         "verdict, so only what the verdict says of itself was held to (its nonce, its "
@@ -699,6 +766,8 @@ class _Checks:
         self.shortfalls = []
         self.status = ""
         self.quotes = 0              # quotes Intel's checks were run on
+        # One instance's quote, as _check_instance read it (QuoteFacts; not merged).
+        self.quote = None
         self.gpus = 0
         self.summary_gpu = set()
 
@@ -746,6 +815,26 @@ class _Checks:
                            signers=tuple(sorted(signers)), instances=instances,
                            gpu_ok=True if self.gpus else None, gpus=self.gpus,
                            tcb_status=self.status, attested=attested)
+
+
+@dataclass(frozen=True)
+class QuoteFacts:
+    """What an instance's quote holds that the checks here do not judge: its report data
+    (all 64 bytes, from the quote's own bytes) and its MRTD and RTMR0-3, for a client that
+    checks them too (chutes.py: the first half binds its encryption key; the registers
+    are held to the sets Chutes publishes). From SealedLore (tee.py)."""
+
+    report_data: bytes
+    mrtd: bytes
+    rtmrs: tuple
+
+    @classmethod
+    def of(cls, quote):
+        # The TD report body's fields (Intel TDX, a version 4 quote): MRTD at 136,
+        # RTMR0-3 at 328, 376, 424 and 472, 48 bytes each.
+        body = quote.body
+        return cls(report_data=quote.report_data, mrtd=body[136:184],
+                   rtmrs=(body[328:376], body[376:424], body[424:472], body[472:520]))
 
 
 @dataclass(frozen=True)
@@ -1515,7 +1604,42 @@ class TeeClient:
                        "arch": gpu[0].get("arch", "HOPPER"), "evidence_list": gpu}
         self._check_gpus(payload, quote.report_data[:32].hex(), check,
                          "the nonce its quote binds")
+        check.quote = QuoteFacts.of(quote)
         return check
+
+    def check_instance(self, item, nonce):
+        """One instance's evidence checked as _attest_instances checks each (certificate
+        key bound into the quote and signing our nonce and this quote, Intel's checks,
+        NVIDIA's for the nonce the quote binds), for a client that chooses its instance
+        and leaves out one that fails (chutes.py). Refuses (PrivacyError) as a failing
+        instance refuses there; evidence in a shape that raises anything else is refused
+        named by what it raised. What it found, with its quote's report data and
+        registers in `quote`. Within an `attempt`, given what is left of its time."""
+        try:
+            verify_signature = _instance_verifier()
+        except ImportError:
+            raise PrivacyError(_unchecked_without_cryptography(self.model))
+        try:
+            return self._check_instance(item, nonce, verify_signature)
+        except PrivacyError:
+            raise
+        except netguard.RequestError as e:
+            raise PrivacyError(f"{self.model}'s instance evidence could not be checked: "
+                               f"{unsealed_words(e, 300)}") from e
+        except Exception as e:      # whatever reading the evidence raised: refused
+            raise PrivacyError(f"{self.model}'s instance evidence could not be read: it "
+                               f"is not in the shape it should be "
+                               f"({type(e).__name__})") from e
+
+    @contextmanager
+    def attempt(self, deadline):
+        """Checks made outside attest() (check_instance) held to `deadline`
+        (time.monotonic), as attest() holds its own to ATTEMPT_SECONDS (_left)."""
+        self._deadline = deadline
+        try:
+            yield
+        finally:
+            self._deadline = None
 
     def _check_quote(self, raw, check):
         """Intel's verification of one quote, into `check`. Refuses a bad quote, and

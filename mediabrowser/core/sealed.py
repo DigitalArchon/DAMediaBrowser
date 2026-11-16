@@ -191,6 +191,9 @@ class Verified:
     release_tag: str
     latest_release: str
     latest_checked: bool
+    # The sha256 of the enclave's TLS key (its SubjectPublicKeyInfo, DER, in hex), as the
+    # attestation binds it: what a direct connection pins to (tinfoil_direct.py).
+    tls_public_key: str = ""
 
 
 def _hardware(document):
@@ -243,6 +246,19 @@ def guard_sigstore():
 
 def tinfoil_verify(relay, cache_secret):
     """Attest Tinfoil's router through nano-gpt's relay (network; worker thread)."""
+    return bundle_verify(relay, cache_secret)
+
+
+def bundle_verify(bundle_url, cache_secret, base_url=None, enclave=""):
+    """Attest Tinfoil's router from the attestation bundle `bundle_url` serves (network;
+    worker thread): nano-gpt's relay, or Tinfoil's own https://atc.tinfoil.sh
+    (tinfoil_direct.py). Never a router looked up by the SDK (its get_router_address
+    fetches with plain urllib, outside the guard): a bundle names its enclave.
+    `base_url`: the SDK client's own address, which it never uses here (it only
+    verifies). `enclave`: the host whose bundle to ask for (the SDK then POSTs it as
+    enclaveUrl); without one, the service's default bundle. Tinfoil's ATC hands out
+    either of its routers' bundles to a plain request, and each has a TLS key of its
+    own (SealedLore, Nov 15 2026)."""
     # Imported here: the SDK pulls in sigstore and the OpenAI client, which nothing else
     # needs, and the app should not pay for them at startup.
     from tinfoil import SecureClient
@@ -254,8 +270,9 @@ def tinfoil_verify(relay, cache_secret):
 
     # The secret is passed explicitly, or the SDK would create one in ~/.tinfoil; this
     # client only verifies, it never sends a request.
-    client = SecureClient(base_url=relay + "/", attestation_bundle_url=relay,
-                          transport="ehbp", user_cache_secret=cache_secret)
+    client = SecureClient(enclave=enclave, base_url=(base_url or bundle_url) + "/",
+                          attestation_bundle_url=bundle_url, transport="ehbp",
+                          user_cache_secret=cache_secret)
     truth = client.verify()
     document = client.get_verification_document().to_dict()
     steps = document.get("steps") or {}
@@ -277,11 +294,14 @@ def tinfoil_verify(relay, cache_secret):
             latest = release.tag
     except Exception:  # reported, never fatal
         pass
+    # The TLS key the report binds, as the SDK read it ("tlsPublicKey").
+    tls = str(document.get("tlsPublicKey") or getattr(truth, "public_key", "") or "")
     return Verified(hpke_public_key=truth.hpke_public_key, enclave=client.enclave,
                     hardware=_hardware(document),
                     measurement=str(document.get("enclaveFingerprint") or ""),
                     release_digest=str(digest or ""), release_tag=tag,
-                    latest_release=latest, latest_checked=checked)
+                    latest_release=latest, latest_checked=checked,
+                    tls_public_key=tls.strip().lower())
 
 
 def _not_followed(error):
@@ -301,7 +321,7 @@ def _proxy_hint(error):
             "it may pass if tried again later")
 
 
-def attestation_for(model, verified):
+def attestation_for(model, verified, service=""):
     release = verified.release_tag or f"release {verified.release_digest[:12]}"
     if verified.latest_release:
         currency = f"an older release than the latest, {verified.latest_release}"
@@ -317,7 +337,8 @@ def attestation_for(model, verified):
     return Attestation(model=model, kind=E2EE, level="full", detail=detail,
                        enclave=verified.enclave, hardware=verified.hardware,
                        release=release, latest_release=verified.latest_release,
-                       release_checked=verified.latest_checked, proof=verified)
+                       release_checked=verified.latest_checked, proof=verified,
+                       service=service)
 
 
 class Enclave:
