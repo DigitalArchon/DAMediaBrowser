@@ -122,9 +122,11 @@ class TestTheProviderIsTheAddresss:
         assert ai.protection_label(settings) == "Tinfoil: end-to-end encrypted"
         assert wire["calls"] == [], "loading sends nothing"
 
-    def test_a_plain_client_never_sends_to_a_sealed_host_or_a_tee_model(self, wire):
+    def test_a_plain_client_never_sends_to_a_sealed_host_or_a_tee_model(self, wire,
+                                                                       monkeypatch):
         """When in doubt, sealed: settings that somehow come without their session still
         send nothing in the clear to Tinfoil's host, nor a Chutes -TEE model."""
+        monkeypatch.setattr(sealed, "known", lambda: (True, ""))   # its client is there
         for address, model in ((TINFOIL, "gemma4-31b"), (CHUTES, TEE_MODEL),
                                (CLAUDE_CHUTES, TEE_MODEL)):
             settings = form(**{ai.SETTING_BASE_URL: address, ai.SETTING_MODEL: model})
@@ -544,6 +546,12 @@ class TestTheLevelsWhereModelsAreChosen:
     ])
     def test_each_says_its_level(self, address, model, private, label):
         assert ai.model_privacy({ai.SETTING_BASE_URL: address}, model, private)[0] == label
+
+    def test_a_tee_models_note_says_not_that_every_reply_is_signed(self):
+        """Chutes signs none (DA Assistant's ca688a7): the note says what holds for all."""
+        note = ai.model_privacy({ai.SETTING_BASE_URL: ai.DEFAULT_BASE_URL},
+                                "TEE/glm-5.3-flash", private=True)[1]
+        assert "signed" not in note and "passes nano-gpt's gateway in the clear" in note
 
     def test_the_lists_say_it_too(self, monkeypatch):
         from mediabrowser.core import tinfoil_direct

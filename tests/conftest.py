@@ -95,6 +95,38 @@ def network_through_urlopen(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_network_but_this_machine(monkeypatch):
+    """A request that reaches urllib's urlopen with no test standing in for it fails the
+    test, unless it is to this computer (the local servers some tests run): a model list
+    fetched by the way - Tinfoil's or Chutes' public one, read to see whether a model can
+    look at pictures - would otherwise go to the real service. Tests that fake the
+    network replace this as they always have."""
+    import urllib.request
+    from urllib.parse import urlparse
+
+    real = urllib.request.urlopen
+
+    def urlopen(request, *args, **kwargs):
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        host = (urlparse(url).hostname or "").lower()
+        if host in ("localhost", "::1") or host.startswith("127."):
+            return real(request, *args, **kwargs)
+        raise AssertionError(f"a test reached the network: {url}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+
+@pytest.fixture(autouse=True)
+def fresh_provider_caches(monkeypatch):
+    """The providers' public lists and Chutes' attestations are kept a while for the
+    process (ai._listings, ai._chutes_state): each test starts with none."""
+    from mediabrowser.core import ai
+
+    monkeypatch.setattr(ai, "_listings", {})
+    monkeypatch.setattr(ai, "_chutes_shared", None)
+
+
+@pytest.fixture(autouse=True)
 def forget_what_was_sent():
     """The list of what was sent is the process's: each test starts with it
     empty."""
