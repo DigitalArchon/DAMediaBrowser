@@ -285,6 +285,29 @@ class TestSession:
             with pytest.raises(ValueError):
                 netguard.Response(200, {}, b"<html>", "u").json()
 
+    def test_it_posts_bytes_and_streams_the_answer_as_the_shared_clients_ask(
+            self, server, real_transport, monkeypatch):
+        """DA Assistant's chutes.py and anthropic.py post `data=` bytes, streamed, with
+        requests' (connect, read) timeout pair: urllib takes the longer."""
+        backend = server({"/invoke": (200, {"Content-Type": "text/event-stream"},
+                                      b"data: one\n\ndata: two\n\n"),
+                          "/refused": (403, {}, b'{"detail": "no"}')})
+        timeouts = []
+        real = netguard._transport
+        monkeypatch.setattr(netguard, "_transport",
+                            lambda request, timeout: timeouts.append(timeout)
+                            or real(request, timeout))
+        session = netguard.Session()
+        answer = session.post(backend.url + "/invoke", data=b"\x00sealed",
+                              headers={"Content-Type": "application/octet-stream"},
+                              stream=True, allow_redirects=False, timeout=(10, 180))
+        assert answer.status_code == 200
+        assert b"".join(answer.iter_content(chunk_size=4)) == b"data: one\n\ndata: two\n\n"
+        answer.close()
+        assert timeouts == [180]
+        refused = session.request("POST", backend.url + "/refused", data=b"x", stream=True)
+        assert refused.status_code == 403 and refused.content == b'{"detail": "no"}'
+
     def test_what_it_may_not_do_is_a_request_error(self, server, real_transport):
         with pytest.raises(netguard.RequestError, match="not https"):
             netguard.Session().get("http://intel.example/")

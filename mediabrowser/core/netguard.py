@@ -822,23 +822,32 @@ class Session:
         return self.request("GET", url, params=params, headers=headers, timeout=timeout,
                             stream=stream, allow_redirects=allow_redirects)
 
-    def post(self, url, json=None, headers=None, timeout=30) -> Response:
-        return self.request("POST", url, json=json, headers=headers, timeout=timeout)
+    def post(self, url, json=None, headers=None, timeout=30, data=None, stream=False,
+             allow_redirects=True):
+        return self.request("POST", url, json=json, data=data, headers=headers,
+                            timeout=timeout, stream=stream, allow_redirects=allow_redirects)
 
     def request(self, method, url, params=None, json=None, headers=None,
-                timeout=30, stream=False, allow_redirects=True):
+                timeout=30, stream=False, allow_redirects=True, data=None):
         """A Response; with `stream`, a StreamedResponse - the answer still open,
         for the caller to read as much of as it will and close - unless it is an
-        error status, which comes back read, as ever."""
+        error status, which comes back read, as ever. `data`: the body as bytes, as
+        requests takes it (`json` is one made from an object). `timeout`: seconds, or
+        requests' (connect, read) pair, of which urllib, which has one for both, takes
+        the longer - DA Assistant's shared clients (chutes.py, anthropic.py) give a
+        pair."""
         if params:
             query = urllib.parse.urlencode(
                 {k: v for k, v in params.items() if v is not None})
             url = f"{url}{'&' if '?' in url else '?'}{query}"
-        data = None
         headers = dict(headers or {})
         if json is not None:
             data = _json.dumps(json).encode("utf-8")
             headers.setdefault("Content-Type", "application/json")
+        elif data is not None and not isinstance(data, bytes):
+            data = str(data).encode("utf-8")
+        if isinstance(timeout, (tuple, list)):
+            timeout = max(t for t in timeout if t is not None)
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         if not allow_redirects:
             request.allow_redirects = False
