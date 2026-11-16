@@ -99,8 +99,8 @@ CHUTES_NOTE = (
     "model, timing, sizes and cost; the instance's operator, a third-party miner, "
     "ciphertext.")
 TEE_NOTE = (
-    "Partial privacy. TEE: the model runs in an attested enclave and its replies are "
-    "signed, but the text passes nano-gpt's gateway in the clear.")
+    "Partial privacy. TEE: the model is attested before anything is sent to it, but "
+    "your text passes nano-gpt's gateway in the clear.")
 CHUTES_PLAIN_NOTE = (
     "Not private. Chutes reads this model's text, as any provider of an ordinary model "
     "does. Chutes' -TEE models are the ones sent end-to-end encrypted (partial privacy).")
