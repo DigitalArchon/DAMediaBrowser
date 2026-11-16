@@ -97,3 +97,12 @@ def test_a_source_install_takes_no_cryptography_older_than_the_appimage_ships():
         pinned = re.search(r"^cryptography==([\d.]+)", (ROOT / lock).read_text(), re.M)
         assert pinned, lock
         assert tuple(int(n) for n in pinned.group(1).split(".")) >= (50, 0, 2), lock
+
+
+def test_the_builds_smoke_test_reads_no_keyring():
+    """The smoke test opens the window, which reads the keys from the keyring: on a build
+    host whose keyring is locked and has no one to unlock it, that waited for ever. It runs
+    with the null backend, as it runs with a data folder of its own."""
+    text = BUILD.read_text(encoding="utf-8")
+    smoke = text[text.index('log "Smoke test"'):text.index('rm -rf "$SMOKE_HOME"\n\nlog')]
+    assert "PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring" in smoke

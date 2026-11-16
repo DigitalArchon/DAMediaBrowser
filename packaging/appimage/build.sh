@@ -331,9 +331,13 @@ log "Smoke test"
 # build neither reads nor writes the library of whoever is running it. An
 # import check alone would miss a trimmed Qt library or a stylesheet left
 # out of the package data - both of which look fine until the app is opened.
+# Nor the keyring of whoever runs it: the window reads the AI's and setlist.fm's
+# keys as it opens, and on a build host whose login keyring is locked, with no one
+# to answer its unlock prompt, that waited for ever (a lab host, Nov 16 2026).
 SMOKE_HOME="$BUILD/smoke-home"
 rm -rf "$SMOKE_HOME" && mkdir -p "$SMOKE_HOME"
 QT_QPA_PLATFORM=offscreen XDG_DATA_HOME="$SMOKE_HOME" \
+PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring \
 LD_LIBRARY_PATH="$APPDIR/usr/lib/x11" "$PYTHON" -s -c "
 from mediabrowser.gui.app import build_app, load_stylesheet
 from mediabrowser.gui.main_window import MainWindow
