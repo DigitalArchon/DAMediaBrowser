@@ -276,7 +276,7 @@ def assistants(name: str) -> str:
     and this app copies a commit of it - the commit DA_ASSISTANT_REF names."""
     ref = os.environ.get("DA_ASSISTANT_REF", "").strip()
     if not ref:
-        return assistants(name)
+        return read(ASSISTANT / name)
     return subprocess.run(["git", "-C", str(ASSISTANT), "show", f"{ref}:assistant/{name}"],
                           check=True, capture_output=True, text=True).stdout
 
