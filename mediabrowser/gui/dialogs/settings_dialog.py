@@ -8,11 +8,16 @@ AI's, Privacy Mode: the AI's requests only to a private model, attested
 before anything is sent to it (core.private_ai), with a line that says, as
 the form stands, where they will go and who can read them.
 
-The AI tab is where the Nano-GPT key and model are set. The key is pasted
-once and kept in the OS keyring; the model can be typed or picked from the
-ones Nano-GPT lists with vision (the Claude ones first). Test sends the
-smallest possible request so a wrong key or an empty balance is found
-here, not after forty frames have been sent.
+The AI tab is where the provider, its key and the model are set. One
+endpoint, chosen from NanoGPT, Chutes, Tinfoil, Anthropic or another
+OpenAI-compatible service: choosing one fills in its address, and the
+protocol it speaks follows from the address (ai.provider_of), however the
+address got there - so a Tinfoil address typed by hand is Tinfoil's, sealed
+end to end. Each provider's key is pasted once and kept in the OS keyring,
+one per provider, so switching and back loses none; the model can be typed
+or picked from the ones the provider lists with vision, each with how
+private it is. Test sends the smallest possible request so a wrong key or an
+empty balance is found here, not after forty frames have been sent.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from PySide6.QtWidgets import (
 from mediabrowser.core import (
     ai,
     creds,
+    levels,
     netguard,
     outbound,
     privacy,
@@ -65,6 +71,38 @@ ABOUT = (
     "paste an API key from its settings. A concert's chapters cost a few cents "
     "to name with Sonnet; Opus is several times that and a little more careful."
 )
+# What each provider is, in a few sentences, where it is chosen.
+ABOUTS = {
+    ai.NANOGPT: ABOUT,
+    ai.CHUTES: (
+        "Chutes (chutes.ai) runs open models on machines third parties rent out, paid by "
+        "the request or by subscription. Its -TEE models run in Intel TDX enclaves and are "
+        "sent end-to-end encrypted, each request sealed here to one attested instance "
+        "(partial privacy, preliminary: the program holding the key, chutes-aegis.so, is "
+        "Chutes' own closed binary, admitted by its signature, not measured). Its other "
+        "models are not private: Chutes reads their text."),
+    ai.TINFOIL: (
+        "Tinfoil (tinfoil.sh) runs open models in attested enclaves, every request sealed "
+        "here to its router's attested key, over a connection pinned to the enclave's TLS "
+        "key: Tinfoil sees only ciphertext (highest privacy, preliminary). That the router "
+        "hands a request only to attested model enclaves is its published code, not "
+        "something this app checks."),
+    ai.ANTHROPIC: (
+        "Anthropic's own API (api.anthropic.com), spoken natively, the key sent as "
+        "Anthropic takes it. Not private: Anthropic reads what is sent. Claude Sonnet 5 is "
+        "what this app was tested with."),
+    ai.OTHER: (
+        "Another service that speaks the OpenAI chat API: set its address and a model "
+        "that can look at pictures. Not private: the service reads what is sent."),
+}
+# Where each provider's key comes from, for the field's placeholder.
+KEY_FROM = {
+    ai.NANOGPT: "Paste the API key from nano-gpt.com…",
+    ai.CHUTES: "Paste your Chutes API key (chutes.ai)…",
+    ai.TINFOIL: "Paste your Tinfoil API key (tinfoil.sh)…",
+    ai.ANTHROPIC: "Paste your Anthropic API key (console.anthropic.com)…",
+    ai.OTHER: "Paste the service's API key, if it needs one…",
+}
 PRIVACY_INTRO = (
     "Nothing about your videos leaves this computer unless it's ticked here. "
     "Everything else - scanning, playing, measuring the audio, reading a disc's "
@@ -83,6 +121,9 @@ PRIVACY_MODE_NOTE = (
     "model, when and how much. A TEE/ model is attested too - most as RedPill's TEE "
     "gateway, which passes each request on to the machine that runs the model, so that "
     "machine is the gateway's word - and Nano-GPT's gateway can read what is sent. "
+    "With Tinfoil as the provider (AI tab), every model is end-to-end encrypted to its "
+    "attested router (highest privacy); with Chutes, its -TEE models to one attested "
+    "instance (partial privacy, never under Strict). "
     "Nothing falls back to the ordinary model, and there's no web search."
 )
 STRICT_LABEL = "Strict: refuse an enclave that proves less than it could"
@@ -102,6 +143,18 @@ ATTEST_E2EE = (
     "Intel's certificates and Tinfoil's release record on Sigstore. Nothing about your "
     "videos is sent, and it costs nothing."
 )
+ATTEST_TINFOIL = (
+    "Asks Tinfoil's atc.tinfoil.sh for its router's attestation bundle, and checks it "
+    "against AMD's or Intel's certificates and Tinfoil's release record on Sigstore. No "
+    "key is sent, nothing about your videos, and it costs nothing."
+)
+ATTEST_CHUTES = (
+    "Asks Chutes for the model's instances and their evidence for a fresh nonce, and "
+    "checks each with Intel's and NVIDIA's attestation services and Chutes' published "
+    "measurements. With a key, that each one's quote binds the key a request would be "
+    "sealed to; without one, Chutes' public evidence only (the key binding unchecked). "
+    "Nothing about your videos is sent, and it costs nothing."
+)
 ATTEST_TEE = (
     "Asks nano-gpt for the model's report and RedPill's gateway's, checks them with "
     "Intel's and NVIDIA's attestation services, and says what was attested: RedPill's "
@@ -114,6 +167,25 @@ KEY_NOTE = (
     f"another asks first. Setting {ai.API_KEY_ENV} in the environment overrides it, for "
     "Nano-GPT's own server only."
 )
+# Where each provider's key goes, under its field: one key kept per provider.
+KEY_NOTES = {
+    ai.NANOGPT: KEY_NOTE,
+    ai.CHUTES: (
+        "Kept in the system keyring, one key per provider, not in a file. A Chutes key "
+        "goes only to Chutes' own three addresses, over https: llm.chutes.ai, "
+        "claude.chutes.ai and api.chutes.ai, where its end-to-end encryption goes. The "
+        "checks of Intel's and NVIDIA's carry none."),
+    ai.TINFOIL: (
+        "Kept in the system keyring, one key per provider, not in a file. A Tinfoil key "
+        "goes only to inference.tinfoil.sh, over a connection pinned to the attested "
+        "enclave; its attestation and its list of models are fetched with none."),
+    ai.ANTHROPIC: (
+        "Kept in the system keyring, one key per provider, not in a file, and sent only "
+        "to the server it was entered for, as Anthropic's x-api-key."),
+    ai.OTHER: (
+        "Kept in the system keyring, one key per provider, not in a file, and sent only "
+        "to the server it was entered for: changing the endpoint to another asks first."),
+}
 # Said by the question before Test, List Models or Check Attestation sends the key.
 NOTHING_SENT = "No sends nothing."
 
@@ -143,12 +215,17 @@ class SettingsDialog(QDialog):
         self._jobs: list = []
         self._app_settings = store.load_app_settings()
         settings = ai.settings_from(self._app_settings)
-        self._stored_key = ai.stored_key()
-        # The server the saved key was entered for (ai.key_origin), and those it was said
-        # here it may go to, or not (_ask_about_the_key): an address changed to another
-        # server never takes the saved key along unasked.
-        self._key_origin = (ai.key_origin(self._app_settings.get(ai.SETTING_BASE_URL))
-                            if self._stored_key else None)
+        # Each provider's saved key, the keyring entry it is in and the server it was
+        # entered for (ai.key_slot, ai.key_origin): one per provider, so that switching
+        # and back loses none. _stored_key and _key_origin are the shown provider's. And
+        # the servers it was said here a key may go to, or not (_ask_about_the_key): an
+        # address changed to another server never takes the saved key along unasked.
+        self._saved = self._saved_keys(self._app_settings.get(ai.SETTING_BASE_URL)
+                                       or ai.DEFAULT_BASE_URL)
+        # What the key field holds for each provider, as typed here.
+        self._typed = {provider: saved[0] for provider, saved in self._saved.items()}
+        self._shown_provider = ai.provider_of(self._app_settings.get(ai.SETTING_BASE_URL)
+                                              or ai.DEFAULT_BASE_URL)
         self._key_may_go: set[str] = set()
         self._key_may_not_go: set[str] = set()
         # The server a No was said to at an earlier Save (ai.SETTING_KEY_DECLINED): Save
@@ -193,6 +270,39 @@ class SettingsDialog(QDialog):
         if sealed.known() is None:
             self._jobs.append(run_job(self, sealed.available,
                                       on_done=lambda _answer: self._update_privacy()))
+
+    @staticmethod
+    def _saved_keys(address: str) -> dict:
+        """{provider: (its saved key, the server it was entered for, its keyring entry)}
+        as the keyring has them: the saved address's provider's as load_settings reads
+        it, each other's at its own preset address."""
+        found = {}
+        at = ai.provider_of(address)
+        for provider in ai.PROVIDERS:
+            there = address if provider == at else ai.PROVIDER_ADDRESSES.get(provider, "")
+            if there:
+                slot = ai.key_slot(there)
+            else:
+                slot = ai.OTHER if ai.stored_key(ai.OTHER) or not ai.stored_key(ai.NANOGPT) \
+                    else ai.NANOGPT
+            key = ai.stored_key(slot)
+            origin = ai.key_origin(there or address, slot) if key else None
+            found[provider] = (key, origin, slot)
+        return found
+
+    @property
+    def _stored_key(self) -> str:
+        """The shown provider's saved key."""
+        return self._saved[self._shown_provider][0]
+
+    @property
+    def _key_origin(self):
+        """The server the shown provider's saved key was entered for; None for none."""
+        return self._saved[self._shown_provider][1]
+
+    @property
+    def _key_slot(self) -> str:
+        return self._saved[self._shown_provider][2]
 
     # --- the tabs ----------------------------------------------------------
 
@@ -278,8 +388,9 @@ class SettingsDialog(QDialog):
         self._private_models: dict[str, dict] = {}
         self.private_list_button = QPushButton("List Private Models")
         self.private_list_button.setToolTip(
-            "Ask Nano-GPT which private and TEE models can look at pictures. Its lists "
-            "are public: no key is sent.")
+            "Ask the provider which of its private models can look at pictures - Nano-GPT's "
+            "private/ and TEE/ ones, Tinfoil's, Chutes' -TEE ones. Their lists are public: "
+            "no key is sent.")
         self.private_list_button.clicked.connect(self.fetch_private_models)
         model_row = QHBoxLayout()
         model_row.setContentsMargins(0, 0, 0, 0)
@@ -371,19 +482,25 @@ class SettingsDialog(QDialog):
         else:
             where, protection = ai.destination(settings, online=self.allowed(
                 privacy.WEB_SEARCH))
-            tone = {"sealed": "ok", "tee": "warning"}.get(protection, "")
-            self._tone(self.where_label, f"Sends it {where}.", tone)
-        problems = private_ai.problems(settings[ai.SETTING_BASE_URL], model, wait=False)
+            level = ai.privacy_of(settings)
+            tone = {levels.HIGHEST: "ok", levels.PARTIAL: "warning"}.get(level.level, "")
+            self._tone(self.where_label, f"Sends it {where}. {level.words}.", tone)
+        problems = ai.privacy_problems(settings, model, wait=False)
+        found = levels.privacy_at(model, settings[ai.SETTING_BASE_URL])
         if problems:
             self._tone(self.private_model_note, " ".join(problems), "error")
         else:
             listed = self._private_models.get(model) or {}
-            parts = [private_ai.describe(model)[0] or "", listed.get("price", ""),
-                     listed.get("note", "") or ai.PRIVATE_RECOMMENDED.get(model, "")]
+            label, meaning = ai.model_privacy(settings, model, private=True)
+            note = listed.get("note", "") or ai.PRIVATE_RECOMMENDED.get(model, "")
+            parts = [label, listed.get("price", ""), "" if note == label else note]
             self._tone(self.private_model_note, " · ".join(p for p in parts if p),
-                       "ok" if private_ai.kind_of(model) == private_ai.E2EE else "warning")
+                       "ok" if found.level == levels.HIGHEST else "warning")
+            self.private_model_note.setToolTip(tooltip(meaning))
         self.attest_button.setToolTip(
-            ATTEST_E2EE if private_ai.kind_of(model) == private_ai.E2EE else ATTEST_TEE)
+            ATTEST_TINFOIL if found.service == levels.TINFOIL else
+            ATTEST_CHUTES if found.service == levels.CHUTES else
+            ATTEST_E2EE if found.sealed else ATTEST_TEE)
         where, _protection = ai.destination(settings)
         self.test_button.setToolTip(
             f"Sends the model one tiny request {where}: a fraction of a cent.")
@@ -400,10 +517,24 @@ class SettingsDialog(QDialog):
         label.style().polish(label)
 
     def _build_ai_tab(self, settings: dict) -> QWidget:
-        about = QLabel(ABOUT)
+        provider = self._shown_provider
+        self.provider = QComboBox()
+        for key, label in ai.PROVIDERS.items():
+            self.provider.addItem(label, key)
+        self.provider.setCurrentIndex(list(ai.PROVIDERS).index(provider))
+        self.provider.setToolTip(
+            "Fills in the provider's address and the protocol it speaks. Whatever way an "
+            "address is set - chosen here, typed, an older settings file - the provider is "
+            "read from the address itself, and with it how requests go and where its key "
+            "may go.")
+        # A choice made here: the provider's address, model and key (not one the address
+        # typed below brings, which is followed without changing them).
+        self.provider.activated.connect(lambda _index: self._provider_chosen())
+        about = QLabel(ABOUTS[provider])
         about.setObjectName("hintLabel")
         about.setWordWrap(True)
         links.guard(about)
+        self.about = about
         self.ai_privacy_note = QLabel()
         self.ai_privacy_note.setObjectName("warningLabel")
         self.ai_privacy_note.setWordWrap(True)
@@ -412,7 +543,8 @@ class SettingsDialog(QDialog):
 
         self.key = QLineEdit(self._stored_key)
         self.key.setEchoMode(QLineEdit.Password)
-        self.key.setPlaceholderText("Paste the API key from nano-gpt.com…")
+        self.key.setPlaceholderText(KEY_FROM[provider])
+        self.key_label = QLabel(self._key_words(provider))
         self.show_key = QCheckBox("Show")
         self.show_key.toggled.connect(
             lambda on: self.key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password)
@@ -422,12 +554,11 @@ class SettingsDialog(QDialog):
         key_row.addWidget(self.key, 1)
         key_row.addWidget(self.show_key)
         keyring_error = creds.backend_error()
-        key_note = QLabel(
-            KEY_NOTE if keyring_error is None
-            else f"{keyring_error} Until then, set {ai.API_KEY_ENV} in the environment."
-        )
+        self._keyring_error = keyring_error
+        key_note = QLabel(self._key_note(provider))
         key_note.setObjectName("hintLabel")
         key_note.setWordWrap(True)
+        self.key_note = key_note
 
         self.model = QComboBox()
         self.model.setEditable(True)
@@ -476,9 +607,17 @@ class SettingsDialog(QDialog):
         self.search.currentIndexChanged.connect(lambda _index: self._update_privacy())
 
         self.base_url = QLineEdit(settings[ai.SETTING_BASE_URL])
-        self.base_url.setToolTip("Only worth changing for another OpenAI-compatible service")
+        self.base_url.setToolTip(
+            "The provider's API address. Tinfoil's, Chutes' or Anthropic's typed here is "
+            "theirs, with everything that follows from it.")
+        self.base_url.textChanged.connect(lambda _text: self._address_changed())
         self.base_url.textChanged.connect(lambda _text: self._update_search())
         self.base_url.textChanged.connect(lambda _text: self._update_privacy())
+        self.protocol = QLabel()
+        self.protocol.setObjectName("hintLabel")
+        self.protocol.setWordWrap(True)
+        self.protocol.setTextFormat(Qt.PlainText)
+        self._show_protocol()
         other = QLabel(OTHER_ENDPOINTS)
         other.setObjectName("hintLabel")
         other.setWordWrap(True)
@@ -497,7 +636,8 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(8)
-        form.addRow("API key:", key_row)
+        form.addRow("Provider:", self.provider)
+        form.addRow(self.key_label, key_row)
         form.addRow("", key_note)
         held = self._held_back_row()
         if held is not None:
@@ -507,6 +647,7 @@ class SettingsDialog(QDialog):
         form.addRow("Frames per chapter:", self.frames)
         form.addRow("Web search by:", self.search)
         form.addRow("Endpoint:", self.base_url)
+        form.addRow("Speaks:", self.protocol)
         form.addRow("", other)
 
         layout = QVBoxLayout()
@@ -520,6 +661,64 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         tab.setLayout(layout)
         return tab
+
+    # --- the provider ----------------------------------------------------
+
+    @staticmethod
+    def _key_words(provider: str) -> str:
+        return "API key:" if provider == ai.OTHER else f"{ai.PROVIDERS[provider]} API key:"
+
+    def _key_note(self, provider: str) -> str:
+        if self._keyring_error is not None:
+            return f"{self._keyring_error} Until then, set {ai.API_KEY_ENV} in the environment."
+        return KEY_NOTES[provider]
+
+    def _provider_chosen(self) -> None:
+        """A provider picked from the list: its address and its model fill in (another
+        service's are left to be typed), and its own key shows."""
+        provider = self.provider.currentData()
+        address = ai.PROVIDER_ADDRESSES.get(provider)
+        if address is None and ai.provider_of(self._address()) != ai.OTHER:
+            address = ""            # another service's: to be typed
+        if address is not None and address != self.base_url.text().strip():
+            self.base_url.setText(address)
+        self._show_provider(provider)
+        model = ai.PROVIDER_MODELS.get(provider)
+        if model:
+            self.model.setCurrentText(model)
+        if provider == ai.OTHER:
+            self.base_url.setFocus()
+
+    def _address_changed(self) -> None:
+        """The provider follows the address, however it is set: typed, pasted or chosen."""
+        found = ai.provider_of(self._address()) if self.base_url.text().strip() else \
+            self.provider.currentData()
+        if found != self.provider.currentData():
+            self.provider.blockSignals(True)
+            self.provider.setCurrentIndex(list(ai.PROVIDERS).index(found))
+            self.provider.blockSignals(False)
+        self._show_provider(found)
+        self._show_protocol()
+
+    def _show_provider(self, provider: str) -> None:
+        """The key field, its words and the notes for `provider`: what was typed for the
+        one shown before is kept for it, and its own saved key (or what was typed for it
+        here) shows."""
+        if provider == self._shown_provider:
+            return
+        self._typed[self._shown_provider] = self.key.text()
+        self._shown_provider = provider
+        self.key.blockSignals(True)
+        self.key.setText(self._typed.get(provider, ""))
+        self.key.blockSignals(False)
+        self.key.setPlaceholderText(KEY_FROM[provider])
+        self.key_label.setText(self._key_words(provider))
+        self.key_note.setText(self._key_note(provider))
+        self.about.setText(ABOUTS[provider])
+
+    def _show_protocol(self) -> None:
+        protocol = ai.protocol_of(self._address())
+        self.protocol.setText(ai.PROTOCOL_WORDS.get(protocol, protocol))
 
     def _build_setlist_tab(self) -> QWidget:
         about = QLabel(SETLISTFM_ABOUT)
@@ -614,6 +813,7 @@ class SettingsDialog(QDialog):
             **{choice: self.allowed(choice) for choice in privacy.CHOICES},
             ai.SETTING_KEY: self.key.text().strip(),
             ai.KEY_ORIGIN: self._form_key_origin(),
+            ai.KEY_SLOT: self._key_slot,
             ai.SETTING_MODEL: self.model.currentText().strip() or ai.DEFAULT_MODEL,
             ai.SETTING_BASE_URL: self.base_url.text().strip() or ai.DEFAULT_BASE_URL,
             ai.SETTING_FRAMES: self.frames.value(),
@@ -677,7 +877,7 @@ class SettingsDialog(QDialog):
         answer = plain.question(
             self, "Use the saved key?",
             f"Use the saved key with {shown}?\n\n"
-            f"The Nano-GPT API key kept in the keyring was entered for "
+            f"The {ai.KEY_NAMES[self._key_slot]} API key kept in the keyring was entered for "
             f"{entered or 'a server the keyring does not name'}. Yes sends it to {shown} "
             f"from now on, with everything sent to the AI. No keeps it for "
             f"{entered or 'that server'}: nothing is sent to {shown} with it, and you can "
@@ -791,7 +991,8 @@ class SettingsDialog(QDialog):
         shown = ai.shown_origin(new[0][1])
         answer = plain.question(
             self, "Send the key unencrypted?",
-            f"The Nano-GPT API key goes over plain http, which isn't encrypted, to "
+            f"The {ai.KEY_NAMES[self._shown_provider]} API key goes over plain http, which "
+            f"isn't encrypted, to "
             f"another machine on your network: {shown}.\n\nAnyone on that network can "
             f"read it on the way, a café's or a hotel's Wi-Fi included. (A key sent to "
             f"this computer itself, localhost or 127.0.0.1, never leaves it.)\n\n"
@@ -803,23 +1004,32 @@ class SettingsDialog(QDialog):
         return True
 
     def accept(self) -> None:
+        if self._shown_provider == ai.OTHER and not self.base_url.text().strip():
+            self.tabs.setCurrentIndex(TAB_AI)
+            self.status.setText("Not saved: set the service's address under Endpoint.")
+            return
         problem = ai.endpoint_problem(self.base_url.text().strip() or ai.DEFAULT_BASE_URL)
         if problem:
             self.tabs.setCurrentIndex(TAB_AI)
             self.status.setText(f"Not saved: {problem}")
             return
         private_model = self.private_model.currentText().strip() or ai.DEFAULT_PRIVATE_MODEL
-        if self.privacy_mode_check.isChecked() and private_ai.kind_of(private_model) is None:
+        if self.privacy_mode_check.isChecked() and \
+                not levels.privacy_at(private_model, self._address()).private:
             self.tabs.setCurrentIndex(TAB_PRIVACY)
             self._tone(self.attest_status, f"Not saved: {private_model} runs in no attested "
-                       "enclave. Choose a private/ or TEE/ model.", "error")
+                       f"enclave at {ai.service_name(self._address())}. Choose a private/ or "
+                       f"TEE/ model on Nano-GPT, any of Tinfoil's, or a -TEE one on Chutes.",
+                       "error")
             return
         key = self.key.text().strip()
-        unfit = netguard.key_problem(key, "Nano-GPT")
-        if unfit:
-            self.tabs.setCurrentIndex(TAB_AI)
-            self.status.setText(f"Not saved: {unfit}")
-            return
+        self._typed[self._shown_provider] = self.key.text()
+        for provider, typed in self._typed.items():
+            unfit = netguard.key_problem(typed.strip(), ai.PROVIDERS[provider])
+            if unfit:
+                self.tabs.setCurrentIndex(TAB_AI)
+                self.status.setText(f"Not saved: {unfit}")
+                return
         self._ask_about_the_key(saving=True)
         if not self._may_send_plain(self.settings(), "No goes back to Settings, to change "
                                                      "the endpoint or the key."):
@@ -829,10 +1039,17 @@ class SettingsDialog(QDialog):
             return
         there = ai.origin_of(self._address())
         declined = self._key_declined
+        try:
+            self._store_other_providers_keys()
+        except Exception as e:  # noqa: BLE001 - keyring locked or unavailable
+            self.status.setText(f"Couldn't keep the key in the keyring: {e}")
+            return
         if key != self._stored_key:
             try:
-                # Kept for the server it was entered beside, and sent only there.
-                ai.store_key(key, self._address())
+                # Kept for the server it was entered beside, and sent only there: in its
+                # provider's own entry, or that entry forgotten when emptied.
+                ai.store_key(key, self._address(),
+                             None if key else self._key_slot)
             except Exception as e:  # noqa: BLE001 - keyring locked or unavailable
                 self.status.setText(f"Couldn't keep the key in the keyring: {e}")
                 return
@@ -841,7 +1058,7 @@ class SettingsDialog(QDialog):
             if self._keeps_the_saved_key() and there in self._key_may_go \
                     and there != self._key_origin:
                 try:
-                    ai.let_key_go_to(self._address())
+                    ai.let_key_go_to(self._address(), self._key_slot)
                 except Exception as e:  # noqa: BLE001 - keyring locked or unavailable
                     self.status.setText(f"Couldn't keep in the keyring where the key may "
                                         f"go: {e}")
@@ -882,10 +1099,28 @@ class SettingsDialog(QDialog):
         for choice in privacy.CHOICES:
             privacy.set_allowed(settings, choice, self.allowed(choice))
         store.save_app_settings(settings)
-        if settings[ai.SETTING_PRIVACY_MODE] and private_ai.is_private_mode(private_model):
+        if settings[ai.SETTING_PRIVACY_MODE] and levels.privacy_at(
+                private_model, self._address()).service in (levels.NANOGPT_PRIVATE,
+                                                            levels.TINFOIL):
             sealed.check()      # known before the first request needs it
         network_status.settings_changed()
         super().accept()
+
+    def _store_other_providers_keys(self) -> None:
+        """The keys typed here for providers not shown now, each kept for its own preset
+        address in its own entry (another service's has no address but the one shown, so
+        only the shown one's is kept). Raises when the keyring can't be written."""
+        for provider, typed in self._typed.items():
+            if provider in (self._shown_provider, ai.OTHER):
+                continue
+            key, _origin, slot = self._saved[provider]
+            typed = typed.strip()
+            if typed == key:
+                continue
+            if typed:
+                ai.store_key(typed, ai.PROVIDER_ADDRESSES[provider], provider)
+            elif slot == provider:
+                ai.store_key("", ai.PROVIDER_ADDRESSES[provider], provider)
 
     # --- asking Nano-GPT ---------------------------------------------------
 
@@ -928,6 +1163,8 @@ class SettingsDialog(QDialog):
             )
 
     def _describe_model(self, model_id: str) -> None:
+        """Under the model: its name and price where the provider's list said, and how
+        private it is at this endpoint, at one of three levels (ai.model_privacy)."""
         model = self._models.get(model_id.strip())
         note = ai.RECOMMENDED.get(model_id.strip(), "")
         parts = []
@@ -937,13 +1174,19 @@ class SettingsDialog(QDialog):
                 parts.append(model["price"])
         if note:
             parts.append(note)
-        self.model_note.setText(" · ".join(parts))
+        if hasattr(self, "base_url") and model_id.strip():
+            settings = {ai.SETTING_BASE_URL: self._address()}
+            label, meaning = ai.model_privacy(settings, model_id.strip())
+            parts.append(label)
+            self.model_note.setToolTip(tooltip(meaning))
+        self.model_note.setText(" · ".join(dict.fromkeys(p for p in parts if p)))
 
     def _endpoint_host(self) -> str:
         url = self.base_url.text().strip() or ai.DEFAULT_BASE_URL
         return outbound.host_of(url) or url
 
     def _update_search(self) -> None:
+        self._describe_model(self.model.currentText())
         on_nano = ai.searches_the_web({ai.SETTING_BASE_URL: self.base_url.text().strip()})
         self.search.setEnabled(on_nano)
         self.search.setToolTip(
@@ -1039,7 +1282,8 @@ class SettingsDialog(QDialog):
     def fetch_private_models(self) -> None:
         settings = self.settings()
         self.private_list_button.setEnabled(False)
-        self._tone(self.private_model_note, "Asking Nano-GPT for its private models…", "")
+        self._tone(self.private_model_note,
+                   f"Asking {ai.service_name(self._address())} for its private models…", "")
         self._jobs.append(run_job(
             self,
             lambda: ai.list_private_models(settings),

@@ -470,6 +470,41 @@ sent in the clear, nor handed on by a redirect to another site) and model
 — but web search is Nano-GPT's own and is switched off elsewhere, and
 another model may not read menus and video frames as well.
 
+**Providers.** The AI tab's **Provider** list fills in the one endpoint:
+NanoGPT, Chutes, Tinfoil, Anthropic, or Other (any OpenAI-compatible
+service). Choosing one fills in its address and a model that can see; the
+key field says whose key it is, and each provider keeps its own key in the
+keyring, so switching to another and back loses none. The protocol is not
+a setting: it follows from the address, however the address got there —
+chosen, typed by hand, or an older `settings.json` — and so do the sealing,
+where the key may go and the privacy marks. Under **Speaks** the form says
+which:
+
+- **Tinfoil** (`https://inference.tinfoil.sh/v1`, preliminary): every
+  model end-to-end encrypted — highest privacy, Privacy Mode or not. Before
+  anything is sent, Tinfoil's router enclave is attested from Tinfoil's own
+  attestation service (`atc.tinfoil.sh`), and each request is sealed here to
+  its key and sent over a connection pinned to the TLS key the attestation
+  binds; Tinfoil sees only ciphertext. It needs Tinfoil's client, as the
+  `private/` models do. That the router hands a request only to attested
+  model enclaves is its published code, not something this app checks.
+- **Chutes** (`https://llm.chutes.ai/v1`, or its Anthropic-style proxy
+  `https://claude.chutes.ai`): a model whose id ends `-TEE` is sent only
+  end-to-end encrypted to one attested Chutes instance — partial privacy,
+  preliminary — and its other models in the clear, which Chutes reads. The
+  Chutes key goes to Chutes' three own addresses alone (llm, claude and
+  api.chutes.ai). See [Privacy Mode](#privacy-mode) for what the encryption
+  rests on.
+- **Anthropic** (`https://api.anthropic.com`): Claude through Anthropic's
+  own Messages API, spoken natively, the key sent as Anthropic takes it.
+  Not private.
+
+The model's note says how private it is there — *🔐 End-to-end encrypted
+(Tinfoil) · Highest privacy*, *Partial privacy*, *Not private* — and so does
+the status bar. A model the provider's own list says can't look at pictures
+is never sent frames: the request is refused, in words, before anything
+goes. Web search stays Nano-GPT's own.
+
 **Romanised titles.** The name a Japanese song goes by outside Japan is
 rarely a translation of it: いいね! is released as "Iine!", not "So Good",
 and メギツネ as "Megitsune". So wherever the AI names songs (the
@@ -742,7 +777,26 @@ proved what it is. The checks are DA Assistant's, line for line.
 what each kind of model proves, what each mark means, and what is someone's
 word.
 
-There are two kinds, and the private model's name says which:
+Privacy comes at three levels, the same in every DA app:
+
+- **Highest**: end-to-end encrypted to an attested enclave whose software
+  is measured — nano-gpt's `private/` models, and every model on Tinfoil.
+- **Partial**: attested, but with a gap in what is proved — nano-gpt's
+  `TEE/` models, whose text passes nano-gpt's gateway in the clear, and
+  Chutes' `-TEE` models, encrypted all the way to a key that rests on
+  software Chutes signs.
+- **Not private**: every other model, whose provider can read your text.
+
+Privacy Mode's private model can be a `private/` or `TEE/` model on
+Nano-GPT, any model on Tinfoil, or a `-TEE` model on Chutes — that one
+only with **Strict** off, since Chutes' is always partial. A window that
+has asked the AI goes on only at its level or higher: change Settings from
+Detect Chapters to a less private model once it has an answer — from a
+`private/` model to an ordinary one, or to Chutes — and nothing more is
+sent from it, in words that say both levels; close it and open it again to
+use the other model.
+
+On Nano-GPT there are two kinds, and the private model's name says which:
 
 - **`private/` models are end-to-end encrypted** (nano-gpt's Private
   Mode). Before anything is sent, the enclave — Tinfoil's router — is
@@ -832,9 +886,28 @@ An operation's privacy is fixed when it starts — a Detect Chapters window
 opened, an Identify Library run — and only ever tightens: switch Privacy
 Mode on, or the AI off, and a run already going sends nothing more to the
 ordinary model. While Privacy Mode is on the status bar says so ("AI,
-sealed end to end", or "AI, TEE attested first"), and after an answer,
+sealed end to end, highest privacy", or "AI, TEE attested first, partial
+privacy"), and after an answer,
 Detect Chapters says what was attested and what the reply's check found;
 so does Test.
+
+**Chutes' `-TEE` models** (preliminary) are sealed on this computer with
+this app's own client, not Chutes' (which checks nothing), using ML-KEM-768
+from the `cryptography` package already pinned, so nothing new is
+installed; where that has no ML-KEM, they are refused in words. For each
+request it asks Chutes for the model's instances, each with its key and
+single-use nonces, and attests every one not attested in the last 15
+minutes: its Intel TDX quote up to Intel's root, for a nonce of its own,
+binding that key; its GPUs' evidence through NVIDIA; and its VM image
+against the measurements Chutes publishes. An instance that falls short,
+or whose GPUs NVIDIA didn't vouch for, is left out and never sealed to. The
+reply streams, each piece held to its number: one dropped, repeated or out
+of place, or a stream cut short, is refused. It is always partial: the
+program inside each instance that makes and holds the key, Chutes' aegis
+library (`chutes-aegis.so`), is a closed binary admitted by Chutes'
+signature, not measured, and the list of measured images is Chutes' own.
+Chutes sees your account, the model, timing, sizes and cost; the
+instance's operator, a third-party miner, only ciphertext.
 
 The end-to-end encrypted models need Tinfoil's own client, which the
 AppImage carries and `tools/install-private-mode.sh` installs from source;

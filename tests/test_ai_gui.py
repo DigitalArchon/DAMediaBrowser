@@ -392,8 +392,11 @@ class TestSettings:
         assert [question["title"] for question in asked["questions"]] == [
             "Send the key unencrypted?"], "not asked whether the saved key may go there"
         assert ai.load_settings()[ai.SETTING_KEY] == "sk-local"
-        assert memory_keyring.store[("da-media-browser", ai.KEYRING_ORIGIN_NAME)] == \
+        # Kept as that endpoint's own ("Other"), one key per provider: Nano-GPT's is
+        # still there for Nano-GPT.
+        assert memory_keyring.store[("da-media-browser", "other-api-key-origin")] == \
             "http://192.168.1.5:8080"
+        assert ai.stored_key(ai.NANOGPT) == "sk-abc"
 
     def test_a_key_over_plain_http_to_another_machine_is_asked_about_first(
             self, window, memory_keyring, asked):
@@ -424,11 +427,11 @@ class TestSettings:
         assert len(asked["questions"]) == 2
         assert dialog.status.text().startswith("Not saved: the key would have gone "
                                                "unencrypted")
-        assert ai.stored_key() == "", "nothing saved"
+        assert ai.stored_key(ai.OTHER) == "", "nothing saved"
         asked["answer"] = QMessageBox.Yes
         dialog.accept()
         assert len(asked["questions"]) == 3
-        assert ai.stored_key() == "sk-lan"
+        assert ai.stored_key(ai.OTHER) == "sk-lan"
         # Going there as Settings opened: not asked again; to this computer: never.
         again = SettingsDialog(window)
         again.accept()
@@ -457,7 +460,7 @@ class TestSettings:
         assert held[ai.SETTING_KEY] == "" and held[ai.KEY_IN_CLEAR_HELD]
         assert "plain http, unencrypted, to http://192.168.1.5:8080" in ai.not_ready(held)
         assert "Settings → AI, Confirm…" in ai.not_ready(held)
-        assert ai.stored_key() == "sk-lan", "never deleted"
+        assert ai.stored_key(ai.OTHER) == "sk-lan", "never deleted"
 
         dialog = SettingsDialog(window)
         dialog.privacy_checks[privacy.AI].setChecked(True)
@@ -561,7 +564,7 @@ class TestSettings:
         dialog.model.setCurrentText("anthropic/claude-sonnet-5")
         assert dialog.model_note.text() == (
             "Claude Sonnet 5 · $2 in / $10 out per million tokens · "
-            "tested with this app - recommended"
+            "tested with this app - recommended · Not private"
         )
         assert pump(app, lambda: _finished(dialog._jobs[-1][0]))
 

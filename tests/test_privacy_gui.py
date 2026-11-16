@@ -164,7 +164,8 @@ class TestTheWindow:
         monkeypatch.setenv(ai.API_KEY_ENV, "sk-1")
         network_status.settings_changed()
         # No setlist.fm key, and no web search in Privacy Mode: neither is listed.
-        assert line.text() == "Online: MusicBrainz · Covers · AI, sealed end to end"
+        assert line.text() == ("Online: MusicBrainz · Covers · AI, sealed end to end, "
+                               "highest privacy")
         tip = line.toolTip()
         assert "✓ MusicBrainz: to musicbrainz.org" in tip
         assert "✗ setlist.fm: off. Add a setlist.fm API key" in tip

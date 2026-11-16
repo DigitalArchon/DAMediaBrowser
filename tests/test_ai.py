@@ -195,10 +195,13 @@ class TestAKeyGoesOnlyWhereItWasEntered:
         http["reply"] = {"choices": [{"message": {"content": "OK"}}]}
         ai.ping(ai.load_settings())
         assert http["calls"][0].get_header("Authorization") == "Bearer sk-kept"
+        # Kept as that endpoint's ("Other"), it is never Nano-GPT's: the address put to
+        # Nano-GPT's own has no key of its own yet, and is sent none.
         store.save_app_settings({ai.SETTING_BASE_URL: ai.DEFAULT_BASE_URL,
                                  privacy.AI: True})
-        assert "entered for http://192.168.1.5:8080, not https://nano-gpt.com" in \
-            ai.not_ready(ai.load_settings())
+        settings = ai.load_settings()
+        assert settings[ai.SETTING_KEY] == ""
+        assert ai.not_ready(settings) == "Set a Nano-GPT API key in Settings → AI."
 
     def test_a_key_saved_before_takes_its_addresss_server_with_no_question(
             self, data_dir, memory_keyring):
@@ -265,7 +268,7 @@ class TestAKeyGoesOnlyWhereItWasEntered:
         store.save_app_settings({ai.SETTING_BASE_URL: "https://relay.example/api/v1",
                                  privacy.AI: True, ai.SETTING_PRIVACY_MODE: True,
                                  ai.SETTING_PRIVATE_MODEL: "TEE/glm-5.3-flash"})
-        monkeypatch.setattr(private_ai, "problems", lambda *a, **k: [])
+        monkeypatch.setattr(ai, "privacy_problems", lambda *a, **k: [])
         settings = ai.load_settings()
         with pytest.raises(ai.Refused, match="entered for https://nano-gpt.com, not "
                                              "https://relay.example"):
@@ -454,7 +457,7 @@ class TestAPasswordInTheAddress:
     def test_each_way_out_refuses_it_by_itself(self, transport):
         """However it is reached: the request, Privacy Mode's attestation and the
         sealed client each refuse it before anything is sent."""
-        from mediabrowser.core import private_ai, sealed
+        from mediabrowser.core import sealed
         with pytest.raises(ai.Refused, match="user name or password") as caught:
             ai._request(f"{self.URL}/chat/completions", "sk-1", {"model": "x"})
         assert "Sekrit-77" not in str(caught.value)

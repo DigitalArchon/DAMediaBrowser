@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import ai, privacy, private_ai, setlistfm, store
+from . import ai, privacy, setlistfm, store
 
 # Not one of privacy's switches: Settings → Privacy's "Name the provider behind each TEE
 # reply", under Privacy Mode (ai.SETTING_NAME_UPSTREAMS), off by default.
@@ -61,6 +61,9 @@ class Service:
     on: bool            # whether a request to it can go now
     where: str          # "to musicbrainz.org", for "Sends ... <where>"
     off: str            # why it can't, when it can't, as a sentence
+    # For the AI: how private its requests are, at one of three levels (levels.py):
+    # "Highest privacy", "Partial privacy", "Not private".
+    level: str = ""
 
     @property
     def name(self) -> str:
@@ -75,7 +78,9 @@ class Service:
         list of them."""
         # "The AI", "The Cover Art Archive" - but setlist.fm is setlist.fm.
         name = "The" + self.name[3:] if self.name.startswith("the ") else self.name
-        return f"{name}: {self.where}" if self.on else f"{name}: off. {self.off}"
+        if not self.on:
+            return f"{name}: off. {self.off}"
+        return f"{name}: {self.where}" + (f". {self.level}" if self.level else "")
 
 
 def services(app_settings: dict | None = None,
@@ -96,7 +101,8 @@ def services(app_settings: dict | None = None,
         privacy.SETLISTFM, not setlist_off, "to setlist.fm, with your API key", setlist_off)
     ai_off = ai.not_ready(ai_settings)
     where, _protection = ai.destination(ai_settings)
-    found[privacy.AI] = Service(privacy.AI, not ai_off, where, ai_off)
+    found[privacy.AI] = Service(privacy.AI, not ai_off, where, ai_off,
+                                ai.level_words(ai_settings))
     found[privacy.WEB_SEARCH] = _web_search(ai_settings, ai_off)
     found[UPSTREAMS] = _upstreams(ai_settings, ai_off)
     return found
@@ -132,7 +138,7 @@ def _upstreams(ai_settings: dict, ai_off: str) -> Service:
                "isn't ticked.")
     elif not ai.in_privacy_mode(ai_settings):
         off = "Only in Privacy Mode, for a TEE/ model's replies."
-    elif private_ai.kind_of(ai.active_model(ai_settings)) != private_ai.TEE:
+    elif ai.privacy_of(ai_settings).kind != "tee":
         off = "Only for a TEE/ model's replies: the private model is sealed end to end."
     elif ai_off:
         off = "It's the AI's, and the AI can't be asked."
@@ -151,11 +157,14 @@ def status_text(found: dict[str, Service]) -> str:
         return "Nothing goes online"
     names = []
     for service in on:
+        level = f", {service.level.lower()}" if service.level else ""
         if service.choice == privacy.AI and service.where.startswith("sealed"):
-            names.append("AI, sealed end to end")
+            names.append(f"AI, sealed end to end{level}")
         elif service.choice == privacy.AI and "attested" in service.where:
             # Not "enclave": most TEE/ models are attested as RedPill's gateway.
-            names.append("AI, TEE attested first")
+            names.append(f"AI, TEE attested first{level}")
+        elif service.choice == privacy.AI:
+            names.append(f"AI{level}")
         else:
             names.append(service.short)
     return "Online: " + " · ".join(names)

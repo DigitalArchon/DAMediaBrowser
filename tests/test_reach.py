@@ -5,7 +5,7 @@ bar say it (core.reach)."""
 
 import pytest
 
-from mediabrowser.core import ai, privacy, reach, sealed, setlistfm
+from mediabrowser.core import ai, privacy, reach, sealed, services, setlistfm
 
 
 @pytest.fixture(autouse=True)
@@ -48,13 +48,36 @@ def test_the_status_bar_names_each_and_how_the_ai_travels(monkeypatch):
     on = settings(**{privacy.MUSICBRAINZ: True, privacy.COVER_ART: True, privacy.AI: True,
                      privacy.WEB_SEARCH: True})
     assert reach.status_text(reach.services(on)) == (
-        "Online: MusicBrainz · Covers · AI · Web search")
+        "Online: MusicBrainz · Covers · AI, not private · Web search")
     private = dict(on, **{ai.SETTING_PRIVACY_MODE: True})
     found = reach.services(private)
-    assert reach.status_text(found) == "Online: MusicBrainz · Covers · AI, sealed end to end"
+    assert reach.status_text(found) == (
+        "Online: MusicBrainz · Covers · AI, sealed end to end, highest privacy")
     assert "Never in Privacy Mode" in found[privacy.WEB_SEARCH].off
     tee = dict(private, **{ai.SETTING_PRIVATE_MODEL: "TEE/kimi-k3"})
-    assert reach.status_text(reach.services(tee)).endswith("AI, TEE attested first")
+    assert reach.status_text(reach.services(tee)).endswith(
+        "AI, TEE attested first, partial privacy")
+
+
+def test_the_status_bar_says_each_providers_privacy_level(memory_keyring):
+    """Tinfoil's every model sealed (highest), Chutes' -TEE ones sealed (partial) and its
+    others not private, Anthropic's not private: the level read from the address and the
+    model, Privacy Mode or not."""
+    for address, model, private, words in (
+            (services.TINFOIL_BASE_URL, "gemma4-31b", False,
+             "AI, sealed end to end, highest privacy"),
+            (services.CHUTES_BASE_URL, "Qwen/Qwen3.6-27B-TEE", False,
+             "AI, sealed end to end, partial privacy"),
+            (services.CHUTES_BASE_URL, "zai-org/GLM-5.3", False, "AI, not private"),
+            (services.ANTHROPIC_URL, "claude-sonnet-5", False, "AI, not private"),
+            (services.TINFOIL_BASE_URL, "kimi-k3-1-pro", True,
+             "AI, sealed end to end, highest privacy")):
+        base = settings(**{privacy.AI: True, ai.SETTING_BASE_URL: address,
+                           ai.SETTING_MODEL: model, ai.SETTING_PRIVACY_MODE: private,
+                           ai.SETTING_PRIVATE_MODEL: model})
+        found = reach.services(base, ai.settings_from(dict(base, **{ai.SETTING_KEY: "k"})))
+        assert reach.status_text(found) == f"Online: {words}", (address, model)
+        assert reach.overview(found).splitlines()[3].endswith(found[privacy.AI].level)
 
 
 def test_web_search_is_nano_gpts_own(monkeypatch):
@@ -90,7 +113,7 @@ def test_redpill_is_named_only_while_its_switch_is_on_for_a_tee_model(monkeypatc
     found = reach.services(named)
     assert found[reach.UPSTREAMS].on
     assert found[reach.UPSTREAMS].where.startswith("to api.redpill.ai, directly")
-    assert reach.status_text(found).endswith("AI, TEE attested first · RedPill")
+    assert reach.status_text(found).endswith("AI, TEE attested first, partial privacy · RedPill")
     assert reach.names([reach.UPSTREAMS], found) == "api.redpill.ai"
     sealed_one = dict(named, **{ai.SETTING_PRIVATE_MODEL: "private/kimi-k3"})
     assert "sealed end to end" in reach.services(sealed_one)[reach.UPSTREAMS].off

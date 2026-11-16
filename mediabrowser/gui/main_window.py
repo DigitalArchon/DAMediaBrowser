@@ -895,11 +895,14 @@ class MainWindow(QMainWindow):
         """In Privacy Mode with a private/ model, whether Tinfoil's client is
         there is looked for now, off this thread, so that the first request
         doesn't have to."""
-        from mediabrowser.core import ai, private_ai, sealed
+        from mediabrowser.core import ai, levels, sealed
 
         settings = ai.settings_from(store.load_app_settings())
-        if (ai.allowed(settings) and ai.in_privacy_mode(settings)
-                and private_ai.kind_of(ai.active_model(settings)) == private_ai.E2EE
+        session = ai.session_of(settings)
+        # Nano-GPT's private/ models and every model on Tinfoil's API seal with it;
+        # Chutes' -TEE ones with this app's own client, which needs none of it.
+        if (ai.allowed(settings) and session is not None
+                and session.service in (levels.NANOGPT_PRIVATE, levels.TINFOIL)
                 and sealed.known() is None):
             sealed.check()
 

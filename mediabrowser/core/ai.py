@@ -47,9 +47,71 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
-from . import creds, netguard, outbound, privacy, private_ai, safejson, store
+from . import (
+    anthropic,
+    creds,
+    levels,
+    netguard,
+    outbound,
+    privacy,
+    private_ai,
+    safejson,
+    services,
+    store,
+)
 
 DEFAULT_BASE_URL = "https://nano-gpt.com/api/v1"
+
+# The providers Settings → AI offers for its one endpoint. Which one an address is, is
+# read from the address itself (provider_of), however it got into the settings - chosen
+# in Settings, typed by hand, an older settings.json - and with it the protocol, the
+# sealing, where its key may go and the privacy it has (services.py, levels.py): when in
+# doubt, sealed.
+NANOGPT, CHUTES, TINFOIL, ANTHROPIC, OTHER = "nanogpt", "chutes", "tinfoil", "anthropic", "other"
+PROVIDERS = {
+    NANOGPT: "NanoGPT",
+    CHUTES: "Chutes",
+    TINFOIL: "Tinfoil",
+    ANTHROPIC: "Anthropic",
+    OTHER: "Other (OpenAI-compatible)",
+}
+# Who a key is, in a sentence ("the saved Nano-GPT API key").
+KEY_NAMES = {NANOGPT: "Nano-GPT", CHUTES: "Chutes", TINFOIL: "Tinfoil",
+             ANTHROPIC: "Anthropic", OTHER: "endpoint's"}
+# The address each named provider's preset fills in.
+PROVIDER_ADDRESSES = {
+    NANOGPT: DEFAULT_BASE_URL,
+    CHUTES: services.CHUTES_BASE_URL,
+    TINFOIL: services.TINFOIL_BASE_URL,
+    ANTHROPIC: services.ANTHROPIC_URL,
+}
+# The model each preset fills in: one that can see the frames. Tinfoil's and Chutes' are
+# end-to-end encrypted (highest privacy and partial); Anthropic's is the model this app
+# was tested with, at Anthropic itself.
+PROVIDER_MODELS = {
+    NANOGPT: "anthropic/claude-sonnet-5",
+    CHUTES: "Qwen/Qwen3.6-27B-TEE",
+    TINFOIL: "kimi-k3-1-pro",
+    ANTHROPIC: "claude-sonnet-5",
+}
+# Where each provider's API key is kept in the keyring, one per provider, each beside
+# the origin it was entered for: switching provider, and back, loses none. Nano-GPT's is
+# the one entry the app has always had, so a key saved before there were providers is
+# where it was; for another provider whose own is empty, it is used where it was
+# entered for (key_slot).
+KEY_SLOTS = {
+    NANOGPT: ("nanogpt-api-key", "nanogpt-api-key-origin"),
+    CHUTES: ("chutes-api-key", "chutes-api-key-origin"),
+    TINFOIL: ("tinfoil-api-key", "tinfoil-api-key-origin"),
+    ANTHROPIC: ("anthropic-api-key", "anthropic-api-key-origin"),
+    OTHER: ("other-api-key", "other-api-key-origin"),
+}
+# What each protocol is called where the form says it.
+PROTOCOL_WORDS = {
+    "openai": "OpenAI's chat completions API",
+    "anthropic": "Anthropic's Messages API",
+    "tinfoil": "Tinfoil's own API, every request end-to-end encrypted (EHBP)",
+}
 # Nano-GPT's own server, as a key is held to it (origin_of): the only one the key in
 # NANOGPT_API_KEY is sent to.
 NANOGPT_ORIGIN = "https://nano-gpt.com:443"
@@ -96,6 +158,14 @@ FROM_FORM = "_from_form"        # Settings' own form, which is newer than the fi
 # Given back: why the saved key is not sent to the address in force, when it isn't.
 KEY_ORIGIN = "_key_origin"
 KEY_HELD = "_key_held"
+# Given to settings_from with the saved key: the keyring entry it came from (KEY_SLOTS).
+KEY_SLOT = "_key_slot"
+# Given back: the provider the address is (provider_of).
+PROVIDER = "_provider"
+# Set by carry_on: the least privacy, as levels.rank counts it, that an operation begun
+# more private must keep, whatever Settings say now; and the feature, for the refusal.
+KEPT = "_kept_privacy"
+FEATURE = "_feature"
 # In settings.json: the server the user said No to sending the saved key to, when
 # Settings asked (an origin, origin_of; no key in it). Save asks no more about it - a
 # question asked at every Save is soon answered Yes without reading - and Settings → AI
@@ -203,11 +273,17 @@ def settings_from(app_settings: dict, form: bool = False) -> dict:
     # The saved key goes only to the server it was entered for (KEYRING_ORIGIN_NAME): to
     # another, it is not sent, and not_ready says why.
     settings[KEY_HELD] = ""
+    address = settings[SETTING_BASE_URL]
+    settings[PROVIDER] = provider_of(address)
+    settings[KEY_SLOT] = app_settings.get(KEY_SLOT) or settings[PROVIDER]
     entered_for = app_settings.get(KEY_ORIGIN)
     if not (env_key and on_nanogpt) and settings[SETTING_KEY] and entered_for is not None \
-            and entered_for != origin_of(settings[SETTING_BASE_URL]):
-        settings[KEY_HELD] = key_held(entered_for, settings[SETTING_BASE_URL])
+            and not key_goes(entered_for, address):
+        settings[KEY_HELD] = key_held(entered_for, address, settings[KEY_SLOT])
         settings[SETTING_KEY] = ""
+    # Where the key in force was entered for, for the clients that hold it to that
+    # themselves (Tinfoil's, Chutes'): a key typed beside the address is the address's.
+    settings[KEY_ORIGIN] = entered_for if entered_for is not None else origin_of(address)
     if env_key and not on_nanogpt and not settings[SETTING_KEY] and not settings[KEY_HELD]:
         settings[KEY_HELD] = env_key_held(settings[SETTING_BASE_URL])
     # Over plain http to another machine: only once confirmed for that server.
@@ -233,9 +309,22 @@ def settings_from(app_settings: dict, form: bool = False) -> dict:
     # to RedPill: on only when plainly on.
     settings[SETTING_NAME_UPSTREAMS] = app_settings.get(SETTING_NAME_UPSTREAMS) is True
     settings[FROM_FORM] = form
-    if settings[SETTING_PRIVACY_MODE] and settings[privacy.AI]:
+    if settings[privacy.AI] and settings[SETTING_PRIVACY_MODE]:
         settings[SESSION] = _session(settings)
+    elif settings[privacy.AI] and sealed_ordinary(settings):
+        # Tinfoil's every model, and Chutes' -TEE ones, go only sealed, Privacy Mode or
+        # not: the ordinary model there has a session of its own, attested first.
+        settings[SESSION] = _session(settings, settings[SETTING_MODEL])
     return settings
+
+
+def sealed_ordinary(settings: dict) -> bool:
+    """Whether the ordinary model is one only ever sent sealed at its endpoint - any
+    model on Tinfoil's API, a -TEE model on Chutes' - so that it goes through a session
+    of its own, as a private model does. (A private/ one on Nano-GPT is still Privacy
+    Mode's alone: _sealed_only_message.)"""
+    found = levels.privacy_at(settings.get(SETTING_MODEL), settings.get(SETTING_BASE_URL))
+    return found.sealed and found.service in (levels.TINFOIL, levels.CHUTES)
 
 
 def _on(value) -> bool:
@@ -250,14 +339,112 @@ def _on(value) -> bool:
     return value != 0
 
 
-def _session(settings: dict) -> private_ai.PrivacySession:
+def _session(settings: dict, model: str | None = None,
+             keyless: bool = False) -> private_ai.PrivacySession:
+    """The operation's session for `model` (the private model unless another is given)
+    at the endpoint: its kind and its sealed client by the address and the model
+    (levels.privacy_at) - nano-gpt's relay for a private/ model, Tinfoil's own API for
+    every model there, Chutes' end-to-end encryption for a -TEE model on Chutes.
+    `keyless`: for Check Attestation without a key, which attests what can be attested
+    without one and seals nothing."""
+    url = settings[SETTING_BASE_URL]
+    model = settings[SETTING_PRIVATE_MODEL] if model is None else model
+    found = levels.privacy_at(model, url)
+    kind = private_ai.E2EE if found.sealed else private_ai.TEE if found.kind == "tee" else None
+    saved_for = settings.get(KEY_ORIGIN) or ""
+    factory = None
+    if found.service == levels.TINFOIL:
+        def factory(api_url, api_key, timeout):
+            from . import tinfoil_direct
+            if keyless:
+                return _KeylessTinfoil(api_url)
+            return tinfoil_direct.TinfoilDirectClient(api_url, api_key, key_saved_for=saved_for,
+                                                      request_timeout=timeout)
+    elif found.service == levels.CHUTES:
+        def factory(api_url, api_key, timeout):
+            from . import chutes
+            client = (_KeylessChutes if keyless else chutes.ChutesClient)(
+                api_url, api_key, key_saved_for=saved_for, request_timeout=timeout,
+                state=_chutes_state())
+            return client
     session = private_ai.PrivacySession(
-        settings[SETTING_BASE_URL], settings[SETTING_KEY], settings[SETTING_PRIVATE_MODEL],
+        url, settings[SETTING_KEY], model,
         request_timeout=TIMEOUT_SECONDS, strict=settings[SETTING_STRICT],
-        tee_factory=_tee_client,
+        tee_factory=_tee_client, sealed_factory=factory, kind=kind, service=found.service,
     )
     session.listener = _attestation_listener(session)
     return session
+
+
+_chutes_shared = None
+
+
+def _chutes_state():
+    """What Chutes' clients share across operations, as SealedLore's do: its lists and
+    its instances' attestations, each good for its time (chutes.REATTEST_SECONDS), so that
+    an operation started a minute after another does not spend Chutes' 60 evidence calls
+    a minute, shared by all its users, again. Its nonces are each used once whatever."""
+    global _chutes_shared
+    if _chutes_shared is None:
+        from . import chutes
+        _chutes_shared = chutes.ChutesState()
+    return _chutes_shared
+
+
+class _KeylessTinfoil:
+    """Check Attestation of Tinfoil's router without a key: attested from Tinfoil's own
+    bundle service as every request's is (tinfoil_direct.direct_verify), and the keyless
+    listing read; nothing is ever sealed to it, and it sends nothing else."""
+
+    def __init__(self, api_url):
+        from . import sealed, tinfoil_direct
+        ok, message = sealed.available()
+        if not ok:
+            raise private_ai.PrivacyError(message or sealed.INSTALL_HINT)
+        insecure = netguard.problem(tinfoil_direct.base_of(api_url))
+        if insecure:
+            raise private_ai.PrivacyError(insecure)
+        self.base = tinfoil_direct.base_of(api_url)
+        host = services.host_of(self.base)
+        self.enclave = sealed.Enclave(
+            tinfoil_direct.ATC_URL,
+            verifier=lambda bundle, secret: tinfoil_direct.direct_verify(host, bundle, secret))
+        self.listing = tinfoil_direct.Listing(self.base)
+        self.reattested = None
+
+    def check_offered(self, model):
+        entries = self.listing.known()
+        if entries is not None and model not in entries:
+            raise private_ai.ModelRetired(model, sorted(entries), service="Tinfoil")
+
+    def attest(self, model):
+        from . import sealed
+        return sealed.attestation_for(model, self.enclave.current(), service=levels.TINFOIL)
+
+    def accept(self, attestation):
+        pass
+
+
+def _keyless_chutes():
+    from . import chutes
+
+    class KeylessChutes(chutes.ChutesClient):
+        """Check Attestation of a Chutes -TEE model without a key: Chutes' public evidence
+        for the whole chute, checked as far as it can be without the key
+        (ChutesClient.attest_public: the key binding unchecked). Nothing is sealed to what
+        it found."""
+
+        def attest(self, model):
+            refused = chutes.mlkem_refusal()
+            if refused:
+                raise private_ai.PrivacyError(refused)
+            return self.attest_public(model)
+
+    return KeylessChutes
+
+
+def _KeylessChutes(*args, **kwargs):  # noqa: N802 - stands for the class it makes
+    return _keyless_chutes()(*args, **kwargs)
 
 
 def _tee_client(api_url, api_key, model) -> private_ai.TeeClient:
@@ -326,36 +513,94 @@ def load_settings(app_settings: dict | None = None) -> dict:
     else:
         # Another endpoint than Nano-GPT's is never sent the environment's key
         # (settings_from): the saved key, if it was entered for it.
-        app_settings[SETTING_KEY] = stored_key()
+        slot = key_slot(address)
+        app_settings[KEY_SLOT] = slot
+        app_settings[SETTING_KEY] = stored_key(slot)
         if app_settings[SETTING_KEY]:
-            app_settings[KEY_ORIGIN] = key_origin(app_settings.get(SETTING_BASE_URL))
+            app_settings[KEY_ORIGIN] = key_origin(app_settings.get(SETTING_BASE_URL), slot)
     return settings_from(app_settings)
 
 
-def stored_key() -> str:
+def stored_key(slot: str = NANOGPT) -> str:
+    """The key kept for one provider (KEY_SLOTS), or "" for none."""
     try:
-        return creds.get_secret(KEYRING_NAME) or ""
+        return creds.get_secret(KEY_SLOTS.get(slot, KEY_SLOTS[NANOGPT])[0]) or ""
     except Exception:  # noqa: BLE001 - keyring locked or unavailable
         return ""
 
 
-def store_key(key: str, address: str = DEFAULT_BASE_URL) -> None:
+def store_key(key: str, address: str = DEFAULT_BASE_URL, slot: str | None = None) -> None:
     """Keep the key in the keyring, for the server of `address` - the one it
-    was entered for, and the only one it is sent to (KEYRING_ORIGIN_NAME) - or
-    forget it when empty. Raises when the keyring can't be written."""
+    was entered for, and the only one it is sent to (KEYRING_ORIGIN_NAME) - in the
+    entry of the provider that address is (provider_of), or of `slot`; or forget that
+    entry's when empty. Raises when the keyring can't be written."""
+    name, origin = KEY_SLOTS[slot or provider_of(address or DEFAULT_BASE_URL)]
     if key:
-        creds.set_secret(KEYRING_NAME, key)
-        creds.set_secret(KEYRING_ORIGIN_NAME, origin_of(address or DEFAULT_BASE_URL))
+        creds.set_secret(name, key)
+        creds.set_secret(origin, origin_of(address or DEFAULT_BASE_URL))
     else:
-        creds.delete_secret(KEYRING_NAME)
-        creds.delete_secret(KEYRING_ORIGIN_NAME)
+        creds.delete_secret(name)
+        creds.delete_secret(origin)
 
 
-def let_key_go_to(address: str) -> None:
+def let_key_go_to(address: str, slot: str = NANOGPT) -> None:
     """Send the saved key to the server of `address` from now on, in place of the one
     it was entered for: the user said yes to it (Settings). The key itself is left as
     it is. Raises when the keyring can't be written."""
-    creds.set_secret(KEYRING_ORIGIN_NAME, origin_of(address))
+    creds.set_secret(KEY_SLOTS[slot][1], origin_of(address))
+
+
+# --- the provider, read from the address ---------------------------------------
+
+
+def provider_of(address) -> str:
+    """Which provider an address is - TINFOIL, CHUTES, ANTHROPIC, NANOGPT, or OTHER -
+    read from the address alone, however it got into the settings: Tinfoil's host is
+    Tinfoil's whatever else is said (services.service_of)."""
+    found = services.service_of(address)
+    if found:
+        return found
+    if services.under(services.host_of(address), NANO_GPT_HOST):
+        return NANOGPT
+    return OTHER
+
+
+def protocol_of(address) -> str:
+    """The protocol the endpoint at `address` speaks, read from it alone: "tinfoil"
+    (sealed) for Tinfoil's host, "anthropic" for Anthropic's API and Chutes' proxy of
+    it (claude.chutes.ai), "openai" for the rest. Not a setting: an older settings.json
+    or an address typed by hand can never pair Tinfoil's host with a plain protocol."""
+    return services.chat_protocol(address)
+
+
+def key_goes(entered_for: str, address) -> bool:
+    """Whether a key entered for the origin `entered_for` goes to `address`: the same
+    origin, or - the one stated exception - from one of Chutes' three fixed origins to
+    another (services.CHUTES_KEY_ORIGINS)."""
+    there = origin_of(address)
+    if entered_for == there:
+        return True
+    return entered_for in services.CHUTES_KEY_ORIGINS and there in services.CHUTES_KEY_ORIGINS
+
+
+def key_slot(address) -> str:
+    """The keyring entry whose key goes with `address`: its provider's own, or - while
+    that is empty - Nano-GPT's, the one entry the app had before there were providers:
+    for another endpoint ("Other") always, as before, so that its origin rule holds it
+    back from a server it was not entered for and Settings can ask (Ask again…); for
+    Chutes, Tinfoil or Anthropic only where that key was entered for this address (a
+    key saved for one of them before keeps working there; a Nano-GPT key is never
+    offered to them)."""
+    provider = provider_of(address)
+    if provider == NANOGPT or stored_key(provider) or not stored_key(NANOGPT):
+        return provider
+    if provider == OTHER:
+        return NANOGPT
+    try:
+        legacy = creds.get_secret(KEY_SLOTS[NANOGPT][1]) or ""
+    except Exception:  # noqa: BLE001 - keyring locked or unavailable
+        legacy = ""
+    return NANOGPT if legacy and key_goes(legacy, address) else provider
 
 
 def origin_of(address) -> str:
@@ -381,21 +626,22 @@ def shown_origin(origin: str) -> str:
     return origin
 
 
-def key_origin(address=None) -> str:
-    """The server the saved key was entered for (KEYRING_ORIGIN_NAME). A key saved by a
-    version that kept none takes the server of the address saved beside it (`address`,
-    settings.json's, else the default), once and with no question, and is kept so from
-    then on. "" when the keyring can't say (locked, or gone since the key was read): a
-    key whose server isn't known is sent nowhere."""
+def key_origin(address=None, slot: str = NANOGPT) -> str:
+    """The server the saved key was entered for (KEYRING_ORIGIN_NAME, or `slot`'s). A key
+    saved by a version that kept none takes the server of the address saved beside it
+    (`address`, settings.json's, else the default), once and with no question, and is
+    kept so from then on. "" when the keyring can't say (locked, or gone since the key
+    was read): a key whose server isn't known is sent nowhere."""
+    entry = KEY_SLOTS[slot][1]
     try:
-        origin = creds.get_secret(KEYRING_ORIGIN_NAME)
+        origin = creds.get_secret(entry)
     except Exception:  # noqa: BLE001 - keyring locked or unavailable
         return ""
     if origin:
         return origin
     origin = origin_of(address or DEFAULT_BASE_URL)
     try:
-        creds.set_secret(KEYRING_ORIGIN_NAME, origin)
+        creds.set_secret(entry, origin)
     except Exception:  # noqa: BLE001 - kept next time; the address stands for now
         pass
     return origin
@@ -409,15 +655,16 @@ def env_key_held(address: str) -> str:
             f"Settings → AI.")
 
 
-def key_held(entered_for: str, address: str) -> str:
+def key_held(entered_for: str, address: str, slot: str = NANOGPT) -> str:
     """Why the saved key is not sent to `address`, and how to put it right: it was
     entered for another server (settings_from)."""
     there = shown_origin(origin_of(address)) or netguard.shown(address)
+    name = KEY_NAMES.get(slot, KEY_NAMES[NANOGPT])
     if not entered_for:
-        return ("The keyring didn't say which server the saved Nano-GPT API key was "
+        return (f"The keyring didn't say which server the saved {name} API key was "
                 f"entered for, so it isn't sent to {there}. Unlock the keyring, or paste "
                 f"the key again in Settings → AI.")
-    return (f"The saved Nano-GPT API key was entered for {shown_origin(entered_for)}, not "
+    return (f"The saved {name} API key was entered for {shown_origin(entered_for)}, not "
             f"{there}, so it isn't sent there. To use it with {there}, open Settings → "
             f"AI and save, answering Yes when asked (Ask again… there, if you said No); or "
             f"paste the key for {there} there.")
@@ -458,29 +705,141 @@ def not_ready(settings: dict) -> str:
     """Why the AI can't be asked, for saying so; empty when it can."""
     if not allowed(settings):
         return privacy.OFF[privacy.AI]
+    moved = move_refusal(settings)
+    if moved:
+        return moved
+    provider = settings.get(PROVIDER) or provider_of(settings.get(SETTING_BASE_URL))
     if not settings.get(SETTING_KEY):
-        return settings.get(KEY_HELD) or "Set a Nano-GPT API key in Settings → AI."
-    unfit = netguard.key_problem(settings.get(SETTING_KEY), "Nano-GPT")
+        return settings.get(KEY_HELD) or (
+            f"Set {'an' if provider in (ANTHROPIC, OTHER) else 'a'} "
+            f"{KEY_NAMES[provider] if provider != OTHER else 'endpoint'} API key in "
+            f"Settings → AI.")
+    unfit = netguard.key_problem(settings.get(SETTING_KEY), _service(settings[SETTING_BASE_URL]))
     if unfit:
         return unfit
     if in_privacy_mode(settings):
-        found = private_ai.problems(settings[SETTING_BASE_URL],
-                                    settings.get(SETTING_PRIVATE_MODEL), wait=False)
+        found = privacy_problems(settings, settings.get(SETTING_PRIVATE_MODEL), wait=False)
         if found:
             return "Privacy Mode is on, but " + found[0][0].lower() + found[0][1:]
         return ""
     insecure = netguard.problem(settings[SETTING_BASE_URL])
     if insecure:
         return insecure
-    if private_ai.sealed_only(settings[SETTING_MODEL]):
+    if private_ai.sealed_only(settings[SETTING_MODEL]) and provider != TINFOIL:
         return _sealed_only_message(settings[SETTING_MODEL])
+    if sealed_ordinary(settings):
+        found = privacy_problems(settings, settings[SETTING_MODEL], wait=False)
+        if found:
+            return found[0]
     return ""
+
+
+def privacy_problems(settings: dict, model, wait: bool = True) -> list[str]:
+    """Why `model` cannot be sent sealed or attested at the endpoint as these settings
+    have it, as sentences; [] when it can. Nano-GPT's private/ and TEE/ models as ever
+    (private_ai.problems); every model on Tinfoil's own API, end-to-end encrypted with
+    Tinfoil's client; Chutes' -TEE models, end-to-end encrypted with this app's own
+    client, which needs ML-KEM-768 from cryptography, and is always partial privacy, so
+    never under Strict. `wait=False`, for the GUI thread, leaves out what is not yet
+    known of Tinfoil's client."""
+    url = settings.get(SETTING_BASE_URL) or ""
+    provider = provider_of(url)
+    model = str(model or "").strip()
+    if provider == NANOGPT:
+        return private_ai.problems(url, model, wait=wait)
+    found = []
+    insecure = netguard.problem(url)
+    if insecure:
+        found.append(insecure)
+    if not model:
+        found.append("No private model is set (Settings → AI).")
+        return found
+    if private_ai.searches(model):
+        found.append(f"{model} asks for a web search, which only nano-gpt runs, and only "
+                     f"by reading the request; Privacy Mode never searches. Leave out the "
+                     f"\":online\".")
+        return found
+    if provider == TINFOIL:
+        from . import sealed
+        answer = sealed.available() if wait else sealed.known()
+        if answer is not None and not answer[0]:
+            found.append(answer[1])
+        return found
+    if provider == CHUTES:
+        if not services.chutes_tee(model, url):
+            found.append(f"{model} is not one of Chutes' -TEE models, the ones sent end-to-end "
+                         f"encrypted (partial privacy): Chutes reads every other model's "
+                         f"text. Choose a -TEE model, or Tinfoil or a Nano-GPT private/ model.")
+            return found
+        from . import chutes_e2ee
+        refused = chutes_e2ee.mlkem_refusal()
+        if refused:
+            found.append(refused)
+        elif settings.get(SETTING_STRICT):
+            found.append(f"{model} is end-to-end encrypted to a Chutes instance, which is "
+                         f"always partial privacy (the program holding the key is Chutes' "
+                         f"own, admitted by its signature, not measured), and Strict "
+                         f"refuses less than an enclave could prove: switch Strict off to "
+                         f"use it, or choose Tinfoil or a Nano-GPT private/ model.")
+        return found
+    where = PROVIDERS[provider] if provider != OTHER else (services.host_of(url) or url)
+    if private_ai.is_private_mode(model):
+        found.append(f"{model} is end-to-end encrypted through nano-gpt, and the endpoint "
+                     f"is {where}'s, not nano-gpt's.")
+    elif private_ai.is_tee(model):
+        found.append(f"{model} is one of nano-gpt's TEE models, and the endpoint is "
+                     f"{where}'s, not nano-gpt's.")
+    else:
+        found.append(f"{where} has no attested or end-to-end encrypted models: Privacy "
+                     f"Mode's are Nano-GPT's private/ and TEE/ models, Tinfoil's, and "
+                     f"Chutes' -TEE ones. Choose one of those providers in Settings → AI.")
+    return found
 
 
 def _sealed_only_message(model: str) -> str:
     return (f"{str(model).strip()} is end-to-end encrypted, and is only ever sent sealed: "
             f"switch Privacy Mode on and choose it there (Settings → AI), or choose "
             f"another model.")
+
+
+def kept_rank(settings: dict) -> int:
+    """The least privacy these settings' operation must keep (KEPT), as levels.rank
+    counts it: 0 when nothing is kept."""
+    kept = settings.get(KEPT)
+    return kept if isinstance(kept, int) and not isinstance(kept, bool) else 0
+
+
+def carry_on(before: dict, after: dict, feature: str) -> dict:
+    """`after`, Settings changed in a window whose operation began with `before` and has
+    sent the AI something already: held to the privacy it began with, or the most it has
+    had (KEPT), whichever is more, for whatever it sends from now on - its frames, the
+    titles and menu text it has worked on go only to a model at that level or higher, on
+    any service (levels.move_refusal, SealedLore's rule). `feature` names it in the
+    refusal (move_refusal)."""
+    floor = max(kept_rank(before), levels.rank(privacy_of(before)))
+    return {**after, KEPT: floor, FEATURE: feature}
+
+
+_LEVEL_OF_RANK = {2: levels.HIGHEST, 1: levels.PARTIAL, 0: levels.NOT_PRIVATE}
+
+
+def move_refusal(settings: dict) -> str:
+    """Why nothing may be sent with these settings, or "": their operation is held to
+    more privacy than they now have (carry_on). In words naming the feature and both
+    levels."""
+    floor = kept_rank(settings)
+    now = privacy_of(settings)
+    if levels.rank(now) >= floor:
+        return ""
+    kept = levels.Privacy("tee", levels.NANOGPT_TEE) if floor == 1 \
+        else levels.Privacy("sealed", levels.NANOGPT_PRIVATE)
+    model = short_model_name(active_model(settings))
+    feature = settings.get(FEATURE) or "This window"
+    return (f"Nothing was sent: {feature} began with {levels.level_phrase(kept)}, and "
+            f"{model} has {levels.level_phrase(now)}, so what it has worked on - frames, "
+            f"titles, menu text - goes on only to "
+            f"{levels.LEVEL_CHOICES[_LEVEL_OF_RANK[floor]]}. Close the window and open it "
+            f"again to use {model}.")
 
 
 def short_model_name(model: str) -> str:
@@ -492,10 +851,58 @@ def short_model_name(model: str) -> str:
 
 
 def _service(url: str) -> str:
-    host = (urlparse(str(url or "")).hostname or "").lower()
-    if host == NANO_GPT_HOST or host.endswith("." + NANO_GPT_HOST):
+    provider = provider_of(url)
+    if provider == NANOGPT:
         return "Nano-GPT"
+    if provider != OTHER:
+        return PROVIDERS[provider]
+    try:
+        host = (urlparse(str(url or "")).hostname or "").lower()
+    except ValueError:
+        host = ""
     return host or "the AI service"
+
+
+def service_name(url: str) -> str:
+    """Who the endpoint at `url` is, as a sentence names it: "Nano-GPT", "Tinfoil",
+    "Chutes", "Anthropic", or its host."""
+    return _service(url)
+
+
+def privacy_of(settings: dict) -> levels.Privacy:
+    """How private the AI's requests are as these settings send them, at one of the three
+    levels (levels.py): the session's model at the endpoint, where there is one - in
+    Privacy Mode, or for a model only ever sent sealed - and otherwise not private,
+    whatever the model's id says (a TEE/ model outside Privacy Mode is not attested
+    first)."""
+    url = settings.get(SETTING_BASE_URL) or ""
+    session = session_of(settings)
+    if session is not None:
+        return levels.privacy_at(session.model, url)
+    if in_privacy_mode(settings) or sealed_ordinary(settings):
+        return levels.privacy_at(active_model(settings), url)
+    return levels.Privacy(plain_on=levels.CHUTES) if services.on_chutes(url) else levels.NONE
+
+
+def level_words(settings: dict) -> str:
+    """"Highest privacy", "Partial privacy" or "Not private", as the AI's requests go
+    now (privacy_of)."""
+    return privacy_of(settings).words
+
+
+def model_privacy(settings: dict, model: str, private: bool = False) -> tuple[str, str]:
+    """(a few words, what they mean) for `model` where it is chosen in Settings: the
+    ordinary model at the endpoint (sent sealed there if it may only go so), or with
+    `private` Privacy Mode's."""
+    url = settings.get(SETTING_BASE_URL) or ""
+    found = levels.privacy_at(model, url)
+    if not private and not found.sealed and found.service != levels.CHUTES:
+        found = levels.Privacy(plain_on=levels.CHUTES) if services.on_chutes(url) \
+            else levels.NONE
+    if not private and found.service == levels.NANOGPT_PRIVATE:
+        return "Only in Privacy Mode", _sealed_only_message(model)
+    label, note = found.label()
+    return (label if label == found.words else f"{label} · {found.words}"), note
 
 
 def destination(settings: dict, online: bool = False) -> tuple[str, str]:
@@ -508,8 +915,17 @@ def destination(settings: dict, online: bool = False) -> tuple[str, str]:
     enclave, once it has been attested: Nano-GPT relays only ciphertext"."""
     model = active_model(settings)
     short = short_model_name(model)
-    if in_privacy_mode(settings):
-        if private_ai.kind_of(model) == private_ai.E2EE:
+    found = levels.privacy_at(model, settings[SETTING_BASE_URL])
+    if in_privacy_mode(settings) or sealed_ordinary(settings):
+        if found.service == levels.TINFOIL:
+            return (f"sealed end to end to {short} through Tinfoil's router, once its "
+                    f"enclave has been attested: Tinfoil relays only ciphertext (highest "
+                    f"privacy)", outbound.SEALED)
+        if found.service == levels.CHUTES:
+            return (f"sealed end to end to an attested Chutes instance of {short}: Chutes "
+                    f"relays only ciphertext (partial privacy: the program holding the "
+                    f"key is Chutes' own, signed, not measured)", outbound.SEALED)
+        if found.sealed:
             return (f"sealed end to end to {short}'s enclave, once it has been "
                     f"attested: Nano-GPT relays only ciphertext", outbound.SEALED)
         # Not "its enclave": most TEE/ models are attested as RedPill's gateway, and
@@ -530,6 +946,11 @@ def destination(settings: dict, online: bool = False) -> tuple[str, str]:
             where += (f", and {SEARCH_PROVIDERS.get(settings[SETTING_SEARCH], 'a search')} "
                       f"is sent a search about the show")
         return where, outbound.CLEAR
+    if service == "Anthropic":
+        return f"to {short} at Anthropic, which can read it", outbound.CLEAR
+    if service == "Chutes":
+        return (f"to {short} at Chutes, which can read it: Chutes' -TEE models are the "
+                f"ones sent end-to-end encrypted", outbound.CLEAR)
     host = urlparse(url).hostname or url
     if netguard.is_local(host):
         return f"to {short} on {host}, on this computer's own network", outbound.CLEAR
@@ -542,8 +963,13 @@ def protection_label(settings: dict) -> str:
     operation has one - "Privacy Mode: TEE gateway attested" for RedPill's
     gateway, which is not the machine that runs the model (what_was_attested) -
     else "Privacy Mode: TEE, attested first"; or "Nano-GPT"."""
+    found = levels.privacy_at(active_model(settings), settings[SETTING_BASE_URL])
+    if sealed_ordinary(settings) and not in_privacy_mode(settings):
+        return f"{PROVIDERS[provider_of(settings[SETTING_BASE_URL])]}: end-to-end encrypted"
     if in_privacy_mode(settings):
-        if private_ai.kind_of(active_model(settings)) == private_ai.E2EE:
+        if found.service in (levels.TINFOIL, levels.CHUTES):
+            return f"Privacy Mode: end-to-end encrypted ({PROVIDERS[found.service]})"
+        if found.sealed:
             return "Privacy Mode: end-to-end encrypted"
         session = session_of(settings)
         attestation = session.attestation if session is not None else None
@@ -806,7 +1232,7 @@ def _tightened(settings: dict) -> str:
     live = store.load_app_settings()
     if not privacy.allowed(privacy.AI, live):
         return privacy.OFF[privacy.AI]
-    if _on(live.get(SETTING_PRIVACY_MODE)) and session_of(settings) is None:
+    if _on(live.get(SETTING_PRIVACY_MODE)) and not in_privacy_mode(settings):
         return (f"Privacy Mode was switched on after this began, so nothing more goes to "
                 f"{short_model_name(settings[SETTING_MODEL])}. Start it again to use the "
                 f"private model.")
@@ -845,13 +1271,28 @@ def chat(messages, settings: dict, *, json_reply: bool = True, online: bool = Fa
     }
     if json_reply:
         body["response_format"] = {"type": "json_object"}
+    text, pictures = outbound.text_of(messages)
+    if pictures:
+        blind = vision_refusal(settings, active_model(settings), pictures)
+        if blind:
+            outbound.record(_service(settings[SETTING_BASE_URL]), settings[SETTING_BASE_URL],
+                            _what(text, pictures, active_model(settings)), outbound.CLEAR,
+                            "Not sent", outbound.REFUSED, blind, text)
+            raise Refused(blind)
     if session is not None:
         return _private_chat(body, messages, session, settings)
     if private_ai.sealed_only(body["model"]):
         raise Refused(f"Nothing was sent. {_sealed_only_message(body['model'])}")
+    # When in doubt, sealed: whatever the settings say, a sealed host or one of Chutes'
+    # -TEE models is never sent anything in the clear (levels.plain_refusal).
+    refused = levels.plain_refusal(settings[SETTING_BASE_URL], "this request",
+                                   model=body["model"])
+    if refused:
+        raise Refused(refused)
+    if protocol_of(settings[SETTING_BASE_URL]) == "anthropic":
+        return _anthropic_chat(body, messages, settings)
     url = f"{settings[SETTING_BASE_URL]}/chat/completions"
     where, protection = destination(settings, online)
-    text, pictures = outbound.text_of(messages)
     what = _what(text, pictures, body["model"])
     try:
         reply = _request(url, settings[SETTING_KEY], body)
@@ -866,6 +1307,105 @@ def chat(messages, settings: dict, *, json_reply: bool = True, online: bool = Fa
     outbound.record(_service(url), url, what, protection, f"Sent it {where}",
                     content=text)
     return answer
+
+
+def _anthropic_chat(body: dict, messages, settings: dict) -> str:
+    """One request to an endpoint that speaks Anthropic's Messages API - Anthropic's own,
+    or Chutes' proxy of it - natively (anthropic.py): the key as Anthropic takes it, the
+    request streamed and its reply read as OpenAI's, through netguard. Anthropic has no
+    JSON mode: the prompts ask for a JSON object, and chat_json reads one however it is
+    wrapped."""
+    url = settings[SETTING_BASE_URL]
+    service = _service(url)
+    where, protection = destination(settings)
+    text, pictures = outbound.text_of(messages)
+    what = _what(text, pictures, body["model"])
+    payload = {"model": body["model"], "messages": messages, "max_tokens": body["max_tokens"],
+               "temperature": body.get("temperature")}
+    if body.get("reasoning_effort"):
+        payload["reasoning"] = {"effort": body["reasoning_effort"]}
+    try:
+        client = anthropic.AnthropicClient(url, settings[SETTING_KEY], session=netguard.Session(),
+                                           request_timeout=TIMEOUT_SECONDS)
+        with client.request(payload) as response:
+            result = _consume(client.lines(response))
+        answer = _answer_of(result)
+    except (anthropic.AnthropicError, netguard.RequestError, ValueError, AIError) as exc:
+        message = private_ai.unsealed_words(str(exc), 500) if not isinstance(exc, AIError) \
+            else str(exc)
+        refused = "nothing was sent" in message.lower() or "not https" in message.lower()
+        outbound.record(service, url, what, protection, f"Sends it {where}",
+                        outbound.REFUSED if refused else outbound.FAILED, message, text)
+        raise (Refused if refused else AIError)(message) from exc
+    outbound.record(service, url, what, protection, f"Sent it {where}", content=text)
+    return answer
+
+
+def vision_refusal(settings: dict, model: str, pictures: int) -> str:
+    """Why `pictures` frames must not go to `model`, or "": its provider's own list says
+    it cannot look at pictures (model_vision). Said before anything is sent, so that a
+    request is never paid for that the model can only refuse, or answer blind."""
+    if model_vision(settings, model) is not False:
+        return ""
+    frames = f"{pictures} frame{'s' if pictures != 1 else ''}"
+    return (f"Nothing was sent. {short_model_name(model)} can't look at pictures, by "
+            f"{_service(settings.get(SETTING_BASE_URL))}'s own list of its models, and this "
+            f"sends {frames} of the video: choose a model that can in Settings → AI (List "
+            f"Models shows only those).")
+
+
+_listings: dict = {}            # (provider, base) -> (when, {id: entry}), the public lists
+LISTING_SECONDS = 10 * 60
+
+
+def _listed(provider: str, base: str):
+    """A provider's public list of models, by id, fetched without the key and kept a
+    while; None when it cannot be read."""
+    key = (provider, base)
+    when, entries = _listings.get(key, (None, None))
+    if when is not None and 0 <= time.monotonic() - when < LISTING_SECONDS:
+        return entries
+    try:
+        if provider == TINFOIL:
+            from . import tinfoil_direct
+            entries = tinfoil_direct.Listing(tinfoil_direct.base_of(base)).fetch()
+        elif provider == CHUTES:
+            from . import chutes
+            entries = chutes.fetch_models()
+        else:
+            return None
+    except private_ai.PrivacyError:
+        return None
+    _listings[key] = (time.monotonic(), entries)
+    return entries
+
+
+def entry_vision(entry) -> bool | None:
+    """Whether a listed model can look at pictures, as its list says, or None."""
+    if not isinstance(entry, dict):
+        return None
+    capabilities = entry.get("capabilities")
+    if isinstance(capabilities, dict) and "vision" in capabilities:
+        return bool(capabilities["vision"])
+    architecture = entry.get("architecture")
+    if isinstance(architecture, dict) and isinstance(architecture.get("input_modalities"), list):
+        return "image" in architecture["input_modalities"]
+    return None
+
+
+def model_vision(settings: dict, model: str) -> bool | None:
+    """Whether `model` can look at pictures at the endpoint: by Tinfoil's or Chutes' own
+    public list, for Anthropic's Claude models yes; None where it isn't known (Nano-GPT's
+    and other endpoints' models are listed only if they can: list_models)."""
+    url = settings.get(SETTING_BASE_URL) or ""
+    provider = provider_of(url)
+    bare = services.bare_model(model)
+    if provider in (TINFOIL, CHUTES):
+        entries = _listed(provider, url)
+        return entry_vision((entries or {}).get(bare)) if entries is not None else None
+    if provider == ANTHROPIC:
+        return True if anthropic.parse_model(bare)[0] in anthropic.FAMILIES else None
+    return None
 
 
 def _what(text: str, pictures: int, model: str) -> str:
@@ -887,19 +1427,32 @@ def _attestation_listener(session: private_ai.PrivacySession):
             what = private_ai.what_was_attested(detail)
             # And what each shortfall costs, as every DA app says it (shortfall_tips).
             outbound.record(
-                "Nano-GPT", session.api_url, f"an attestation of {session.model}'s enclave",
+                _service(session.api_url), session.api_url,
+                f"an attestation of {session.model}'s enclave",
                 outbound.CHECK, _checked_with(session), outbound.SENT,
                 " ".join(part for part in (f"{text}.", what, detail.detail,
                                            *private_ai.shortfall_tips(detail)) if part))
         elif event == "refused":
             outbound.record(
-                "Nano-GPT", session.api_url, f"an attestation of {session.model}'s enclave",
+                _service(session.api_url), session.api_url,
+                f"an attestation of {session.model}'s enclave",
                 outbound.CHECK, _checked_with(session), outbound.REFUSED, str(detail))
 
     return heard
 
 
 def _checked_with(session) -> str:
+    service = getattr(session, "service", "")
+    if service == levels.TINFOIL:
+        return ("Asked Tinfoil's atc.tinfoil.sh for its router's attestation bundle, and "
+                "checked it against AMD's or Intel's certificates and Tinfoil's release "
+                "record on Sigstore; the connection is pinned to the TLS key it binds. A "
+                "fresh check, nothing about your videos, and no key")
+    if service == levels.CHUTES:
+        return ("Asked Chutes (api.chutes.ai) for the model's instances and their evidence "
+                "for a fresh nonce, and checked each with Intel's and NVIDIA's attestation "
+                "services and Chutes' published measurements, and that its quote binds the "
+                "key a request is sealed to: nothing about your videos")
     if session.kind == private_ai.E2EE:
         return ("Asked nano-gpt's relay for the enclave's report, and checked it against "
                 "AMD's or Intel's certificates (through Tinfoil's proxy, for AMD's) and "
@@ -940,9 +1493,18 @@ def _private_chat(body: dict, messages, session: private_ai.PrivacySession,
     protection = outbound.SEALED if sealed else outbound.TEE
     # Not "to its attested enclave": that a TEE/ request reached it is the reply's
     # record's to show (private_ai.sent_label).
-    where = (f"sealed end to end to {model}'s attested enclave: Nano-GPT relays only "
-             f"ciphertext" if sealed else
-             f"to {model}, attested first, through Nano-GPT's gateway, which can read it")
+    service_kind = getattr(session, "service", "")
+    if service_kind == levels.TINFOIL:
+        where = (f"sealed end to end to {model} through Tinfoil's attested router, over a "
+                 f"connection pinned to its attested TLS key: Tinfoil relays only "
+                 f"ciphertext (highest privacy)")
+    elif service_kind == levels.CHUTES:
+        where = (f"sealed end to end to an attested Chutes instance of {model}: Chutes "
+                 f"relays only ciphertext (partial privacy)")
+    else:
+        where = (f"sealed end to end to {model}'s attested enclave: Nano-GPT relays only "
+                 f"ciphertext" if sealed else
+                 f"to {model}, attested first, through Nano-GPT's gateway, which can read it")
     service = _service(session.api_url)
     try:
         attestation = session.ensure()
@@ -1084,15 +1646,18 @@ def check_attestation(settings: dict) -> private_ai.PrivacySession:
     whose `attestation` says what it proved; raises AIError when it didn't."""
     if not allowed(settings):
         raise NotConfigured(privacy.OFF[privacy.AI])
-    found = private_ai.problems(settings[SETTING_BASE_URL],
-                                settings.get(SETTING_PRIVATE_MODEL), wait=True)
+    model = settings.get(SETTING_PRIVATE_MODEL)
+    found = privacy_problems(settings, model, wait=True)
     if found:
         raise Refused(" ".join(found))
-    if settings.get(KEY_HELD) and private_ai.kind_of(
-            settings.get(SETTING_PRIVATE_MODEL)) == private_ai.TEE:
+    service = levels.privacy_at(model, settings[SETTING_BASE_URL]).service
+    if settings.get(KEY_HELD) and service == levels.NANOGPT_TEE:
         # A TEE/ model's report is nano-gpt's to give, with the key: not to this server.
         raise Refused(settings[KEY_HELD])
-    session = _session(settings)
+    # Tinfoil's router, and a Chutes model's instances as far as Chutes' public evidence
+    # shows them, can be attested without a key: then nothing is sent with one.
+    keyless = not settings.get(SETTING_KEY) and service in (levels.TINFOIL, levels.CHUTES)
+    session = _session(settings, keyless=keyless)
     try:
         session.ensure()
     except private_ai.PrivacyError as exc:
@@ -1194,9 +1759,14 @@ def list_models(settings: dict, vision_only: bool = True) -> list[dict]:
     everything here needs - as [{"id", "name", "vision", "price", "note"}]:
     the recommended ones first, then the other Claude models, then the rest.
     `vision` is None for an endpoint that doesn't say, whose models are all
-    listed (see vision_known). The key is optional but gives real prices."""
+    listed (see vision_known). The key is optional but gives real prices.
+    Tinfoil's and Chutes' lists are their public ones, read without the key;
+    Anthropic's API lists its own, with the key. Each says how private it is."""
     if not allowed(settings):
         raise NotConfigured(privacy.OFF[privacy.AI])
+    provider = provider_of(settings[SETTING_BASE_URL])
+    if provider in (TINFOIL, CHUTES, ANTHROPIC):
+        return _provider_models(settings, provider, vision_only)
     reply = _request(
         f"{settings[SETTING_BASE_URL]}/models?detailed=true",
         settings.get(SETTING_KEY) or None,
@@ -1229,6 +1799,54 @@ def list_models(settings: dict, vision_only: bool = True) -> list[dict]:
     return models
 
 
+def _provider_entries(settings: dict, provider: str) -> dict:
+    """Tinfoil's, Chutes' or Anthropic's list of models, by id (AIError when it can't be
+    read): Tinfoil's and Chutes' public ones without the key, Anthropic's with it."""
+    base = settings[SETTING_BASE_URL]
+    try:
+        if provider == TINFOIL:
+            from . import tinfoil_direct
+            entries = tinfoil_direct.Listing(tinfoil_direct.base_of(base)).fetch()
+        elif provider == CHUTES:
+            from . import chutes
+            entries = chutes.fetch_models()
+        else:
+            insecure = netguard.problem(anthropic.messages_url(base))
+            if insecure:
+                raise Refused(insecure)
+            entries = anthropic.list_models(netguard.Session(), base,
+                                            settings.get(SETTING_KEY) or "")
+    except (private_ai.PrivacyError, anthropic.AnthropicError) as exc:
+        raise AIError(str(exc)) from exc
+    _listings[(provider, base)] = (time.monotonic(), entries)
+    return entries
+
+
+def _listed_model(settings: dict, entry: dict, private: bool = False) -> dict:
+    """One model of a provider's list as Settings shows it, with how private it is."""
+    vision = entry_vision(entry)
+    if vision is None and "claude" in str(entry.get("id", "")).lower():
+        vision = True           # Anthropic's lists say nothing of it; every Claude can see
+    label, _note = model_privacy(settings, entry["id"], private=private)
+    return {"id": entry["id"], "name": entry.get("name") or entry["id"], "vision": vision,
+            "price": _price(entry.get("pricing")), "note": label,
+            "kind": private_ai.E2EE if levels.privacy_at(
+                entry["id"], settings[SETTING_BASE_URL]).sealed else None}
+
+
+def _provider_models(settings: dict, provider: str, vision_only: bool) -> list[dict]:
+    entries = _provider_entries(settings, provider)
+    models = [_listed_model(settings, entry) for entry in entries.values()
+              if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
+    if vision_only and vision_known(models):
+        models = [m for m in models if m["vision"]]
+    first = PROVIDER_MODELS.get(provider)
+    # The recommended one, then those sent end-to-end encrypted (Chutes' -TEE ones),
+    # then the rest.
+    models.sort(key=lambda m: (m["id"] != first, m["kind"] is None, m["id"].lower()))
+    return models
+
+
 def list_private_models(settings: dict) -> list[dict]:
     """The models Privacy Mode can use that can look at pictures, as
     list_models gives them, each with its "kind" (private_ai.E2EE or TEE):
@@ -1240,9 +1858,22 @@ def list_private_models(settings: dict) -> list[dict]:
     from . import sealed
 
     base = settings[SETTING_BASE_URL]
+    provider = provider_of(base)
+    if provider in (TINFOIL, CHUTES):
+        # Tinfoil's every model, end-to-end encrypted (highest privacy); Chutes' -TEE
+        # ones (partial privacy), from their public lists.
+        entries = _provider_entries(settings, provider)
+        models = [_listed_model(settings, entry, private=True) for entry in entries.values()
+                  if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+                  and levels.privacy_at(entry["id"], base).sealed]
+        models = [m for m in models if m["vision"] is not False]
+        first = PROVIDER_MODELS.get(provider)
+        models.sort(key=lambda m: (m["id"] != first, m["id"].lower()))
+        return models
     if not searches_the_web(settings):
-        raise Refused("Privacy Mode's models are nano-gpt's, and the endpoint on the AI "
-                      "tab is not nano-gpt's.")
+        raise Refused("Privacy Mode's models are Nano-GPT's private/ and TEE/ models, "
+                      "Tinfoil's and Chutes' -TEE ones, and the endpoint on the AI tab is "
+                      f"{_service(base)}'s, which has none.")
     relay = _request(sealed.private_list_url(base), None, timeout=30)
     private_ids = sealed.private_ids_in(relay)
     listed = _request(f"{base}/models?detailed=true", None, timeout=30)
@@ -1302,8 +1933,11 @@ def _price(pricing) -> str:
 def ping(settings: dict) -> str:
     """A tiny request to check the key and model work; returns the model's
     word back. A private model that always thinks is given room to, which it
-    is billed for only as it uses."""
+    is billed for only as it uses - as is a model on Anthropic's API, where the newest
+    always think, or one sent sealed (Tinfoil's, Chutes' -TEE ones)."""
+    roomy = session_of(settings) is not None or in_privacy_mode(settings) \
+        or protocol_of(settings[SETTING_BASE_URL]) == "anthropic"
     return chat(
         [{"role": "user", "content": "Reply with the single word OK."}],
-        settings, json_reply=False, max_tokens=1024 if in_privacy_mode(settings) else 5,
+        settings, json_reply=False, max_tokens=1024 if roomy else 5,
     ).strip()

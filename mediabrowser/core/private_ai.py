@@ -2022,11 +2022,15 @@ class PrivacySession:
 
     def __init__(self, api_url, api_key, model, request_timeout=240,
                  tee_factory=TeeClient, sealed_factory=None, clock=dcap.since_boot,
-                 strict=False):
+                 strict=False, kind=None, service=""):
         self.api_url = api_url
         self.api_key = api_key
         self.model = str(model or "").strip()
-        self.kind = kind_of(self.model)
+        # By the model's id, unless the address says more (ai._session, levels.py): every
+        # model on Tinfoil's API and Chutes' -TEE models are end-to-end encrypted too, each
+        # through its own sealed client (`sealed_factory`), whose service is `service`.
+        self.kind = kind if kind is not None else kind_of(self.model)
+        self.service = service
         self.request_timeout = request_timeout
         self.strict = bool(strict)
         self._tee_factory = tee_factory
@@ -2156,7 +2160,10 @@ class PrivacySession:
                     f"({', '.join(lacking)}), and strict attestation is on"
                     + ("; nano-gpt's TEE/ models come through RedPill's gateway, which "
                        "cannot prove more: choose a private/ model, sealed end to end, "
-                       "in Settings → AI" if GATEWAY_SHORTFALL in lacking else ""))
+                       "in Settings → AI" if GATEWAY_SHORTFALL in lacking else
+                       "; Chutes' end-to-end encryption is always partial privacy: switch "
+                       "Strict off to use it, or choose Tinfoil or a Nano-GPT private/ model"
+                       if WORKLOAD_UNMEASURED in lacking else ""))
         except ModelRetired as e:
             self._refuse(str(e))
             raise
@@ -2185,7 +2192,7 @@ class PrivacySession:
             self._doubted = False
             recovered = self._refused
             self._refused = False
-        if attestation.proof is not None:
+        if self.kind == E2EE and self._sealed is not None:
             self._sealed.accept(attestation)
         if changed or recovered:
             self._emit("attested", attestation)

@@ -21,9 +21,15 @@ What leaves this computer:
   and folder names, a tracklist, and frames from it — a disc menu's pictures for **Read
   the Menu**; the titles for **Romanise Titles**. With [Privacy Mode](../README.md#privacy-mode)
   on, only to an attested private model.
-- **In Privacy Mode, attestation requests**, to nano-gpt and to the services that vouch
-  for the hardware: Intel and NVIDIA, and for end-to-end encrypted models Tinfoil's and
-  Sigstore's servers. None of them is sent anything about your videos.
+- **To the provider you choose on the AI tab**: Nano-GPT, Chutes, Tinfoil, Anthropic or
+  another OpenAI-compatible service, one endpoint at a time. How a request goes there
+  follows from the address itself, whatever way it got into the settings: Tinfoil's
+  every model and Chutes' `-TEE` models only end-to-end encrypted (see
+  [Providers and privacy levels](#providers-and-privacy-levels)).
+- **Attestation requests**, before anything is sent to a private model, to its service
+  and to the services that vouch for the hardware: Intel and NVIDIA, and for Tinfoil's
+  enclaves Tinfoil's and Sigstore's servers. None of them is sent anything about your
+  videos.
 - **Only with Name the provider behind each TEE reply on**: the id of a reply's session,
   to RedPill (`api.redpill.ai`).
 
@@ -34,8 +40,9 @@ What does not:
   that goes by itself is a cover: once a video has been matched to a MusicBrainz release,
   its sleeve is fetched in the background if cover art is allowed.
 - **No telemetry, no crash reports, no update check.** The app does not call home.
-- **An API key goes only to its own service.** Nano-GPT's to the AI endpoint it was
-  entered for, setlist.fm's to setlist.fm, and never to anyone else.
+- **An API key goes only to its own service.** Each AI provider's to the address it was
+  entered for (a Chutes key to Chutes' own three addresses), setlist.fm's to setlist.fm,
+  and never to anyone else.
 - **Your videos stay where they are.** The app only reads media files — ffprobe, ffmpeg,
   libbluray and mpv all only read — and writes nothing into a library folder.
 - **What Was Sent is never written to disk.** Help → What Was Sent lists every request as
@@ -52,14 +59,16 @@ only on this computer, your local network or a Tor onion service (see
 | MusicBrainz (`musicbrainz.org`) | **Search MusicBrainz** in Detect Chapters, **Just Figure It Out**, and Identify Library's MusicBrainz method — with its switch on | A search, usually the video's file or folder name, and the ids of the releases it finds; the app's name, version and project page, as MusicBrainz asks every application to say | Frames, chapters you named, any key |
 | The Cover Art Archive (`coverartarchive.org`, and the Internet Archive, where it keeps the pictures) | In the background, for a video matched to a MusicBrainz release that has no cover beside it or inside it — with its switch on | The release's id, and the same name, version and project page | Anything else about the video. A video marked Private is never looked up, not even for its cover |
 | setlist.fm (`api.setlist.fm`) | **Search setlist.fm**, **Just Figure It Out**, Identify Library's setlist.fm method, and **Test** on the setlist.fm tab — with its switch on | An artist's name and a date, year or place, usually from the video's name; your setlist.fm key | Frames, the Nano-GPT key |
-| The AI endpoint: Nano-GPT (`nano-gpt.com`), or another OpenAI-compatible service set on the AI tab | **Ask AI**, **Read the Menu** and **Just Figure It Out** in Detect Chapters, Identify Library's AI methods (and a video's right-click Identify), **Romanise Titles**, and **Test** on the AI tab — with the AI's switch on | Chapter times, file and folder names, tracklists and frames (or the titles to romanise), the model's name, and the Nano-GPT key | Anything for a video marked Private. In Privacy Mode: anything at all to the ordinary model |
-| The AI endpoint's model lists | **List Models** and **List Private Models** on the AI tab and the Privacy tab | For List Models, the key, if there is one, so that the prices are yours | For List Private Models, nothing: nano-gpt's lists of its private and TEE models are public, and fetched with no key |
+| The AI endpoint: Nano-GPT (`nano-gpt.com`), Chutes (`llm.chutes.ai`, or `claude.chutes.ai`), Anthropic (`api.anthropic.com`), or another OpenAI-compatible service set on the AI tab | **Ask AI**, **Read the Menu** and **Just Figure It Out** in Detect Chapters, Identify Library's AI methods (and a video's right-click Identify), **Romanise Titles**, and **Test** on the AI tab — with the AI's switch on | Chapter times, file and folder names, tracklists and frames (or the titles to romanise), the model's name, and that provider's key: to Anthropic as its `x-api-key`, to everyone else as a bearer token | Anything for a video marked Private. In Privacy Mode: anything at all to the ordinary model. Chutes' `-TEE` models: anything in the clear (they go to `api.chutes.ai`, below) |
+| Tinfoil's API (`inference.tinfoil.sh`) | The same buttons, with Tinfoil chosen | Every request sealed end to end to Tinfoil's attested router (EHBP), over a connection pinned to the TLS key its attestation binds; in the clear only the Tinfoil key and the request's headers. Tinfoil sees your account, the model, timing, sizes and cost | The text: only the attested router can open it |
+| Chutes' end-to-end encryption (`api.chutes.ai`) | Before each request to a Chutes `-TEE` model, and with it | Discovery of the model's instances (their keys and single-use nonces) and an instance's own evidence, with the Chutes key; the whole model's evidence for a nonce of the app's and Chutes' published measurements, with no key; then the request, sealed to one attested instance with ML-KEM-768, with the key, the model's and the instance's ids and the nonce in its headers. Chutes sees your account, the model, timing, sizes and cost | The text: only the instance the request is sealed to can open it, and its operator, a third-party miner, sees ciphertext |
+| The AI endpoint's model lists | **List Models** and **List Private Models** on the AI tab and the Privacy tab; and for Tinfoil and Chutes, before a request with frames, to see whether the model can look at pictures | For List Models, the key, if there is one, so that the prices are yours (Anthropic's list needs it) | Tinfoil's and Chutes' lists (`inference.tinfoil.sh/v1/models`, `llm.chutes.ai/v1/models`) are public and fetched with no key; so are nano-gpt's lists of its private and TEE models, for List Private Models |
 | A web search, which Nano-GPT runs for the model (Kagi by default, Perplexity or LinkUp) | When the AI is asked to look a show up, with the web search's switch on, on Nano-GPT's endpoint, outside Privacy Mode | Nano-GPT has the search provider search the web about the show — the artist, tour and venue | Never in Privacy Mode: Nano-GPT would have to read the request to search for it |
 | nano-gpt's TEE checks (Privacy Mode, `TEE/` models) | Before an operation's first request, again before a request once that is 15 minutes old, on **Check Attestation**, and after each reply | For an attestation, the model's name and a random nonce — one for the model's own report and one for RedPill's gateway's; for a reply's check, its id or receipt id, and the route its headers named. The Nano-GPT key | Your videos: those go with the request itself |
 | nano-gpt's Private Mode relay (Privacy Mode, `private/` models) | Before each request (a preflight that names the model), and with it | The request sealed end to end; nano-gpt sees your account, the model, when, how much and the cost | The text: only the attested enclave can open it |
-| Intel (`api.trustedservices.intel.com`, `certificates.trustedservices.intel.com`) | When a `TEE/` model is attested, and by Tinfoil's client for an Intel TDX enclave | Which platform the quote comes from, to fetch Intel's signed TCB information, revocation lists and quoting enclave identity | No key, nothing about your videos |
-| NVIDIA (`nras.attestation.nvidia.com`) | When a `TEE/` model with GPUs is attested | The GPU evidence nano-gpt relayed, with the app's own nonce; and a request for NVIDIA's public keys | No key, nothing about your videos |
-| Tinfoil (`github-proxy.tinfoil.sh`, `kds-proxy.tinfoil.sh`) and Sigstore (`tuf-repo-cdn.sigstore.dev`) | When a `private/` enclave is attested: before an operation's first request, again once its attestation is five minutes old, and on **Check Attestation** | Requests for the router's release and its Sigstore record, for AMD's certificate for the enclave's processor, and for Sigstore's trust root | No key, nothing about your videos. The enclave's own report comes through nano-gpt's relay |
+| Intel (`api.trustedservices.intel.com`, `certificates.trustedservices.intel.com`) | When a `TEE/` model or a Chutes instance is attested, and by Tinfoil's client for an Intel TDX enclave | Which platform the quote comes from, to fetch Intel's signed TCB information, revocation lists and quoting enclave identity | No key, nothing about your videos |
+| NVIDIA (`nras.attestation.nvidia.com`) | When a `TEE/` model with GPUs, or a Chutes instance, is attested | The GPU evidence nano-gpt or Chutes relayed, with the nonce its quote binds; and a request for NVIDIA's public keys | No key, nothing about your videos |
+| Tinfoil (`atc.tinfoil.sh`, `github-proxy.tinfoil.sh`, `kds-proxy.tinfoil.sh`) and Sigstore (`tuf-repo-cdn.sigstore.dev`) | When a `private/` enclave or Tinfoil's router is attested: before an operation's first request, again once its attestation is five minutes old, and on **Check Attestation** | For Tinfoil's router, a request for its attestation bundle naming the host; requests for the router's release and its Sigstore record, for AMD's certificate for the enclave's processor, and for Sigstore's trust root | No key, nothing about your videos. A `private/` enclave's own report comes through nano-gpt's relay |
 | RedPill (`api.redpill.ai`) | Only with **Name the provider behind each TEE reply** on (Settings → Privacy, off by default), after a `TEE/` reply whose signed receipt holds, at most once a session | The session's id, which the receipt names | Your videos and any key. It goes directly, not through Nano-GPT: RedPill sees this computer's internet address, or the proxy's, and that one of its models was used around then. See [Naming the provider](#naming-the-provider-behind-a-tee-reply) |
 | Your web browser | When you click a link (setlist.fm's credit, About's) | The link, handed to the browser | A link to plain http on the internet is not opened at all |
 
@@ -128,6 +137,18 @@ not. The status bar's right-hand corner says where things can go now (see
 
 ## Keys and passwords
 
+- **One key per AI provider.** Nano-GPT's, Chutes', Tinfoil's, Anthropic's and another
+  service's are each kept in its own keyring entry beside the server it was entered for
+  (`nanogpt-api-key`, `chutes-api-key`, `tinfoil-api-key`, `anthropic-api-key`,
+  `other-api-key`, each with its `-origin`), so switching provider and back loses none.
+  Nano-GPT's is the entry the app has always had: a key saved there for another service
+  before there were providers keeps working where it was entered for. A Nano-GPT key is
+  never offered to Chutes, Tinfoil or Anthropic.
+- **Chutes' key goes to Chutes' three own addresses**, `llm.chutes.ai`, `claude.chutes.ai`
+  and `api.chutes.ai`, over https, and nowhere else: the one exception to "a key goes only
+  to the server it was entered for", as its end-to-end encryption goes through
+  `api.chutes.ai` whichever of the others the endpoint is. **Tinfoil's** goes only to
+  `https://inference.tinfoil.sh`, and the attestation's fetches carry none.
 - **The Nano-GPT and setlist.fm keys are kept in your desktop's keyring** (GNOME Keyring,
   or KWallet), under `da-media-browser`, never in a file. `NANOGPT_API_KEY` and
   `SETLISTFM_API_KEY` in the environment take their place. A key an older version left in
@@ -166,6 +187,37 @@ not. The status bar's right-hand corner says where things can go now (see
 
 ## AI models
 
+### Providers and privacy levels
+
+The AI tab's **Provider** list — NanoGPT, Chutes, Tinfoil, Anthropic, Other — fills in
+the one endpoint's address. Nothing else about a provider is stored: which one an address
+is, the protocol it speaks, whether it is sealed, where its key may go and what its
+models' privacy is are read from the address each time, whether it was chosen there,
+typed by hand or left in an older `settings.json`. When in doubt, sealed: a host under
+`tinfoil.sh` is Tinfoil's sealed API whatever else is said, and a Chutes model whose id
+may end `-TEE` is one.
+
+Every model is at one of three levels, the same in every DA app:
+
+- **Highest privacy**: end-to-end encrypted to an attested enclave whose software is
+  measured — nano-gpt's `private/` models, and every model on Tinfoil's own API.
+- **Partial privacy**: attested, but with a gap in what is proved — nano-gpt's `TEE/`
+  models, whose text passes nano-gpt's gateway in the clear, and Chutes' `-TEE` models,
+  encrypted all the way to a key that rests on software Chutes signs.
+- **Not private**: every other model, Chutes' others and Anthropic's included, whose
+  provider can read your text.
+
+The level is shown where each model is chosen, in the status bar and on What Was Sent.
+A window that has asked the AI goes on only to a model at its level or higher: Detect
+Chapters, its answer in hand, changed in Settings to a less private model — a `private/`
+or Tinfoil model to an ordinary one or to Chutes — sends nothing more, whichever of its
+buttons would send it (chapters, the menu, titles, MusicBrainz's help), and says so in
+words naming both levels; it is opened again for the other model. Each run of Identify
+Library and each window opened is held to the settings it began with.
+
+A model whose provider's own list says it cannot look at pictures (Tinfoil's and
+Chutes' lists say) is never sent frames: the request is refused before anything goes.
+
 ### Ordinary models
 
 The endpoint on the AI tab receives everything in the request, and can read it, and so
@@ -177,11 +229,73 @@ plain path refuses one however it is written.
 
 [Privacy Mode](../README.md#privacy-mode) (Settings → Privacy, under *Send videos to the
 AI*) sends the AI's requests only to the private model set beside it, attested before
-anything is sent to it. An operation's privacy is fixed when it starts — a Detect
+anything is sent to it: a `private/` or `TEE/` model on Nano-GPT, any model on Tinfoil,
+or a `-TEE` model on Chutes (only with Strict off: it is always partial). With Anthropic
+or another service as the provider, Privacy Mode has no model to use, and sends nothing. An operation's privacy is fixed when it starts — a Detect
 Chapters window opened, an Identify Library run — and only ever tightens: switch Privacy
 Mode on, or the AI off, and a run already going sends nothing more to the ordinary
 model. There is no web search in Privacy Mode, and if the private model cannot be used,
 nothing is sent: it never falls back to the ordinary one.
+
+### Tinfoil (preliminary)
+
+With Tinfoil chosen, every model goes only end-to-end encrypted, Privacy Mode or not.
+Before anything is sent, Tinfoil's router is attested from Tinfoil's own attestation
+service, `https://atc.tinfoil.sh`, never through a router address its client looks up by
+itself: the bundle for this host, checked by Tinfoil's client (its hardware report
+against AMD's or Intel's root, its release against Sigstore's record), and refused
+unless it is this host's and names the TLS key the router's enclave holds. Each request
+is then sealed on this computer to the router's key and sent to
+`https://inference.tinfoil.sh/v1/chat/completions` over a connection pinned to that TLS
+key: the key is checked as the handshake completes, before a byte of the request leaves,
+behind a proxy's tunnel too, and a mismatch sends nothing and attests again. Only a reply
+that came back sealed is opened, and a stream only with its end. The router is attested
+again once its proof is five minutes old. The prompt cache's secret is the app's own,
+random, held in memory for the operation alone. Tinfoil sees your account, the model,
+timing, sizes and cost, never the text. What the app does not check: that the router
+hands your request only to attested model enclaves, which is its published code. It
+needs Tinfoil's client, as the `private/` models do. Labelled preliminary, as SealedLore
+labels it: built against Tinfoil's public captures and tried with its author's account.
+
+### Chutes' `-TEE` models (preliminary)
+
+A Chutes model whose id ends `-TEE`, on any of Chutes' addresses, goes only end-to-end
+encrypted, Privacy Mode or not, sealed by this app's own client — Chutes' own Python
+client checks nothing, so it is not used. For each request:
+
+- Chutes is asked for the model's instances, at most five, each with its ML-KEM-768 key
+  and single-use nonces, with the Chutes key. Every instance not attested in the last 15
+  minutes (time asleep included) is attested: its Intel TDX quote up to Intel's root, no
+  debug enclave, for a fresh nonce of the app's; the quote's report data binding that
+  instance's key to the nonce; its GPUs' evidence through NVIDIA; and its measurements
+  among the sets Chutes publishes. An instance that falls short, or whose GPUs NVIDIA did
+  not vouch for, is left out, said, and never sealed to; with none left, nothing is sent.
+- The request is sealed to one attested instance with ML-KEM-768 and ChaCha20-Poly1305,
+  from the `cryptography` package already pinned (50.0.2): nothing new is installed, and
+  where the `cryptography` in use has no ML-KEM, Chutes' encrypted models are refused in
+  words. Each nonce is used once and never again.
+- The reply streams, each piece opened with a key made for this request and held to its
+  number: a piece dropped, repeated or out of its place, or a stream that ends before its
+  sealed end, is refused in words, and a seal that does not hold has every instance
+  attested again before anything more is sent.
+
+It is always **partial privacy**, and Strict refuses it: the program in each instance
+that makes, binds and uses the key — Chutes' aegis library, `chutes-aegis.so`, a closed
+binary — is admitted to the machine by Chutes' signature, not measured, and the
+measurements it is held to are Chutes' own published list, not rebuilt here. Chutes sees
+your account, the model, timing, sizes and cost; the instance's operator, a third-party
+miner, ciphertext. Chutes allows 60 evidence calls a minute for all its users together,
+so attestations are kept for their 15 minutes across the app's windows and a limit
+reached is waited out within the attempt's three minutes, or refused in words. Chutes'
+other models go in the clear, like any provider's.
+
+### Anthropic
+
+With Anthropic chosen, requests go to its own Messages API, `api.anthropic.com/v1/messages`,
+spoken natively: the key as `x-api-key`, streamed, the answer read only so far. Chutes'
+open-source proxy of it, `claude.chutes.ai`, takes the Chutes key as a bearer token
+instead, and a `-TEE` model is never sent through it in the clear. Not private: Anthropic
+reads what is sent.
 
 ### End-to-end encrypted models (`private/`)
 
@@ -316,9 +430,10 @@ NEAR AI, 0G, Tinfoil's router — beside its mark: *✓ TEE, verified · run by 
 ## Seeing where things go
 
 - **The status bar's right-hand corner** says where things can go now — "Online:
-  MusicBrainz · Covers · AI", "AI, sealed end to end" or "AI, TEE attested first" in
-  Privacy Mode, "Nothing goes online" — and hovering it lists each place, with why one
-  is off. Each time something is sent, it says where for a few seconds.
+  MusicBrainz · Covers · AI, not private", "AI, sealed end to end, highest privacy",
+  "AI, sealed end to end, partial privacy" (Chutes) or "AI, TEE attested first, partial
+  privacy", "Nothing goes online" — and hovering it lists each place, with why one is
+  off. Each time something is sent, it says where for a few seconds.
 - **Help → What Was Sent** lists every request since the app started, as it is made: to
   whom, what it carried, how it travelled (in the clear over https, to a TEE model
   attested first, or sealed end to end), whether it went, and which window or run it was
@@ -337,7 +452,7 @@ NEAR AI, 0G, Tinfoil's router — beside its mark: *✓ TEE, verified · run by 
 | Your libraries' records: chapters, names, what was matched | `~/.local/share/da-media-browser/libraries/` (or under `$XDG_DATA_HOME`), with a backup of a record before it is merged, moved, restored into or forgotten |
 | Covers | `~/.local/share/da-media-browser/artwork/` |
 | Settings | `~/.local/share/da-media-browser/settings.json` |
-| The Nano-GPT and setlist.fm keys, and the server the Nano-GPT key was entered for | your desktop's keyring, under `da-media-browser` |
+| Each AI provider's key and the server it was entered for, and the setlist.fm key | your desktop's keyring, under `da-media-browser` |
 | Tinfoil's client, when the app runs from source | `~/.local/share/da-media-browser/private-mode/` |
 | Sigstore's trust root, once a `private/` model has been attested | Tinfoil's client keeps it in `sigstore-python`'s own folders, `~/.local/share/sigstore-python` and `~/.cache/sigstore-python` |
 | Screenshots you take (`S`) | `Pictures/DA Media Browser` |
@@ -367,8 +482,9 @@ firejail the app uses Qt's own file dialogs, which add nothing to the list: the 
 would stop the app at the first one, as GTK may not start its icon loader's sandbox there.
 
 Kept in memory only, and gone when the app quits: What Was Sent, the frames taken from
-a video, the audio levels and stage lighting measured, what each enclave proved, and
-the RedPill session records read (64 at most). A crash writes none of it to disk: as it
+a video, the audio levels and stage lighting measured, what each enclave proved (Chutes'
+instances' for 15 minutes, across windows), Tinfoil's and Chutes' public model lists (for
+an hour at most), and the RedPill session records read (64 at most). A crash writes none of it to disk: as it
 starts, the app asks that no dump of it hold its memory, makes itself one the system's
 crash collector won't dump, and sets its core size limit to 1, at which the kernel gives a
 dump up altogether (at 0 it still hands one to systemd-coredump); mpv and ffmpeg, started
@@ -418,7 +534,11 @@ other user can enter, where there is one.
   the gateway's word.
 - **End-to-end encryption rests on the enclave**: on Tinfoil's software, measured and
   checked against its published release, and on AMD's or Intel's hardware and the keys
-  they vouch for. nano-gpt still sees your account, and when, and how much, you send.
+  they vouch for. nano-gpt, or Tinfoil, still sees your account, and when, and how much,
+  you send. That Tinfoil's router passes a request only to attested model enclaves is
+  its published code.
+- **Chutes' end-to-end encryption is partial**: that only the model reads your text rests
+  on Chutes' signed, closed key-holding program and its own list of measurements.
 - **MusicBrainz, the Cover Art Archive and setlist.fm see what they are asked**, and this
   computer's internet address (or the proxy's), as any website does.
 - **Plain http on your own network is not encrypted** (see

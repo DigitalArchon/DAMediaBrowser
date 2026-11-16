@@ -296,6 +296,9 @@ class ChaptersDialog(QDialog):
 
         # The model's answer, while it is what the table shows.
         self._ai_settings = ai.load_settings()
+        # Whether this window has asked the AI: from then on, Settings changed here may
+        # not move it to a less private model (ai.move_refusal).
+        self._asked_ai = False
         # Where each lookup can go, as Settings has it: for saying so.
         self._reach = reach.services(ai_settings=self._ai_settings)
         self._ai_result: ai_chapters.Result | None = None
@@ -1509,6 +1512,8 @@ class ChaptersDialog(QDialog):
         self.ai_hint.setToolTip("")
         cancel = self._cancel
 
+        self._asked_ai = True
+
         def work(progress_cb):
             return ai_chapters.run(
                 situation, settings,
@@ -1643,6 +1648,7 @@ class ChaptersDialog(QDialog):
         self.progress.setFormat(f"{model} is reading the menu…")
         self.progress.setRange(0, 0)
         self.progress.show()
+        self._asked_ai = True
         self._menu_job = run_job(
             self, lambda: menu_chapters.ask(video, disc, settings, context, translate),
             on_done=self._on_menu_answer,
@@ -1760,7 +1766,16 @@ class ChaptersDialog(QDialog):
         if tab is None:
             tab = TAB_AI if ai.allowed(self._ai_settings) else TAB_PRIVACY
         if SettingsDialog(self, tab).exec():
-            self._ai_settings = ai.load_settings()
+            changed = ai.load_settings()
+            # Once this window has asked the AI, what it has worked on goes on only at
+            # its privacy or higher: a less private model is for a window opened again
+            # (ai.carry_on, ai.move_refusal), and every AI control here says so.
+            if self._asked_ai:
+                changed = ai.carry_on(self._ai_settings, changed, "Detect Chapters")
+                refused = ai.move_refusal(changed)
+                if refused:
+                    self.status.setText(refused)
+            self._ai_settings = changed
             self._reach = reach.services(ai_settings=self._ai_settings)
             self._update_menu_controls()
             self._update_mb_controls()
@@ -1935,6 +1950,7 @@ class ChaptersDialog(QDialog):
         self.progress.setFormat("Figuring it out…")
         self.progress.setRange(0, 0)
         self.progress.show()
+        self._asked_ai = True
         self._figure_job = run_job(
             self, work, on_done=self._on_figured, on_failed=self._on_figure_failed,
             purpose=self._purpose,
