@@ -669,9 +669,20 @@ class SettingsDialog(QDialog):
         return "API key:" if provider == ai.OTHER else f"{ai.PROVIDERS[provider]} API key:"
 
     def _key_note(self, provider: str) -> str:
-        if self._keyring_error is not None:
+        """What the key field's note says for `provider`. Without a keyring, the
+        environment's key stands in for Nano-GPT's alone (ai.API_KEY_ENV goes to Nano-GPT's
+        own server, nowhere else): any other provider's key can't be kept until there is
+        one, and no variable stands in for it."""
+        if self._keyring_error is None:
+            return KEY_NOTES[provider]
+        if provider == ai.NANOGPT:
             return f"{self._keyring_error} Until then, set {ai.API_KEY_ENV} in the environment."
-        return KEY_NOTES[provider]
+        name = ai.PROVIDERS[provider]
+        whose = "the service's" if provider == ai.OTHER else \
+            f"{'an' if name[0] in 'AEIOU' else 'a'} {name}"
+        return (f"{self._keyring_error} Until then, {whose} key can't be kept, and nothing "
+                f"stands in for it: {ai.API_KEY_ENV} is Nano-GPT's, and goes to Nano-GPT "
+                f"alone.")
 
     def _provider_chosen(self) -> None:
         """A provider picked from the list: its address and its model fill in (another

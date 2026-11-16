@@ -99,6 +99,27 @@ def test_a_tinfoil_address_typed_by_hand_is_tinfoils(window, no_env_key, typed):
     assert dialog.where_label.text().endswith("Highest privacy.")
 
 
+def test_without_a_keyring_only_nano_gpts_key_note_names_the_environment(window, no_env_key,
+                                                                         monkeypatch):
+    """NANOGPT_API_KEY goes to Nano-GPT alone: the note offers it there, and says for any
+    other provider that its key can't be kept without a keyring."""
+    from mediabrowser.core import creds
+    from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
+
+    monkeypatch.setattr(creds, "backend_error", lambda: "There's no keyring to keep it in.")
+    dialog = SettingsDialog(window)
+    assert dialog.key_note.text().endswith(f"set {ai.API_KEY_ENV} in the environment.")
+    for provider, whose in ((ai.TINFOIL, "a Tinfoil key"), (ai.CHUTES, "a Chutes key"),
+                            (ai.ANTHROPIC, "an Anthropic key"), (ai.OTHER, "the service's key")):
+        choose(dialog, provider)
+        note = dialog.key_note.text()
+        assert f"set {ai.API_KEY_ENV}" not in note, provider
+        assert f"Until then, {whose} can't be kept" in note
+        assert "goes to Nano-GPT alone" in note
+    choose(dialog, ai.NANOGPT)
+    assert dialog.key_note.text().endswith(f"set {ai.API_KEY_ENV} in the environment.")
+
+
 def test_an_older_settings_file_opens_on_its_provider(window, no_env_key):
     from mediabrowser.gui.dialogs.settings_dialog import SettingsDialog
 
